@@ -43,3 +43,26 @@ body {
 [data-room-state="broadcast"] .formal-current p {
   color: #fff;
 }
+
+.alert-audio-button {
+  background: #173848;
+  border: 0;
+  border-radius: 6px;
+  bottom: 24px;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 22%);
+  color: #fff;
+  cursor: pointer;
+  font: 700 18px Arial, Helvetica, sans-serif;
+  padding: 14px 18px;
+  position: fixed;
+  right: 24px;
+  z-index: 20;
+}
+
+.alert-audio-button.needs-attention {
+  background: #b00020;
+}
+
+.alert-audio-button[hidden] {
+  display: none;
+}

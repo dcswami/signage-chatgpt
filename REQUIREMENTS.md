@@ -145,6 +145,8 @@ Route requirements:
 - The kiosk display must play an alert sound during active emergency and safety broadcasts.
 - The default alert sound must use `assets/audio/mixkit-classic-alarm-995.wav`.
 - The alert sound must repeat continuously every 15 seconds while the Emergency/Safety Broadcast is active.
+- Real kiosk pages must provide a one-time device setup control to enable alert sound when the browser requires user interaction before playing audio.
+- Preview pages in the management portal must remain silent during emergency broadcasts.
 - The display must return to normal signage after the broadcast expires or is ended.
 - The display must support prepared broadcast templates that can be launched immediately by authorized users.
 - Broadcast templates must support title, message body, severity, visual style, audible alert setting if supported by device, default target scope, and approval requirements.
@@ -556,6 +558,7 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Recommended kiosk device categories are ChromeOS devices in kiosk mode, Windows mini PCs or signage players running Microsoft Edge or Google Chrome in kiosk mode, Android tablets or Android signage players with a managed kiosk browser, and Raspberry Pi or Linux signage devices running Chromium in kiosk mode.
 - Recommended kiosk browsers are Google Chrome, Microsoft Edge, or Chromium-based kiosk browsers.
 - Kiosk devices must be configured to allow audio autoplay for `https://signage.bapswest.org`.
+- iPhone and iPad Safari may still require one user tap on the kiosk page before alert audio can play; the kiosk page must show an "Enable Alert Sound" setup control for this case.
 - Kiosk pages should require device registration in addition to the unique room URL for production use.
 - Device registration should bind a physical kiosk device to a room, record device name, device type, last check-in time, browser, IP address, and active status.
 - The unique room URL may be sufficient for early testing and pilot use.

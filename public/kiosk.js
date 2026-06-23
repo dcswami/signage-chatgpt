@@ -3,6 +3,8 @@ const roomCode = root.dataset.roomCode;
 const isPreview = root.dataset.preview === "true";
 const alertSound = document.querySelector("#alertSound");
 let alertTimer = null;
+let alertAudioEnabled = isPreview;
+const alertAudioButton = createAlertAudioButton();
 
 async function fetchRoom() {
   const response = await fetch(`/api/rooms/${roomCode}`, { cache: "no-store" });
@@ -111,13 +113,64 @@ function stopAlert() {
   }
 }
 
+function createAlertAudioButton() {
+  if (isPreview || !alertSound) return null;
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "alert-audio-button";
+  button.textContent = "Enable Alert Sound";
+  button.addEventListener("click", unlockAlertAudio);
+  document.body.append(button);
+  return button;
+}
+
+function showAlertAudioButton(needsAttention = false) {
+  if (!alertAudioButton || alertAudioEnabled) return;
+  alertAudioButton.hidden = false;
+  alertAudioButton.classList.toggle("needs-attention", needsAttention);
+  alertAudioButton.textContent = needsAttention ? "Tap to Enable Alert Sound" : "Enable Alert Sound";
+}
+
+function hideAlertAudioButton() {
+  if (alertAudioButton) {
+    alertAudioButton.hidden = true;
+    alertAudioButton.classList.remove("needs-attention");
+  }
+}
+
+async function unlockAlertAudio() {
+  if (!alertSound) return;
+  try {
+    alertSound.currentTime = 0;
+    await alertSound.play();
+    alertSound.pause();
+    alertSound.currentTime = 0;
+    alertAudioEnabled = true;
+    hideAlertAudioButton();
+  } catch {
+    alertAudioEnabled = false;
+    showAlertAudioButton(true);
+  }
+}
+
 function startAlert(room) {
   if (isPreview || !room.activeBroadcast || !alertSound) {
     stopAlert();
     return;
   }
 
-  const play = () => alertSound.play().catch(() => {});
+  const play = () => {
+    alertSound.play()
+      .then(() => {
+        alertAudioEnabled = true;
+        hideAlertAudioButton();
+      })
+      .catch(() => {
+        alertAudioEnabled = false;
+        showAlertAudioButton(true);
+      });
+  };
   if (!alertTimer) {
     play();
     alertTimer = setInterval(play, 15000);
@@ -147,6 +200,7 @@ function escapeHtml(value) {
 render().catch(error => {
   root.innerHTML = `<section class="loading">${escapeHtml(error.message)}</section>`;
 });
+showAlertAudioButton();
 
 const events = new EventSource(`/api/rooms/${roomCode}/events`);
 events.addEventListener("refresh", () => render());
