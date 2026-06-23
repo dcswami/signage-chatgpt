@@ -183,7 +183,7 @@ In the admin portal:
 
 1. Change a room to Available, Busy, and Buffer/Warning.
 2. Open the kiosk page in another browser tab.
-3. On the real kiosk page, tap **Enable Alert Sound** once if the button is visible.
+3. On the real kiosk page, tap **Test Alert Sound** once if the button is visible, and confirm the sound plays.
 4. Confirm the kiosk updates automatically.
 5. Publish a test Emergency/Safety Broadcast.
 6. Confirm the kiosk switches to broadcast mode.

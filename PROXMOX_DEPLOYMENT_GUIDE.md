@@ -469,7 +469,7 @@ Required server behavior:
 - Cloudflare Tunnel forwards traffic to Nginx.
 - Kiosk pages remain open on the room signage device.
 - Kiosk devices allow audio autoplay.
-- iPhone and iPad Safari may require one tap on the real kiosk page before sound can play; use the kiosk page's **Enable Alert Sound** button during device setup.
+- iPhone and iPad Safari may require one tap on the real kiosk page before sound can play; use the kiosk page's **Test Alert Sound** button during device setup.
 - Emergency alert sound repeats every 15 seconds while the broadcast is active.
 
 Recommended production upgrade:

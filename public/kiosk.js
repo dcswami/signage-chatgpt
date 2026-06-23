@@ -4,6 +4,8 @@ const isPreview = root.dataset.preview === "true";
 const alertSound = document.querySelector("#alertSound");
 let alertTimer = null;
 let alertAudioEnabled = isPreview;
+let audioContext = null;
+let latestRoom = null;
 const alertAudioButton = createAlertAudioButton();
 
 async function fetchRoom() {
@@ -119,7 +121,7 @@ function createAlertAudioButton() {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "alert-audio-button";
-  button.textContent = "Enable Alert Sound";
+  button.textContent = "Test Alert Sound";
   button.addEventListener("click", unlockAlertAudio);
   document.body.append(button);
   return button;
@@ -129,7 +131,7 @@ function showAlertAudioButton(needsAttention = false) {
   if (!alertAudioButton || alertAudioEnabled) return;
   alertAudioButton.hidden = false;
   alertAudioButton.classList.toggle("needs-attention", needsAttention);
-  alertAudioButton.textContent = needsAttention ? "Tap to Enable Alert Sound" : "Enable Alert Sound";
+  alertAudioButton.textContent = needsAttention ? "Tap to Play Alert Sound" : "Test Alert Sound";
 }
 
 function hideAlertAudioButton() {
@@ -139,18 +141,67 @@ function hideAlertAudioButton() {
   }
 }
 
+function getAudioContext() {
+  if (audioContext) return audioContext;
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return null;
+  audioContext = new AudioContextClass();
+  return audioContext;
+}
+
+async function resumeAudioContext() {
+  const context = getAudioContext();
+  if (context?.state === "suspended") {
+    await context.resume();
+  }
+  return context;
+}
+
+function playGeneratedAlert(durationMs = 1200) {
+  const context = getAudioContext();
+  if (!context || context.state !== "running") return false;
+
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.type = "square";
+  oscillator.frequency.setValueAtTime(880, context.currentTime);
+  oscillator.frequency.setValueAtTime(660, context.currentTime + 0.35);
+  oscillator.frequency.setValueAtTime(880, context.currentTime + 0.7);
+  gain.gain.setValueAtTime(0.0001, context.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.28, context.currentTime + 0.03);
+  gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + durationMs / 1000);
+  oscillator.connect(gain).connect(context.destination);
+  oscillator.start();
+  oscillator.stop(context.currentTime + durationMs / 1000);
+  return true;
+}
+
 async function unlockAlertAudio() {
   if (!alertSound) return;
   try {
+    await resumeAudioContext();
     alertSound.currentTime = 0;
     await alertSound.play();
-    alertSound.pause();
-    alertSound.currentTime = 0;
     alertAudioEnabled = true;
     hideAlertAudioButton();
+    if (latestRoom?.activeBroadcast) {
+      startAlert(latestRoom);
+      return;
+    }
+    setTimeout(() => {
+      if (!latestRoom?.activeBroadcast) {
+        alertSound.pause();
+        alertSound.currentTime = 0;
+      }
+    }, 1800);
   } catch {
-    alertAudioEnabled = false;
-    showAlertAudioButton(true);
+    const fallbackPlayed = playGeneratedAlert();
+    alertAudioEnabled = fallbackPlayed;
+    if (fallbackPlayed) {
+      hideAlertAudioButton();
+    } else {
+      showAlertAudioButton(true);
+    }
   }
 }
 
@@ -161,14 +212,20 @@ function startAlert(room) {
   }
 
   const play = () => {
+    alertSound.currentTime = 0;
     alertSound.play()
       .then(() => {
         alertAudioEnabled = true;
         hideAlertAudioButton();
       })
       .catch(() => {
-        alertAudioEnabled = false;
-        showAlertAudioButton(true);
+        const fallbackPlayed = playGeneratedAlert();
+        alertAudioEnabled = fallbackPlayed;
+        if (fallbackPlayed) {
+          hideAlertAudioButton();
+        } else {
+          showAlertAudioButton(true);
+        }
       });
   };
   if (!alertTimer) {
@@ -179,6 +236,7 @@ function startAlert(room) {
 
 async function render() {
   const room = await fetchRoom();
+  latestRoom = room;
   root.className = `kiosk-frame ${themeClass(room.themeId)}`;
   root.dataset.roomState = room.activeBroadcast ? "broadcast" : room.status;
   root.innerHTML = room.themeId === "event-formal"
