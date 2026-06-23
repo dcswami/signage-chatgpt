@@ -1,12 +1,29 @@
 # Proxmox Deployment Guide
 
-This guide deploys the Signage Management System on one on-premises Proxmox virtual machine using Debian 12, Docker Compose, Nginx, and Cloudflare Tunnel.
+This guide deploys the Signage Management System on two on-premises Proxmox servers using Debian 12, Docker Compose, Nginx, and Cloudflare Tunnels.
 
-The current application is a runnable MVP scaffold. It includes the admin portal, kiosk pages, preview pages, live kiosk refresh, emergency broadcast display, sample themes, and deployment files. PostgreSQL and Redis are included in the stack so the server layout is ready for the production database-backed version, but the current MVP stores live app data in `data/app-data.json`.
+The deployment has two separate server environments:
+
+- Test server: `signage-test.bapswest.org`
+- Production server: `signage.bapswest.org`
+
+The current application includes the admin portal, kiosk pages, preview pages, live kiosk refresh, emergency broadcast display, location and room management, dashboard controls, sample themes, and deployment files. PostgreSQL is the primary application data store. Redis is included for future multi-instance broadcast fan-out and background jobs.
 
 ## 1. Route Structure
 
-Use one public hostname with path-based app routes:
+Use separate public hostnames for test and production.
+
+Test environment:
+
+```text
+Management portal: https://signage-test.bapswest.org/admin
+Kiosk page:        https://signage-test.bapswest.org/<<UNIQUE-ROOM-CODE>>
+Preview page:      https://signage-test.bapswest.org/preview/<<UNIQUE-ROOM-CODE>>
+API routes:        https://signage-test.bapswest.org/api
+Health check:      https://signage-test.bapswest.org/api/health
+```
+
+Production environment:
 
 ```text
 Management portal: https://signage.bapswest.org/admin
@@ -16,7 +33,13 @@ API routes:        https://signage.bapswest.org/api
 Health check:      https://signage.bapswest.org/api/health
 ```
 
-Example room routes included in the seed data:
+Example test room route included in the seed data:
+
+```text
+https://signage-test.bapswest.org/room-108-shishu
+```
+
+Example production room routes included in the seed data:
 
 ```text
 https://signage.bapswest.org/room-108-shishu
@@ -24,7 +47,7 @@ https://signage.bapswest.org/room-205-gujarati
 https://signage.bapswest.org/room-301-assembly
 ```
 
-Cloudflare Tunnel should send `signage.bapswest.org` traffic to local Nginx on the Debian VM.
+Use separate Cloudflare Tunnels for test and production. Each tunnel runs on its matching server and sends traffic to local Nginx on that server.
 
 ## 2. Recommended VM Sizing
 
@@ -48,17 +71,18 @@ Production VM for 10 to 12 centers:
 - Static internal IP address.
 - Proxmox scheduled backups enabled.
 
-## 3. Create the Proxmox VM
+## 3. Create the Proxmox Servers
 
 1. Upload the Debian 12 ISO to Proxmox.
-2. Create a new VM.
-3. Select Debian 12 as the guest OS.
-4. Assign CPU, memory, and storage based on the sizing above.
-5. Use VirtIO network and disk options where available.
-6. Install Debian 12.
-7. Set a static internal IP address.
-8. Install OpenSSH server during setup or after first boot.
-9. Update Debian:
+2. Create one VM for the test server.
+3. Create one VM for the production server.
+4. Select Debian 12 as the guest OS.
+5. Assign CPU, memory, and storage based on the sizing above.
+6. Use VirtIO network and disk options where available.
+7. Install Debian 12.
+8. Set a static internal IP address.
+9. Install OpenSSH server during setup or after first boot.
+10. Update Debian:
 
 ```bash
 sudo apt update
@@ -66,7 +90,7 @@ sudo apt upgrade -y
 sudo reboot
 ```
 
-After reboot, SSH back into the VM.
+After reboot, SSH back into each server.
 
 ### Fix Debian DVD/CD-ROM Apt Source Error
 
@@ -179,6 +203,8 @@ docker compose version
 
 ## 6. Create Application Folder
 
+Run this section on both the test server and the production server.
+
 ```bash
 sudo mkdir -p /opt/signage
 sudo chown -R $USER:$USER /opt/signage
@@ -201,7 +227,7 @@ git pull origin main
 
 ## 7. Configure Environment
 
-Create the app environment file:
+Create the app environment file on each server:
 
 ```bash
 cd /opt/signage/source
@@ -209,7 +235,22 @@ cp .env.example .env
 nano .env
 ```
 
-Recommended values:
+Use these values on the test server:
+
+```env
+APP_ENV=test
+APP_BASE_URL=https://signage-test.bapswest.org
+HOST=0.0.0.0
+PORT=3000
+POSTGRES_DB=signage_test
+POSTGRES_USER=signage_app
+POSTGRES_PASSWORD=CHANGE_ME_STRONG_TEST_DATABASE_PASSWORD
+REDIS_URL=redis://redis:6379
+SESSION_SECRET=CHANGE_ME_LONG_RANDOM_TEST_SESSION_SECRET
+TWO_FACTOR_ISSUER=BAPS Signage Test
+```
+
+Use these values on the production server:
 
 ```env
 APP_ENV=production
@@ -228,7 +269,19 @@ Use strong random values for `POSTGRES_PASSWORD` and `SESSION_SECRET`.
 
 ## 8. Start the Application
 
-The current repository includes `docker-compose.test.yml`. For this MVP deployment, use it to build and run the app, PostgreSQL, and Redis:
+The current repository includes `docker-compose.test.yml`. Use one of the following command sets depending on which server you are deploying.
+
+Each server publishes the app on its own local `127.0.0.1:3000`, so the same port is acceptable because test and production run on separate servers.
+
+On the test server:
+
+```bash
+cd /opt/signage/source
+docker compose -f docker-compose.test.yml -p signage-test up -d --build
+docker compose -f docker-compose.test.yml -p signage-test ps
+```
+
+On the production server:
 
 ```bash
 cd /opt/signage/source
@@ -252,8 +305,9 @@ Important current behavior:
 
 - The app container serves the admin portal, kiosk pages, previews, and APIs.
 - Live kiosk updates use Server-Sent Events.
-- Current MVP app state is saved in `/opt/signage/source/data/app-data.json`.
-- PostgreSQL is initialized with `database/schema.sql` and is ready for the production database implementation.
+- PostgreSQL stores the primary application state.
+- `/opt/signage/source/data/app-data.json` is maintained as a compatibility mirror and first-run migration source.
+- On the first database-backed startup, existing JSON state is imported automatically without changing room codes.
 - Redis is available for future production broadcast fan-out and job processing.
 
 Check local health:
@@ -264,7 +318,62 @@ curl http://127.0.0.1:3000/api/health
 
 ## 9. Configure Nginx
 
-Create the Nginx site:
+Create the matching Nginx site on each server. Both examples proxy to local `127.0.0.1:3000` on that server.
+
+### Test Environment Nginx Site
+
+On the test server, create the test Nginx site:
+
+```bash
+sudo nano /etc/nginx/sites-available/signage-test
+```
+
+Use this configuration:
+
+```nginx
+server {
+    listen 80;
+    server_name signage-test.bapswest.org;
+
+    client_max_body_size 25m;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600;
+        proxy_send_timeout 3600;
+    }
+}
+```
+
+Enable the test site:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/signage-test /etc/nginx/sites-enabled/signage-test
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Check the test site through Nginx:
+
+```bash
+curl -H "Host: signage-test.bapswest.org" http://localhost/api/health
+```
+
+### Production Environment Nginx Site
+
+On the production server, create the production Nginx site:
 
 ```bash
 sudo nano /etc/nginx/sites-available/signage
@@ -299,7 +408,7 @@ server {
 }
 ```
 
-Enable the site:
+Enable the production site:
 
 ```bash
 sudo ln -s /etc/nginx/sites-available/signage /etc/nginx/sites-enabled/signage
@@ -307,15 +416,15 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-Check through Nginx:
+Check the production site through Nginx:
 
 ```bash
-curl http://localhost/api/health
+curl -H "Host: signage.bapswest.org" http://localhost/api/health
 ```
 
-## 10. Install Cloudflare Tunnel
+## 10. Install Cloudflare Tunnels
 
-Install `cloudflared`:
+Install `cloudflared` on both servers:
 
 ```bash
 curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
@@ -324,30 +433,127 @@ sudo apt update
 sudo apt install -y cloudflared
 ```
 
-Authenticate Cloudflare Tunnel:
+Authenticate Cloudflare Tunnels on both servers:
 
 ```bash
 cloudflared tunnel login
 ```
 
-Create the tunnel:
+### Test Server Tunnel
+
+Run this section on the test server.
+
+Create the test tunnel:
 
 ```bash
-cloudflared tunnel create signage
+cloudflared tunnel create signage-test
 ```
 
-Create `/etc/cloudflared/config.yml`:
+List the generated credential file:
+
+```bash
+ls ~/.cloudflared
+```
+
+Copy the test tunnel credential file into `/etc/cloudflared`. Replace `TEST_TUNNEL_ID.json` with the real file name shown by `ls ~/.cloudflared`:
 
 ```bash
 sudo mkdir -p /etc/cloudflared
-sudo nano /etc/cloudflared/config.yml
+sudo cp ~/.cloudflared/TEST_TUNNEL_ID.json /etc/cloudflared/signage-test.json
+sudo chmod 600 /etc/cloudflared/signage-test.json
 ```
 
-Example configuration:
+Create the test tunnel config:
+
+```bash
+sudo nano /etc/cloudflared/signage-test.yml
+```
+
+Test tunnel configuration:
 
 ```yaml
-tunnel: signage
-credentials-file: /etc/cloudflared/TUNNEL_ID.json
+tunnel: signage-test
+credentials-file: /etc/cloudflared/signage-test.json
+
+ingress:
+  - hostname: signage-test.bapswest.org
+    service: http://localhost:80
+  - service: http_status:404
+```
+
+Create the test DNS route:
+
+```bash
+cloudflared tunnel route dns signage-test signage-test.bapswest.org
+```
+
+Create a systemd service for the test tunnel:
+
+```bash
+sudo nano /etc/systemd/system/cloudflared-signage-test.service
+```
+
+Use this service definition:
+
+```ini
+[Unit]
+Description=Cloudflare Tunnel for Signage Test
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config /etc/cloudflared/signage-test.yml tunnel run
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start the test tunnel service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now cloudflared-signage-test
+sudo systemctl status cloudflared-signage-test --no-pager
+```
+
+### Production Server Tunnel
+
+Run this section on the production server.
+
+Create the production tunnel:
+
+```bash
+cloudflared tunnel create signage-prod
+```
+
+List the generated credential file:
+
+```bash
+ls ~/.cloudflared
+```
+
+Copy the production tunnel credential file into `/etc/cloudflared`. Replace `PROD_TUNNEL_ID.json` with the real file name shown by `ls ~/.cloudflared`:
+
+```bash
+sudo mkdir -p /etc/cloudflared
+sudo cp ~/.cloudflared/PROD_TUNNEL_ID.json /etc/cloudflared/signage-prod.json
+sudo chmod 600 /etc/cloudflared/signage-prod.json
+```
+
+Create the production tunnel config:
+
+```bash
+sudo nano /etc/cloudflared/signage-prod.yml
+```
+
+Production tunnel configuration:
+
+```yaml
+tunnel: signage-prod
+credentials-file: /etc/cloudflared/signage-prod.json
 
 ingress:
   - hostname: signage.bapswest.org
@@ -355,63 +561,121 @@ ingress:
   - service: http_status:404
 ```
 
-Copy the generated tunnel credentials file into `/etc/cloudflared` and replace `TUNNEL_ID.json` in the config with the real file name:
+Create the production DNS route:
 
 ```bash
-ls ~/.cloudflared
-sudo cp ~/.cloudflared/TUNNEL_ID.json /etc/cloudflared/TUNNEL_ID.json
-sudo chmod 600 /etc/cloudflared/TUNNEL_ID.json
+cloudflared tunnel route dns signage-prod signage.bapswest.org
 ```
 
-Create the DNS route:
+Create a systemd service for the production tunnel:
 
 ```bash
-cloudflared tunnel route dns signage signage.bapswest.org
+sudo nano /etc/systemd/system/cloudflared-signage-prod.service
 ```
 
-Install and start the tunnel service:
+Use this service definition:
+
+```ini
+[Unit]
+Description=Cloudflare Tunnel for Signage Production
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config /etc/cloudflared/signage-prod.yml tunnel run
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start the production tunnel service:
 
 ```bash
-sudo cloudflared service install
-sudo systemctl enable --now cloudflared
-sudo systemctl status cloudflared
+sudo systemctl daemon-reload
+sudo systemctl enable --now cloudflared-signage-prod
+sudo systemctl status cloudflared-signage-prod --no-pager
 ```
 
 ## 11. Verify Public Routes
 
 Open these URLs:
 
+Test:
+
+```text
+https://signage-test.bapswest.org/admin
+https://signage-test.bapswest.org/api/health
+https://signage-test.bapswest.org/assets/audio/alarm.mp3
+https://signage-test.bapswest.org/room-108-shishu
+https://signage-test.bapswest.org/preview/room-108-shishu
+```
+
+Production:
+
 ```text
 https://signage.bapswest.org/admin
 https://signage.bapswest.org/api/health
+https://signage.bapswest.org/assets/audio/alarm.mp3
 https://signage.bapswest.org/room-108-shishu
 https://signage.bapswest.org/preview/room-108-shishu
 ```
 
-If the public URLs do not load, check each layer from inside the Debian VM:
+If the public URLs do not load, check each layer from inside the matching Debian server.
+
+Run on either server:
 
 ```bash
 curl http://127.0.0.1:3000/api/health
 curl http://localhost/api/health
 sudo systemctl status nginx --no-pager
-sudo systemctl status cloudflared --no-pager
-sudo journalctl -u cloudflared -n 80 --no-pager
-cloudflared tunnel info signage
+```
+
+Run on the test server:
+
+```bash
+sudo systemctl status cloudflared-signage-test --no-pager
+sudo journalctl -u cloudflared-signage-test -n 80 --no-pager
+cloudflared tunnel info signage-test
+```
+
+Run on the production server:
+
+```bash
+sudo systemctl status cloudflared-signage-prod --no-pager
+sudo journalctl -u cloudflared-signage-prod -n 80 --no-pager
+cloudflared tunnel info signage-prod
 ```
 
 Expected results:
 
 - `curl http://127.0.0.1:3000/api/health` confirms the app container is responding.
 - `curl http://localhost/api/health` confirms Nginx is forwarding to the app.
-- `systemctl status cloudflared` should show the tunnel service running.
-- `journalctl -u cloudflared` should show the tunnel connected without repeated errors.
-- `cloudflared tunnel info signage` should show the tunnel and its route.
+- The matching `systemctl status cloudflared-signage-*` command should show the tunnel service running.
+- The matching `journalctl -u cloudflared-signage-*` command should show the tunnel connected without repeated errors.
+- The matching `cloudflared tunnel info ...` command should show the tunnel and route.
 
-If local Nginx works but the public URL does not, verify `/etc/cloudflared/config.yml` uses the real tunnel credentials file name and points to local Nginx:
+If local Nginx works but the public URL does not, verify the matching tunnel config file points to local Nginx.
+
+Test config:
 
 ```yaml
-tunnel: signage
-credentials-file: /etc/cloudflared/TUNNEL_ID.json
+tunnel: signage-test
+credentials-file: /etc/cloudflared/signage-test.json
+
+ingress:
+  - hostname: signage-test.bapswest.org
+    service: http://127.0.0.1:80
+  - service: http_status:404
+```
+
+Production config:
+
+```yaml
+tunnel: signage-prod
+credentials-file: /etc/cloudflared/signage-prod.json
 
 ingress:
   - hostname: signage.bapswest.org
@@ -419,11 +683,18 @@ ingress:
   - service: http_status:404
 ```
 
-After editing the tunnel config, restart it:
+After editing the test tunnel config, restart the test service:
 
 ```bash
-sudo systemctl restart cloudflared
-sudo systemctl status cloudflared --no-pager
+sudo systemctl restart cloudflared-signage-test
+sudo systemctl status cloudflared-signage-test --no-pager
+```
+
+After editing the production tunnel config, restart the production service:
+
+```bash
+sudo systemctl restart cloudflared-signage-prod
+sudo systemctl status cloudflared-signage-prod --no-pager
 ```
 
 In the admin portal:
@@ -437,13 +708,15 @@ In the admin portal:
 7. Confirm the kiosk switches to broadcast mode.
 8. End the broadcast.
 
-For kiosk devices, allow audio autoplay for `https://signage.bapswest.org` so emergency alert sound can play.
+For kiosk devices, open the real kiosk page and complete the **Enable Sound** setup screen. For managed kiosk devices, allow audio playback for both `https://signage-test.bapswest.org` and `https://signage.bapswest.org`.
 
 ## 12. Cloudflare Access Recommendations
 
 Protect these routes with Cloudflare Access:
 
 ```text
+https://signage-test.bapswest.org/admin
+https://signage-test.bapswest.org/preview/*
 https://signage.bapswest.org/admin
 https://signage.bapswest.org/preview/*
 ```
@@ -466,7 +739,7 @@ Instant safety messages work with this server pattern because the kiosk page kee
 Required server behavior:
 
 - Nginx keeps long-lived connections open.
-- Cloudflare Tunnel forwards traffic to Nginx.
+- Cloudflare Tunnels forward traffic to Nginx.
 - Kiosk pages remain open on the room signage device.
 - Kiosk devices allow audio autoplay.
 - iPhone and iPad Safari may require one tap on the real kiosk page before sound can play; use the kiosk page's **Enable Sound** setup screen during device setup.
@@ -497,6 +770,7 @@ set -euo pipefail
 APP_DIR="/opt/signage/source"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="/opt/signage/backups"
+COMPOSE_PROJECT="${COMPOSE_PROJECT:-signage-test}"
 
 mkdir -p "$BACKUP_DIR"
 
@@ -512,7 +786,7 @@ if [ -f data/app-data.json ]; then
   cp data/app-data.json "$BACKUP_DIR/app-data-$STAMP.json"
 fi
 
-docker compose -f docker-compose.test.yml -p signage-prod exec -T postgres pg_dump -U "${POSTGRES_USER:-signage_app}" "${POSTGRES_DB:-signage}" | gzip > "$BACKUP_DIR/postgres-$STAMP.sql.gz"
+docker compose -f docker-compose.test.yml -p "$COMPOSE_PROJECT" exec -T postgres pg_dump -U "${POSTGRES_USER:-signage_app}" "${POSTGRES_DB:-signage}" | gzip > "$BACKUP_DIR/postgres-$STAMP.sql.gz"
 
 find "$BACKUP_DIR" -type f -mtime +14 -delete
 ```
@@ -535,11 +809,13 @@ Example:
 15 2 * * * /opt/signage/backup.sh >> /opt/signage/backups/backup.log 2>&1
 ```
 
+For production, set `COMPOSE_PROJECT=signage-prod` in the production server's cron command or backup script.
+
 Also configure Proxmox VM backups and keep an offsite backup copy.
 
-## 15. Production and Test on One Server
+## 15. Two Server Layout
 
-Production and test can run on the same Proxmox VM if they are isolated.
+Production and test are separate server environments.
 
 Recommended route structure:
 
@@ -548,52 +824,55 @@ Production: https://signage.bapswest.org
 Test:       https://signage-test.bapswest.org
 ```
 
-Current test deployment folder:
+Use the same application path on each server:
 
 ```text
-/opt/signage/source
+Test server:       /opt/signage/source
+Production server: /opt/signage/source
 ```
 
-Recommended folder layout when production and test both run on the same server:
-
-```text
-/opt/signage-prod/source
-/opt/signage-test/source
-```
-
-Use separate values for:
+Keep these values separate between the two servers:
 
 - Docker Compose project name.
 - `.env` file.
-- App port.
 - PostgreSQL database.
 - Redis data.
 - App data folder.
 - Nginx site.
 - Cloudflare hostname.
+- Cloudflare Tunnel.
 - Backup folder.
 
-Example production command:
+Production server command:
 
 ```bash
-cd /opt/signage-prod/source
+cd /opt/signage/source
 docker compose -f docker-compose.test.yml -p signage-prod up -d --build
 ```
 
-Example test command:
+Test server command:
 
 ```bash
 cd /opt/signage/source
 docker compose -f docker-compose.test.yml -p signage-test up -d --build
 ```
 
-If production is added to the same server later, move production and test into separate folders and update one environment to use a different host port, such as `127.0.0.1:3001:3000`.
-
-Staging/test should never share production data.
+Test should never share production data.
 
 ## 16. Pull Updates From GitHub
 
 Use this whenever new code has been pushed to GitHub:
+
+For the test environment:
+
+```bash
+cd /opt/signage/source
+git pull origin main
+docker compose -f docker-compose.test.yml -p signage-test up -d --build
+docker compose -f docker-compose.test.yml -p signage-test ps
+```
+
+For the production environment:
 
 ```bash
 cd /opt/signage/source
@@ -604,11 +883,28 @@ docker compose -f docker-compose.test.yml -p signage-prod ps
 
 Check logs:
 
+Test:
+
+```bash
+docker compose -f docker-compose.test.yml -p signage-test logs -f app
+```
+
+Production:
+
 ```bash
 docker compose -f docker-compose.test.yml -p signage-prod logs -f app
 ```
 
 Verify after update:
+
+Test server:
+
+```bash
+curl http://127.0.0.1:3000/api/health
+curl https://signage-test.bapswest.org/api/health
+```
+
+Production server:
 
 ```bash
 curl http://127.0.0.1:3000/api/health
@@ -617,14 +913,28 @@ curl https://signage.bapswest.org/api/health
 
 ## 17. Restart and Stop
 
-Restart:
+Restart test:
+
+```bash
+cd /opt/signage/source
+docker compose -f docker-compose.test.yml -p signage-test restart
+```
+
+Restart production:
 
 ```bash
 cd /opt/signage/source
 docker compose -f docker-compose.test.yml -p signage-prod restart
 ```
 
-Stop:
+Stop test:
+
+```bash
+cd /opt/signage/source
+docker compose -f docker-compose.test.yml -p signage-test down
+```
+
+Stop production:
 
 ```bash
 cd /opt/signage/source
@@ -635,14 +945,14 @@ Do not use `down -v` on production unless you intentionally want to remove conta
 
 ## 18. Recovery Checklist
 
-If the VM must be rebuilt:
+If either server must be rebuilt:
 
-1. Create a new Debian 12 VM.
-2. Install Docker, Nginx, Git, and Cloudflare Tunnel.
+1. Create a new Debian 12 VM for the affected server.
+2. Install Docker, Nginx, Git, and Cloudflare Tunnels.
 3. Clone `https://github.com/dcswami/signage-chatgpt.git`.
 4. Restore `.env`.
 5. Restore `data/app-data.json`.
 6. Restore PostgreSQL backup if production database persistence is enabled.
-7. Restore Nginx and Cloudflare Tunnel configuration.
+7. Restore Nginx and Cloudflare Tunnel configurations.
 8. Start Docker Compose services.
 9. Verify `/admin`, `/api/health`, kiosk pages, preview pages, live refresh, and emergency broadcast audio.

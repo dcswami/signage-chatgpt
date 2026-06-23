@@ -42,8 +42,11 @@ If the repository already exists:
 
 ```bash
 cd /opt/signage/source
+cp data/app-data.json "data/app-data-before-room-management-$(date +%Y%m%d-%H%M%S).json"
 git pull origin main
 ```
+
+The backup command preserves the current test rooms and broadcast history before the first PostgreSQL migration. If the file does not exist, skip that command.
 
 ## 4. Create Test Environment File
 
@@ -62,6 +65,7 @@ PORT=3000
 POSTGRES_DB=signage_test
 POSTGRES_USER=signage_app
 POSTGRES_PASSWORD=CHANGE_ME_TEST_PASSWORD
+POSTGRES_HOST=postgres
 REDIS_URL=redis://redis:6379
 SESSION_SECRET=CHANGE_ME_LONG_RANDOM_TEST_SECRET
 TWO_FACTOR_ISSUER=BAPS Signage Test
@@ -72,9 +76,12 @@ Use strong random values for passwords and secrets.
 ## 5. Start Test Containers
 
 ```bash
-docker compose -f docker-compose.test.yml -p signage-test up -d --build
+docker compose -f docker-compose.test.yml -p signage-test build --no-cache app
+docker compose -f docker-compose.test.yml -p signage-test up -d --force-recreate
 docker compose -f docker-compose.test.yml -p signage-test ps
 ```
+
+On first startup, the application creates its PostgreSQL state table and imports the existing `data/app-data.json`. Room codes and kiosk URLs remain unchanged. PostgreSQL becomes the primary data store, and the JSON file remains an automatically updated compatibility mirror.
 
 The test app listens locally on:
 
@@ -165,6 +172,15 @@ Check health:
 curl https://signage-test.bapswest.org/api/health
 ```
 
+The response must include:
+
+```json
+{
+  "status": "healthy",
+  "storage": "postgresql"
+}
+```
+
 Check kiosk pages:
 
 ```text
@@ -187,22 +203,29 @@ https://signage-test.bapswest.org/assets/audio/alarm.mp3
 
 In the admin portal:
 
-1. Change a room to Available, Busy, and Buffer/Warning.
-2. Open the kiosk page in another browser tab.
-3. On the real kiosk page, tap **Enable Sound** once if the setup screen is visible, and confirm the sound plays.
-4. Confirm the kiosk updates automatically.
-5. Publish a test Emergency/Safety Broadcast.
-6. Confirm the kiosk switches to broadcast mode.
-7. Confirm the real kiosk page plays the alert sound.
-8. Confirm the admin portal preview stays silent.
-9. End the broadcast.
+1. Confirm the Dashboard lists all three existing test rooms.
+2. Open **Locations & Rooms** and confirm the center, campus, building, and rooms were imported.
+3. Create a temporary center, campus, building, and room.
+4. Edit the temporary room code, booking URL, and theme.
+5. Confirm its kiosk and preview links work.
+6. Try deleting the center before its children and confirm the system blocks the deletion.
+7. Delete the temporary room, building, campus, and center in that order.
+8. Clone one built-in theme and confirm the copy is available in the room theme selector.
+9. Change a room to Available, Busy, and Buffer/Warning.
+10. Open the kiosk page in another browser tab.
+11. On the real kiosk page, tap **Enable Sound** once if the setup screen is visible.
+12. Publish a test Emergency/Safety Broadcast to one selected room.
+13. Confirm only that room switches to broadcast mode and plays the alert sound.
+14. Confirm the admin portal preview stays silent.
+15. End the broadcast.
 
 ## 9. Pull Updates Later
 
 ```bash
 cd /opt/signage/source
 git pull origin main
-docker compose -f docker-compose.test.yml -p signage-test up -d --build
+docker compose -f docker-compose.test.yml -p signage-test build app
+docker compose -f docker-compose.test.yml -p signage-test up -d --force-recreate
 docker compose -f docker-compose.test.yml -p signage-test ps
 ```
 
@@ -223,7 +246,7 @@ Only use `down -v` when you intentionally want to delete the test database and R
 
 ## 11. Notes
 
-- The current test app is a runnable MVP scaffold using local JSON persistence for fast review.
-- PostgreSQL and Redis are included in the test Compose stack so the environment matches the intended production architecture.
-- `database/schema.sql` contains the PostgreSQL schema for the database-backed version.
-- Management login and full database persistence are the next implementation layer after this runnable scaffold.
+- PostgreSQL is the primary application data store.
+- `data/app-data.json` is retained as an automatically updated compatibility mirror and migration source.
+- Redis is included for future multi-instance broadcast fan-out and background jobs.
+- Authentication and production role enforcement remain future implementation layers.
