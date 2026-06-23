@@ -45,3 +45,4 @@ Full steps are in `TEST_ENVIRONMENT_DEPLOYMENT.md`.
 ## Important Note
 
 This is a working MVP scaffold for review and test deployment. Full production hardening still needs database-backed persistence, authentication enforcement, calendar provider integrations, production role checks, and complete admin CRUD workflows.
+# signage-chatgpt
