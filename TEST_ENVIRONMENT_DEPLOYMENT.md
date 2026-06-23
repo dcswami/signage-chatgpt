@@ -179,11 +179,17 @@ Check preview:
 https://signage-test.bapswest.org/preview/room-108-shishu
 ```
 
+Check alert audio directly from the kiosk device:
+
+```text
+https://signage-test.bapswest.org/assets/audio/alarm.mp3
+```
+
 In the admin portal:
 
 1. Change a room to Available, Busy, and Buffer/Warning.
 2. Open the kiosk page in another browser tab.
-3. On the real kiosk page, tap **Test Alert Sound** once if the button is visible, and confirm the sound plays.
+3. On the real kiosk page, tap **Enable Sound** once if the setup screen is visible, and confirm the sound plays.
 4. Confirm the kiosk updates automatically.
 5. Publish a test Emergency/Safety Broadcast.
 6. Confirm the kiosk switches to broadcast mode.

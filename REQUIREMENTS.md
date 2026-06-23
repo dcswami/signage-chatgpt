@@ -143,7 +143,7 @@ Route requirements:
 - Users must be able to select one or more eligible target entities before broadcasting a message.
 - The display must clearly show broadcast title, message, and effective time.
 - The kiosk display must play an alert sound during active emergency and safety broadcasts.
-- The default alert sound must use `assets/audio/mixkit-classic-alarm-995.wav`.
+- The default alert sound must use `assets/audio/alarm.mp3`.
 - The alert sound must repeat continuously every 15 seconds while the Emergency/Safety Broadcast is active.
 - Real kiosk pages must provide a one-time device setup control to enable alert sound when the browser requires user interaction before playing audio.
 - Preview pages in the management portal must remain silent during emergency broadcasts.
@@ -329,7 +329,7 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - No emergency or safety broadcast template may bypass confirmation.
 - Active emergency broadcasts must override normal kiosk signage content.
 - Active emergency and safety broadcasts must play an alert sound on the kiosk display.
-- The default alert sound must use `assets/audio/mixkit-classic-alarm-995.wav`.
+- The default alert sound must use `assets/audio/alarm.mp3`.
 - The alert sound must repeat every 15 seconds until the broadcast ends or is revoked.
 - Broadcasts must be revocable by authorized users.
 - The system must track who created, updated, started, and ended each broadcast.
@@ -558,7 +558,7 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Recommended kiosk device categories are ChromeOS devices in kiosk mode, Windows mini PCs or signage players running Microsoft Edge or Google Chrome in kiosk mode, Android tablets or Android signage players with a managed kiosk browser, and Raspberry Pi or Linux signage devices running Chromium in kiosk mode.
 - Recommended kiosk browsers are Google Chrome, Microsoft Edge, or Chromium-based kiosk browsers.
 - Kiosk devices must be configured to allow audio autoplay for `https://signage.bapswest.org`.
-- iPhone and iPad Safari may still require one user tap on the kiosk page before alert audio can play; the kiosk page must show a "Test Alert Sound" setup control for this case.
+- iPhone and iPad Safari may still require one user tap on the kiosk page before alert audio can play; the kiosk page must show a full-screen "Enable Sound" setup control for this case.
 - Kiosk pages should require device registration in addition to the unique room URL for production use.
 - Device registration should bind a physical kiosk device to a room, record device name, device type, last check-in time, browser, IP address, and active status.
 - The unique room URL may be sufficient for early testing and pilot use.
@@ -701,7 +701,7 @@ The initial release should include:
 - Emergency broadcast ability is granted by System Admin through feature access and limited by the user's assigned role and scope.
 - Emergency and safety broadcasts require confirmation before publishing.
 - Emergency and safety broadcast templates may not bypass confirmation.
-- Emergency and safety broadcast alert sound uses `assets/audio/mixkit-classic-alarm-995.wav` and repeats every 15 seconds until the broadcast ends.
+- Emergency and safety broadcast alert sound uses `assets/audio/alarm.mp3` and repeats every 15 seconds until the broadcast ends.
 - Role permissions are flexible and may be modified or cloned by System Administrators.
 - A user may belong to multiple centers.
 - Audit logs, calendar sync history, and conflict history are retained for no more than 6 months.

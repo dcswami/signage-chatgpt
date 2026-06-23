@@ -2,11 +2,12 @@ const root = document.querySelector("#kiosk");
 const roomCode = root.dataset.roomCode;
 const isPreview = root.dataset.preview === "true";
 const alertSound = document.querySelector("#alertSound");
+const soundGate = document.querySelector("#soundGate");
+const enableSoundButton = document.querySelector("#enableSoundButton");
+const soundEnabledKey = `signageAlertSoundEnabled:${roomCode}`;
+
 let alertTimer = null;
-let alertAudioEnabled = isPreview;
-let audioContext = null;
 let latestRoom = null;
-const alertAudioButton = createAlertAudioButton();
 
 async function fetchRoom() {
   const response = await fetch(`/api/rooms/${roomCode}`, { cache: "no-store" });
@@ -104,10 +105,23 @@ function renderCustom(room) {
     ${footerHtml(room, "custom-footer")}`;
 }
 
+function soundEnabled() {
+  return isPreview || sessionStorage.getItem(soundEnabledKey) === "true";
+}
+
+function showSoundGate(mode = "setup") {
+  if (isPreview || !soundGate || !enableSoundButton) return;
+  soundGate.hidden = false;
+  soundGate.dataset.mode = mode;
+  enableSoundButton.textContent = mode === "blocked" ? "Tap to Play Alert Sound" : "Enable Sound";
+}
+
+function hideSoundGate() {
+  if (soundGate) soundGate.hidden = true;
+}
+
 function stopAlert() {
-  if (alertTimer) {
-    clearInterval(alertTimer);
-  }
+  if (alertTimer) clearInterval(alertTimer);
   alertTimer = null;
   if (alertSound) {
     alertSound.pause();
@@ -115,93 +129,32 @@ function stopAlert() {
   }
 }
 
-function createAlertAudioButton() {
-  if (isPreview || !alertSound) return null;
-
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "alert-audio-button";
-  button.textContent = "Test Alert Sound";
-  button.addEventListener("click", unlockAlertAudio);
-  document.body.append(button);
-  return button;
-}
-
-function showAlertAudioButton(needsAttention = false) {
-  if (!alertAudioButton || alertAudioEnabled) return;
-  alertAudioButton.hidden = false;
-  alertAudioButton.classList.toggle("needs-attention", needsAttention);
-  alertAudioButton.textContent = needsAttention ? "Tap to Play Alert Sound" : "Test Alert Sound";
-}
-
-function hideAlertAudioButton() {
-  if (alertAudioButton) {
-    alertAudioButton.hidden = true;
-    alertAudioButton.classList.remove("needs-attention");
-  }
-}
-
-function getAudioContext() {
-  if (audioContext) return audioContext;
-  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-  if (!AudioContextClass) return null;
-  audioContext = new AudioContextClass();
-  return audioContext;
-}
-
-async function resumeAudioContext() {
-  const context = getAudioContext();
-  if (context?.state === "suspended") {
-    await context.resume();
-  }
-  return context;
-}
-
-function playGeneratedAlert(durationMs = 1200) {
-  const context = getAudioContext();
-  if (!context || context.state !== "running") return false;
-
-  const oscillator = context.createOscillator();
-  const gain = context.createGain();
-  oscillator.type = "square";
-  oscillator.frequency.setValueAtTime(880, context.currentTime);
-  oscillator.frequency.setValueAtTime(660, context.currentTime + 0.35);
-  oscillator.frequency.setValueAtTime(880, context.currentTime + 0.7);
-  gain.gain.setValueAtTime(0.0001, context.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.28, context.currentTime + 0.03);
-  gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + durationMs / 1000);
-  oscillator.connect(gain).connect(context.destination);
-  oscillator.start();
-  oscillator.stop(context.currentTime + durationMs / 1000);
-  return true;
-}
-
-async function unlockAlertAudio() {
+async function enableAlertSound() {
   if (!alertSound) return;
+
   try {
-    await resumeAudioContext();
+    alertSound.volume = 0.08;
     alertSound.currentTime = 0;
     await alertSound.play();
-    alertAudioEnabled = true;
-    hideAlertAudioButton();
+    sessionStorage.setItem(soundEnabledKey, "true");
+    hideSoundGate();
+
     if (latestRoom?.activeBroadcast) {
+      alertSound.volume = 1;
       startAlert(latestRoom);
       return;
     }
-    setTimeout(() => {
+
+    window.setTimeout(() => {
       if (!latestRoom?.activeBroadcast) {
         alertSound.pause();
         alertSound.currentTime = 0;
+        alertSound.volume = 1;
       }
-    }, 1800);
+    }, 900);
   } catch {
-    const fallbackPlayed = playGeneratedAlert();
-    alertAudioEnabled = fallbackPlayed;
-    if (fallbackPlayed) {
-      hideAlertAudioButton();
-    } else {
-      showAlertAudioButton(true);
-    }
+    sessionStorage.removeItem(soundEnabledKey);
+    showSoundGate("blocked");
   }
 }
 
@@ -211,23 +164,21 @@ function startAlert(room) {
     return;
   }
 
+  if (!soundEnabled()) {
+    stopAlert();
+    showSoundGate("blocked");
+    return;
+  }
+
   const play = () => {
+    alertSound.volume = 1;
     alertSound.currentTime = 0;
-    alertSound.play()
-      .then(() => {
-        alertAudioEnabled = true;
-        hideAlertAudioButton();
-      })
-      .catch(() => {
-        const fallbackPlayed = playGeneratedAlert();
-        alertAudioEnabled = fallbackPlayed;
-        if (fallbackPlayed) {
-          hideAlertAudioButton();
-        } else {
-          showAlertAudioButton(true);
-        }
-      });
+    alertSound.play().catch(() => {
+      sessionStorage.removeItem(soundEnabledKey);
+      showSoundGate("blocked");
+    });
   };
+
   if (!alertTimer) {
     play();
     alertTimer = setInterval(play, 15000);
@@ -255,10 +206,19 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+if (enableSoundButton) {
+  enableSoundButton.addEventListener("click", enableAlertSound);
+}
+
+if (isPreview || soundEnabled()) {
+  hideSoundGate();
+} else {
+  showSoundGate("setup");
+}
+
 render().catch(error => {
   root.innerHTML = `<section class="loading">${escapeHtml(error.message)}</section>`;
 });
-showAlertAudioButton();
 
 const events = new EventSource(`/api/rooms/${roomCode}/events`);
 events.addEventListener("refresh", () => render());

@@ -89,7 +89,7 @@ git add public/kiosk.js
 git add database/schema.sql
 git add templates/kiosk-default.css
 git add assets/branding/aksharderi-small2.png
-git add assets/audio/mixkit-classic-alarm-995.wav
+git add assets/audio/alarm.mp3
 git add assets/backgrounds/background.png
 git add samples/README.md
 git add samples/kiosk-layout-options.html

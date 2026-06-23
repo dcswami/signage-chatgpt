@@ -19,7 +19,7 @@ const seedData = {
   settings: {
     appName: "Signage Management System",
     routeBase: "https://signage.bapswest.org",
-    alertSound: "/assets/audio/mixkit-classic-alarm-995.wav"
+    alertSound: "/assets/audio/alarm.mp3"
   },
   features: [
     "Calendar Sync",
@@ -143,12 +143,21 @@ let db = await loadData();
 async function loadData() {
   try {
     const raw = await fs.readFile(dataFile, "utf8");
-    return JSON.parse(raw);
+    return normalizeData(JSON.parse(raw));
   } catch {
     await fs.mkdir(dataDir, { recursive: true });
     await saveData(seedData);
     return structuredClone(seedData);
   }
+}
+
+function normalizeData(data) {
+  data.settings = {
+    ...seedData.settings,
+    ...data.settings,
+    alertSound: seedData.settings.alertSound
+  };
+  return data;
 }
 
 async function saveData(nextDb = db) {
@@ -296,7 +305,16 @@ function kioskPage(roomCode, preview = false) {
     <main id="kiosk" class="kiosk-frame" data-room-code="${escapeHtml(room.code)}" data-preview="${preview ? "true" : "false"}">
       <section class="loading">Loading room signage...</section>
     </main>
-    <audio id="alertSound" src="/assets/audio/mixkit-classic-alarm-995.wav" preload="auto"></audio>
+    <section id="soundGate" class="sound-gate" ${preview ? "hidden" : ""}>
+      <div>
+        <p>Audio Setup</p>
+        <h1>Tap to Enable Emergency Alert Sound</h1>
+        <button id="enableSoundButton" type="button">Enable Sound</button>
+      </div>
+    </section>
+    <audio id="alertSound" preload="auto">
+      <source src="/assets/audio/alarm.mp3" type="audio/mpeg" />
+    </audio>
     <script src="/static/kiosk.js"></script>
   </body>
 </html>`;
@@ -316,7 +334,7 @@ function contentType(filePath) {
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".png": "image/png",
-    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
     ".html": "text/html; charset=utf-8",
     ".md": "text/markdown; charset=utf-8",
     ".json": "application/json; charset=utf-8"
