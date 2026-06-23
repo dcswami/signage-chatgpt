@@ -55,6 +55,21 @@ function eventsHtml(room) {
   `).join("");
 }
 
+function classicEventsHtml(room) {
+  if (room.activeBroadcast) return "";
+  return `<div class="kiosk-events" aria-label="Upcoming events">${eventsHtml(room)}</div>`;
+}
+
+function formalEventsHtml(room) {
+  if (room.activeBroadcast) return "";
+  return `<div class="kiosk-events formal-events" aria-label="Upcoming events"><p>Upcoming Events</p>${eventsHtml(room)}</div>`;
+}
+
+function customEventsHtml(room) {
+  if (room.activeBroadcast) return "";
+  return `<div class="kiosk-events custom-events" aria-label="Upcoming events"><p>Upcoming Events</p>${eventsHtml(room)}</div>`;
+}
+
 function footerHtml(room, footerClass = "kiosk-footer") {
   return `
     <footer class="${footerClass}">
@@ -80,7 +95,7 @@ function renderClassic(room) {
     ${headerHtml(room)}
     <section class="classic-main">
       <div class="classic-left"><div class="kiosk-status"><p class="state-label">${stateLabel(room)}</p><h3>${escapeHtml(statusTitle(room))}</h3><p class="kiosk-status-time">${escapeHtml(statusSubline(room))}</p></div></div>
-      <div class="kiosk-events" aria-label="Upcoming events">${eventsHtml(room)}</div>
+      ${classicEventsHtml(room)}
     </section>
     ${footerHtml(room)}`;
 }
@@ -90,7 +105,7 @@ function renderFormal(room) {
     ${headerHtml(room)}
     <section class="formal-content">
       <div class="formal-current"><p>${stateLabel(room)}</p><h3>${escapeHtml(statusTitle(room))}</h3><span>${escapeHtml(statusSubline(room))}</span></div>
-      <div class="kiosk-events formal-events" aria-label="Upcoming events"><p>Upcoming Events</p>${eventsHtml(room)}</div>
+      ${formalEventsHtml(room)}
     </section>
     ${footerHtml(room)}`;
 }
@@ -100,7 +115,7 @@ function renderCustom(room) {
     ${headerHtml(room, "custom-top")}
     <section class="custom-content">
       <div class="custom-status"><p class="state-label">${stateLabel(room)}</p><h3>${escapeHtml(statusTitle(room))}</h3><span>${escapeHtml(statusSubline(room))}</span></div>
-      <div class="kiosk-events custom-events" aria-label="Upcoming events"><p>Upcoming Events</p>${eventsHtml(room)}</div>
+      ${customEventsHtml(room)}
     </section>
     ${footerHtml(room, "custom-footer")}`;
 }

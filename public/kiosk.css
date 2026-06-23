@@ -44,6 +44,18 @@ body {
   color: #fff;
 }
 
+[data-room-state="broadcast"] .classic-main,
+[data-room-state="broadcast"] .formal-content,
+[data-room-state="broadcast"] .custom-content {
+  grid-template-columns: 1fr;
+}
+
+[data-room-state="broadcast"] .classic-left,
+[data-room-state="broadcast"] .formal-current,
+[data-room-state="broadcast"] .custom-status {
+  max-width: 72vw;
+}
+
 .sound-gate[hidden] {
   display: none;
 }
