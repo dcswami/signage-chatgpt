@@ -597,6 +597,7 @@ Recommended software stack:
 - Monitoring: system health, application logs, database backups, disk usage, and tunnel status monitoring.
 - Source repository: `https://github.com/dcswami/signage-chatgpt`.
 - Production and staging/test environments may run on the same Proxmox VM using separate Docker Compose projects, separate databases, separate Redis namespaces or instances, separate environment files, and separate Nginx routes.
+- The dedicated test site hostname is `https://signage-test.bapswest.org`.
 
 Required application services:
 
@@ -703,6 +704,7 @@ The initial release should include:
 - Audit logs, calendar sync history, and conflict history are retained for no more than 6 months.
 - System health and sync failure email notifications go to Center Administrators or users assigned to the whole center.
 - Staging/test and production environments may run on one Proxmox server if they are isolated by separate Docker Compose projects, databases, Redis instances or namespaces, environment files, and Nginx routes.
+- The test site uses `https://signage-test.bapswest.org`.
 - SMS and push notifications are not required in the first release.
 - Multiple physical signage devices may show the same room kiosk page in the first release.
 - Different signage devices for the same room with different templates are a future enhancement.

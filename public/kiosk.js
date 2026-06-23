@@ -1,5 +1,6 @@
 const root = document.querySelector("#kiosk");
 const roomCode = root.dataset.roomCode;
+const isPreview = root.dataset.preview === "true";
 const alertSound = document.querySelector("#alertSound");
 let alertTimer = null;
 
@@ -99,12 +100,23 @@ function renderCustom(room) {
     ${footerHtml(room, "custom-footer")}`;
 }
 
+function stopAlert() {
+  if (alertTimer) {
+    clearInterval(alertTimer);
+  }
+  alertTimer = null;
+  if (alertSound) {
+    alertSound.pause();
+    alertSound.currentTime = 0;
+  }
+}
+
 function startAlert(room) {
-  if (!room.activeBroadcast) {
-    if (alertTimer) clearInterval(alertTimer);
-    alertTimer = null;
+  if (isPreview || !room.activeBroadcast || !alertSound) {
+    stopAlert();
     return;
   }
+
   const play = () => alertSound.play().catch(() => {});
   if (!alertTimer) {
     play();

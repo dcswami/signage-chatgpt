@@ -33,6 +33,12 @@ http://localhost:3000/api/health
 
 ## Run on Debian Test Server
 
+Test site:
+
+```text
+https://signage-test.bapswest.org
+```
+
 Use:
 
 ```bash

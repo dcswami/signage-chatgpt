@@ -4,27 +4,21 @@ This guide deploys the Signage Management System test environment on the Debian 
 
 The test environment can run on the same server as production if it uses separate folders, environment files, databases, Redis data, and Nginx routes.
 
-## 1. Test Route
+## 1. Test Site
 
-Recommended test route:
+Use this dedicated test hostname:
 
 ```text
-https://signage.bapswest.org/test
+https://signage-test.bapswest.org
 ```
 
-Alternative:
+The current Node app expects root-based routes such as `/admin`, `/api`, and `/room-code`, so the test environment should use the separate hostname instead of a `/test` subpath:
 
 ```text
-https://test-signage.bapswest.org
-```
-
-The current Node app expects root-based routes such as `/admin`, `/api`, and `/room-code`. For easiest testing, use the separate hostname option if possible:
-
-```text
-https://test-signage.bapswest.org/admin
-https://test-signage.bapswest.org/room-108-shishu
-https://test-signage.bapswest.org/preview/room-108-shishu
-https://test-signage.bapswest.org/api/health
+https://signage-test.bapswest.org/admin
+https://signage-test.bapswest.org/room-108-shishu
+https://signage-test.bapswest.org/preview/room-108-shishu
+https://signage-test.bapswest.org/api/health
 ```
 
 ## 2. Prepare Server Folder
@@ -32,22 +26,22 @@ https://test-signage.bapswest.org/api/health
 SSH into the Debian 12 VM.
 
 ```bash
-sudo mkdir -p /opt/signage-test
-sudo chown -R $USER:$USER /opt/signage-test
-cd /opt/signage-test
+sudo mkdir -p /opt/signage
+sudo chown -R $USER:$USER /opt/signage
+cd /opt/signage
 ```
 
 ## 3. Clone Repository
 
 ```bash
 git clone https://github.com/dcswami/signage-chatgpt.git source
-cd /opt/signage-test/source
+cd /opt/signage/source
 ```
 
 If the repository already exists:
 
 ```bash
-cd /opt/signage-test/source
+cd /opt/signage/source
 git pull origin main
 ```
 
@@ -62,7 +56,7 @@ Recommended test values:
 
 ```env
 APP_ENV=test
-APP_BASE_URL=https://test-signage.bapswest.org
+APP_BASE_URL=https://signage-test.bapswest.org
 HOST=0.0.0.0
 PORT=3000
 POSTGRES_DB=signage_test
@@ -101,7 +95,7 @@ Use this configuration:
 ```nginx
 server {
     listen 80;
-    server_name test-signage.bapswest.org;
+    server_name signage-test.bapswest.org;
 
     client_max_body_size 25m;
 
@@ -137,7 +131,7 @@ Add a test hostname route to the existing Cloudflare Tunnel config:
 
 ```yaml
 ingress:
-  - hostname: test-signage.bapswest.org
+  - hostname: signage-test.bapswest.org
     service: http://localhost:80
   - hostname: signage.bapswest.org
     service: http://localhost:80
@@ -147,7 +141,7 @@ ingress:
 Create the DNS route:
 
 ```bash
-cloudflared tunnel route dns signage test-signage.bapswest.org
+cloudflared tunnel route dns signage signage-test.bapswest.org
 ```
 
 Restart the tunnel:
@@ -162,27 +156,27 @@ sudo systemctl status cloudflared
 Open:
 
 ```text
-https://test-signage.bapswest.org/admin
+https://signage-test.bapswest.org/admin
 ```
 
 Check health:
 
 ```bash
-curl https://test-signage.bapswest.org/api/health
+curl https://signage-test.bapswest.org/api/health
 ```
 
 Check kiosk pages:
 
 ```text
-https://test-signage.bapswest.org/room-108-shishu
-https://test-signage.bapswest.org/room-205-gujarati
-https://test-signage.bapswest.org/room-301-assembly
+https://signage-test.bapswest.org/room-108-shishu
+https://signage-test.bapswest.org/room-205-gujarati
+https://signage-test.bapswest.org/room-301-assembly
 ```
 
 Check preview:
 
 ```text
-https://test-signage.bapswest.org/preview/room-108-shishu
+https://signage-test.bapswest.org/preview/room-108-shishu
 ```
 
 In the admin portal:
@@ -197,7 +191,7 @@ In the admin portal:
 ## 9. Pull Updates Later
 
 ```bash
-cd /opt/signage-test/source
+cd /opt/signage/source
 git pull origin main
 docker compose -f docker-compose.test.yml -p signage-test up -d --build
 docker compose -f docker-compose.test.yml -p signage-test ps
@@ -206,7 +200,7 @@ docker compose -f docker-compose.test.yml -p signage-test ps
 ## 10. Stop Test Environment
 
 ```bash
-cd /opt/signage-test/source
+cd /opt/signage/source
 docker compose -f docker-compose.test.yml -p signage-test down
 ```
 

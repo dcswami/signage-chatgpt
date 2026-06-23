@@ -1,21 +1,44 @@
 # Proxmox Deployment Guide
 
-This guide describes a first production deployment for the Signage Management System on one on-premise Proxmox virtual machine using Debian 12, Nginx, Docker, PostgreSQL, Redis, and Cloudflare Tunnel.
+This guide deploys the Signage Management System on one on-premises Proxmox virtual machine using Debian 12, Docker Compose, Nginx, and Cloudflare Tunnel.
 
-## 1. Target Route Structure
+The current application is a runnable MVP scaffold. It includes the admin portal, kiosk pages, preview pages, live kiosk refresh, emergency broadcast display, sample themes, and deployment files. PostgreSQL and Redis are included in the stack so the server layout is ready for the production database-backed version, but the current MVP stores live app data in `data/app-data.json`.
 
-Use one public hostname with path-based routing:
+## 1. Route Structure
 
-- Management portal: `https://signage.bapswest.org/admin`
-- Kiosk room display: `https://signage.bapswest.org/<<UNIQUE-ROOM-CODE>>`
-- Room preview display: `https://signage.bapswest.org/preview/<<UNIQUE-ROOM-CODE>>`
-- API routes: `https://signage.bapswest.org/api`
+Use one public hostname with path-based app routes:
 
-Cloudflare Tunnel should point `signage.bapswest.org` to local Nginx on the Debian VM.
+```text
+Management portal: https://signage.bapswest.org/admin
+Kiosk page:        https://signage.bapswest.org/<<UNIQUE-ROOM-CODE>>
+Preview page:      https://signage.bapswest.org/preview/<<UNIQUE-ROOM-CODE>>
+API routes:        https://signage.bapswest.org/api
+Health check:      https://signage.bapswest.org/api/health
+```
+
+Example room routes included in the seed data:
+
+```text
+https://signage.bapswest.org/room-108-shishu
+https://signage.bapswest.org/room-205-gujarati
+https://signage.bapswest.org/room-301-assembly
+```
+
+Cloudflare Tunnel should send `signage.bapswest.org` traffic to local Nginx on the Debian VM.
 
 ## 2. Recommended VM Sizing
 
-Production VM:
+Pilot or test VM:
+
+- 4 vCPU.
+- 8 to 12 GB RAM.
+- 100 to 150 GB SSD/NVMe storage.
+- VirtIO SCSI disk controller.
+- VirtIO network adapter.
+- Static internal IP address.
+- Proxmox scheduled backups enabled.
+
+Production VM for 10 to 12 centers:
 
 - 8 vCPU minimum.
 - 24 GB RAM minimum, 32 GB recommended.
@@ -24,12 +47,6 @@ Production VM:
 - VirtIO network adapter.
 - Static internal IP address.
 - Proxmox scheduled backups enabled.
-
-Pilot VM:
-
-- 4 vCPU.
-- 12 GB RAM.
-- 150 GB SSD/NVMe storage.
 
 ## 3. Create the Proxmox VM
 
@@ -41,7 +58,47 @@ Pilot VM:
 6. Install Debian 12.
 7. Set a static internal IP address.
 8. Install OpenSSH server during setup or after first boot.
-9. Update the system:
+9. Update Debian:
+
+```bash
+sudo apt update
+sudo apt upgrade -y
+sudo reboot
+```
+
+After reboot, SSH back into the VM.
+
+### Fix Debian DVD/CD-ROM Apt Source Error
+
+If `sudo apt update` shows an error like this:
+
+```text
+E: The repository 'cdrom://[Debian GNU/Linux 12.x.x _Bookworm_ ...] bookworm Release' does not have a Release file.
+```
+
+Debian still has the installer DVD/CD-ROM listed as a package source. Disable that source and use the normal online Debian repositories.
+
+Open the apt source list:
+
+```bash
+sudo nano /etc/apt/sources.list
+```
+
+Find the line that starts with `deb cdrom:` and comment it out by adding `#` at the beginning:
+
+```text
+# deb cdrom:[Debian GNU/Linux 12.x.x _Bookworm_ ...] bookworm main non-free-firmware
+```
+
+Make sure these Debian 12 repositories exist in the same file:
+
+```text
+deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware
+```
+
+Save the file, then run:
 
 ```bash
 sudo apt update
@@ -51,10 +108,11 @@ sudo apt upgrade -y
 ## 4. Install Base Packages
 
 ```bash
-sudo apt install -y ca-certificates curl gnupg ufw nginx git unzip
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg ufw nginx git unzip nano
 ```
 
-Enable basic firewall rules:
+Enable firewall rules:
 
 ```bash
 sudo ufw allow OpenSSH
@@ -63,7 +121,34 @@ sudo ufw enable
 sudo ufw status
 ```
 
-Only expose services needed inside the local server. Do not expose PostgreSQL, Redis, Docker, Proxmox, or SSH through Cloudflare public routes.
+### UFW Troubleshooting
+
+If `systemctl status ufw` shows `inactive` or `dead`, first check UFW itself:
+
+```bash
+sudo ufw status verbose
+```
+
+On Debian, `ufw.service` can appear as stopped after it loads firewall rules because it is not a long-running background service. The important result is the `sudo ufw status verbose` output.
+
+If UFW is inactive, allow SSH before enabling it so you do not lock yourself out:
+
+```bash
+sudo ufw allow OpenSSH
+sudo ufw allow 'Nginx Full'
+sudo ufw enable
+sudo ufw status verbose
+```
+
+If the package install output ends with `bash: E: command not found`, the install usually completed and an error line was accidentally pasted into the shell. Confirm the packages are installed:
+
+```bash
+dpkg -l ca-certificates curl gnupg ufw nginx git unzip nano
+```
+
+Each package should show `ii` in the first column.
+
+Do not expose PostgreSQL, Redis, Docker, Proxmox, or SSH through public Cloudflare routes.
 
 ## 5. Install Docker and Docker Compose
 
@@ -71,16 +156,13 @@ Only expose services needed inside the local server. Do not expose PostgreSQL, R
 sudo install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 sudo chmod a+r /etc/apt/keyrings/docker.gpg
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 sudo apt update
 sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo systemctl enable --now docker
 ```
 
-Optionally allow your admin user to run Docker commands:
+Allow your admin user to run Docker commands:
 
 ```bash
 sudo usermod -aG docker $USER
@@ -88,135 +170,107 @@ sudo usermod -aG docker $USER
 
 Sign out and sign back in after changing Docker group membership.
 
-## 6. Create Application Directories
+Verify Docker:
+
+```bash
+docker --version
+docker compose version
+```
+
+## 6. Create Application Folder
 
 ```bash
 sudo mkdir -p /opt/signage
-sudo mkdir -p /opt/signage/data/postgres
-sudo mkdir -p /opt/signage/data/redis
-sudo mkdir -p /opt/signage/uploads
-sudo mkdir -p /opt/signage/backups
 sudo chown -R $USER:$USER /opt/signage
+cd /opt/signage
 ```
 
-Suggested structure:
-
-```text
-/opt/signage
-  docker-compose.yml
-  .env
-  uploads/
-  backups/
-  data/
-    postgres/
-    redis/
-```
-
-## 7. Create Environment File
-
-Create `/opt/signage/.env`:
+Clone the project:
 
 ```bash
-nano /opt/signage/.env
+git clone https://github.com/dcswami/signage-chatgpt.git source
+cd /opt/signage/source
 ```
 
-Example values:
+If the folder already exists, update it instead:
+
+```bash
+cd /opt/signage/source
+git pull origin main
+```
+
+## 7. Configure Environment
+
+Create the app environment file:
+
+```bash
+cd /opt/signage/source
+cp .env.example .env
+nano .env
+```
+
+Recommended values:
 
 ```env
 APP_ENV=production
 APP_BASE_URL=https://signage.bapswest.org
-DATABASE_URL=postgresql://signage_app:CHANGE_ME@postgres:5432/signage
-REDIS_URL=redis://redis:6379
+HOST=0.0.0.0
+PORT=3000
 POSTGRES_DB=signage
 POSTGRES_USER=signage_app
-POSTGRES_PASSWORD=CHANGE_ME
-SESSION_SECRET=CHANGE_ME_LONG_RANDOM_VALUE
+POSTGRES_PASSWORD=CHANGE_ME_STRONG_DATABASE_PASSWORD
+REDIS_URL=redis://redis:6379
+SESSION_SECRET=CHANGE_ME_LONG_RANDOM_SESSION_SECRET
 TWO_FACTOR_ISSUER=BAPS Signage
-UPLOAD_DIR=/app/uploads
 ```
 
-Use long random values for passwords and secrets.
+Use strong random values for `POSTGRES_PASSWORD` and `SESSION_SECRET`.
 
-## 8. Create Docker Compose File
+## 8. Start the Application
 
-Create `/opt/signage/docker-compose.yml`.
-
-This example uses placeholder application images. Replace `your-registry/signage-app:latest` with the real application image after the application is built.
-
-```yaml
-services:
-  app:
-    image: your-registry/signage-app:latest
-    restart: unless-stopped
-    env_file: .env
-    depends_on:
-      - postgres
-      - redis
-    ports:
-      - "127.0.0.1:3000:3000"
-    volumes:
-      - ./uploads:/app/uploads
-
-  worker:
-    image: your-registry/signage-app:latest
-    restart: unless-stopped
-    command: ["npm", "run", "worker"]
-    env_file: .env
-    depends_on:
-      - postgres
-      - redis
-    volumes:
-      - ./uploads:/app/uploads
-
-  scheduler:
-    image: your-registry/signage-app:latest
-    restart: unless-stopped
-    command: ["npm", "run", "scheduler"]
-    env_file: .env
-    depends_on:
-      - postgres
-      - redis
-
-  postgres:
-    image: postgres:16
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  redis:
-    image: redis:7
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - ./data/redis:/data
-```
-
-Start the services:
+The current repository includes `docker-compose.test.yml`. For this MVP deployment, use it to build and run the app, PostgreSQL, and Redis:
 
 ```bash
-cd /opt/signage
-docker compose up -d
-docker compose ps
+cd /opt/signage/source
+docker compose -f docker-compose.test.yml -p signage-prod up -d --build
+docker compose -f docker-compose.test.yml -p signage-prod ps
+```
+
+The app listens on:
+
+```text
+http://127.0.0.1:3000
+```
+
+The compose file mounts app data at:
+
+```text
+/opt/signage/source/data
+```
+
+Important current behavior:
+
+- The app container serves the admin portal, kiosk pages, previews, and APIs.
+- Live kiosk updates use Server-Sent Events.
+- Current MVP app state is saved in `/opt/signage/source/data/app-data.json`.
+- PostgreSQL is initialized with `database/schema.sql` and is ready for the production database implementation.
+- Redis is available for future production broadcast fan-out and job processing.
+
+Check local health:
+
+```bash
+curl http://127.0.0.1:3000/api/health
 ```
 
 ## 9. Configure Nginx
 
-Create `/etc/nginx/sites-available/signage`:
+Create the Nginx site:
 
 ```bash
 sudo nano /etc/nginx/sites-available/signage
 ```
 
-Use this Nginx configuration:
+Use this configuration:
 
 ```nginx
 server {
@@ -237,6 +291,8 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
 
+        proxy_buffering off;
+        proxy_cache off;
         proxy_read_timeout 3600;
         proxy_send_timeout 3600;
     }
@@ -251,12 +307,11 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-The application should handle these paths internally:
+Check through Nginx:
 
-- `/admin`
-- `/api`
-- `/preview/<<UNIQUE-ROOM-CODE>>`
-- `/<<UNIQUE-ROOM-CODE>>`
+```bash
+curl http://localhost/api/health
+```
 
 ## 10. Install Cloudflare Tunnel
 
@@ -281,19 +336,6 @@ Create the tunnel:
 cloudflared tunnel create signage
 ```
 
-Find the generated credentials file:
-
-```bash
-ls ~/.cloudflared
-```
-
-Copy the tunnel credentials file into `/etc/cloudflared`. Replace `TUNNEL_ID.json` with the actual file name:
-
-```bash
-sudo cp ~/.cloudflared/TUNNEL_ID.json /etc/cloudflared/TUNNEL_ID.json
-sudo chmod 600 /etc/cloudflared/TUNNEL_ID.json
-```
-
 Create `/etc/cloudflared/config.yml`:
 
 ```bash
@@ -313,7 +355,13 @@ ingress:
   - service: http_status:404
 ```
 
-Replace `TUNNEL_ID.json` with the actual credentials file created by Cloudflare.
+Copy the generated tunnel credentials file into `/etc/cloudflared` and replace `TUNNEL_ID.json` in the config with the real file name:
+
+```bash
+ls ~/.cloudflared
+sudo cp ~/.cloudflared/TUNNEL_ID.json /etc/cloudflared/TUNNEL_ID.json
+sudo chmod 600 /etc/cloudflared/TUNNEL_ID.json
+```
 
 Create the DNS route:
 
@@ -329,42 +377,111 @@ sudo systemctl enable --now cloudflared
 sudo systemctl status cloudflared
 ```
 
-## 11. Cloudflare Access Recommendations
+## 11. Verify Public Routes
 
-Protect management routes:
+Open these URLs:
 
-- `https://signage.bapswest.org/admin`
-- `https://signage.bapswest.org/preview/*`
+```text
+https://signage.bapswest.org/admin
+https://signage.bapswest.org/api/health
+https://signage.bapswest.org/room-108-shishu
+https://signage.bapswest.org/preview/room-108-shishu
+```
 
-Keep kiosk room routes available without Cloudflare login, but use non-guessable room codes.
+If the public URLs do not load, check each layer from inside the Debian VM:
+
+```bash
+curl http://127.0.0.1:3000/api/health
+curl http://localhost/api/health
+sudo systemctl status nginx --no-pager
+sudo systemctl status cloudflared --no-pager
+sudo journalctl -u cloudflared -n 80 --no-pager
+cloudflared tunnel info signage
+```
+
+Expected results:
+
+- `curl http://127.0.0.1:3000/api/health` confirms the app container is responding.
+- `curl http://localhost/api/health` confirms Nginx is forwarding to the app.
+- `systemctl status cloudflared` should show the tunnel service running.
+- `journalctl -u cloudflared` should show the tunnel connected without repeated errors.
+- `cloudflared tunnel info signage` should show the tunnel and its route.
+
+If local Nginx works but the public URL does not, verify `/etc/cloudflared/config.yml` uses the real tunnel credentials file name and points to local Nginx:
+
+```yaml
+tunnel: signage
+credentials-file: /etc/cloudflared/TUNNEL_ID.json
+
+ingress:
+  - hostname: signage.bapswest.org
+    service: http://127.0.0.1:80
+  - service: http_status:404
+```
+
+After editing the tunnel config, restart it:
+
+```bash
+sudo systemctl restart cloudflared
+sudo systemctl status cloudflared --no-pager
+```
+
+In the admin portal:
+
+1. Change a room status to Available.
+2. Open the room kiosk page in another browser tab.
+3. Change the room status to Busy.
+4. Confirm the kiosk refreshes automatically.
+5. Change the room status to Buffer/Warning.
+6. Publish a test Emergency/Safety Broadcast.
+7. Confirm the kiosk switches to broadcast mode.
+8. End the broadcast.
+
+For kiosk devices, allow audio autoplay for `https://signage.bapswest.org` so emergency alert sound can play.
+
+## 12. Cloudflare Access Recommendations
+
+Protect these routes with Cloudflare Access:
+
+```text
+https://signage.bapswest.org/admin
+https://signage.bapswest.org/preview/*
+```
+
+Keep kiosk room routes available without Cloudflare login if they are used on room signage devices, but use non-guessable room codes before production use.
 
 Do not expose these publicly:
 
-- Proxmox web UI
-- SSH
-- PostgreSQL
-- Redis
-- Docker API
-- Internal monitoring dashboards unless separately protected
+- Proxmox web UI.
+- SSH.
+- PostgreSQL.
+- Redis.
+- Docker API.
+- Internal monitoring dashboards unless separately protected.
 
-## 12. Real-Time Safety Broadcast Requirements
+## 13. Real-Time Broadcast Notes
 
-Instant safety broadcast can work through this setup.
+Instant safety messages work with this server pattern because the kiosk page keeps a live Server-Sent Events connection to the app.
 
-The kiosk page should maintain a live connection to the application using WebSocket or Server-Sent Events. Nginx and Cloudflare Tunnel must allow long-lived connections.
+Required server behavior:
 
-Recommended behavior:
+- Nginx keeps long-lived connections open.
+- Cloudflare Tunnel forwards traffic to Nginx.
+- Kiosk pages remain open on the room signage device.
+- Kiosk devices allow audio autoplay.
+- Emergency alert sound repeats every 15 seconds while the broadcast is active.
 
-- Use WebSocket or Server-Sent Events for instant broadcast delivery.
-- Use kiosk polling every 5 to 10 seconds as fallback.
-- Save every broadcast to PostgreSQL before pushing it to kiosks.
-- Use Redis to fan out broadcast messages to app instances and connected kiosks.
-- Kiosks must switch to Emergency/Safety Broadcast mode immediately after receiving the event.
-- Kiosk devices must allow audio autoplay for `https://signage.bapswest.org` so alert sound can play.
+Recommended production upgrade:
 
-## 13. Backups
+- Save every broadcast to PostgreSQL before publishing.
+- Use Redis to fan out broadcast events if multiple app containers are added.
+- Keep kiosk polling as a fallback if the live connection is interrupted.
 
-Create a PostgreSQL backup script at `/opt/signage/backup.sh`:
+## 14. Backups
+
+Back up the current MVP data file, PostgreSQL data, and branding/uploads folder.
+
+Create `/opt/signage/backup.sh`:
 
 ```bash
 nano /opt/signage/backup.sh
@@ -376,18 +493,27 @@ Example:
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /opt/signage
-set -a
-source .env
-set +a
-
+APP_DIR="/opt/signage/source"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-mkdir -p backups
+BACKUP_DIR="/opt/signage/backups"
 
-docker compose exec -T postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" | gzip > "backups/postgres-$STAMP.sql.gz"
-tar -czf "backups/uploads-$STAMP.tar.gz" uploads
+mkdir -p "$BACKUP_DIR"
 
-find backups -type f -mtime +14 -delete
+cd "$APP_DIR"
+
+if [ -f .env ]; then
+  set -a
+  source .env
+  set +a
+fi
+
+if [ -f data/app-data.json ]; then
+  cp data/app-data.json "$BACKUP_DIR/app-data-$STAMP.json"
+fi
+
+docker compose -f docker-compose.test.yml -p signage-prod exec -T postgres pg_dump -U "${POSTGRES_USER:-signage_app}" "${POSTGRES_DB:-signage}" | gzip > "$BACKUP_DIR/postgres-$STAMP.sql.gz"
+
+find "$BACKUP_DIR" -type f -mtime +14 -delete
 ```
 
 Make it executable:
@@ -410,98 +536,112 @@ Example:
 
 Also configure Proxmox VM backups and keep an offsite backup copy.
 
-## 14. Production and Staging on One Server
+## 15. Production and Test on One Server
 
-Production and staging/test can run on the same Proxmox VM if they are isolated carefully.
+Production and test can run on the same Proxmox VM if they are isolated.
 
 Recommended route structure:
 
-- Production: `https://signage.bapswest.org`
-- Staging: `https://signage.bapswest.org/staging` or a separate hostname such as `https://staging-signage.bapswest.org`
+```text
+Production: https://signage.bapswest.org
+Test:       https://signage-test.bapswest.org
+```
 
-Recommended isolation:
-
-- Separate Docker Compose project names.
-- Separate environment files.
-- Separate PostgreSQL databases.
-- Separate Redis instances or Redis key prefixes.
-- Separate upload folders.
-- Separate Nginx routes.
-- Separate backup folders.
-
-Example folder layout:
+Current test deployment folder:
 
 ```text
-/opt/signage
-  production/
-    docker-compose.yml
-    .env
-    uploads/
-    backups/
-  staging/
-    docker-compose.yml
-    .env
-    uploads/
-    backups/
+/opt/signage/source
 ```
 
-Example startup commands:
+Recommended folder layout when production and test both run on the same server:
 
-```bash
-cd /opt/signage/production
-docker compose -p signage-prod up -d
-
-cd /opt/signage/staging
-docker compose -p signage-staging up -d
+```text
+/opt/signage-prod/source
+/opt/signage-test/source
 ```
 
-Staging should never share the production database. Test emergency broadcasts in staging before deploying related changes to production.
+Use separate values for:
 
-## 15. Updates
+- Docker Compose project name.
+- `.env` file.
+- App port.
+- PostgreSQL database.
+- Redis data.
+- App data folder.
+- Nginx site.
+- Cloudflare hostname.
+- Backup folder.
 
-Git upload and server pull instructions are documented in `GIT_WORKFLOW_GUIDE.md`.
-
-Update application containers:
+Example production command:
 
 ```bash
-cd /opt/signage
-docker compose pull
-docker compose up -d
-docker compose ps
+cd /opt/signage-prod/source
+docker compose -f docker-compose.test.yml -p signage-prod up -d --build
+```
+
+Example test command:
+
+```bash
+cd /opt/signage/source
+docker compose -f docker-compose.test.yml -p signage-test up -d --build
+```
+
+If production is added to the same server later, move production and test into separate folders and update one environment to use a different host port, such as `127.0.0.1:3001:3000`.
+
+Staging/test should never share production data.
+
+## 16. Pull Updates From GitHub
+
+Use this whenever new code has been pushed to GitHub:
+
+```bash
+cd /opt/signage/source
+git pull origin main
+docker compose -f docker-compose.test.yml -p signage-prod up -d --build
+docker compose -f docker-compose.test.yml -p signage-prod ps
 ```
 
 Check logs:
 
 ```bash
-docker compose logs -f app
-docker compose logs -f worker
-docker compose logs -f scheduler
+docker compose -f docker-compose.test.yml -p signage-prod logs -f app
 ```
 
-## 16. Health Checks
+Verify after update:
 
-Verify after deployment:
+```bash
+curl http://127.0.0.1:3000/api/health
+curl https://signage.bapswest.org/api/health
+```
 
-- `https://signage.bapswest.org/admin` loads the management portal.
-- `https://signage.bapswest.org/api/health` returns healthy status.
-- `https://signage.bapswest.org/preview/<<UNIQUE-ROOM-CODE>>` loads after login.
-- `https://signage.bapswest.org/<<UNIQUE-ROOM-CODE>>` loads the kiosk display.
-- Calendar sync worker is running.
-- Scheduler is running.
-- Emergency/Safety Broadcast reaches a test kiosk.
-- Alert sound plays on the test kiosk device.
-- Daily database backup is created.
-- Proxmox VM backup completes successfully.
+## 17. Restart and Stop
 
-## 17. Recovery Checklist
+Restart:
+
+```bash
+cd /opt/signage/source
+docker compose -f docker-compose.test.yml -p signage-prod restart
+```
+
+Stop:
+
+```bash
+cd /opt/signage/source
+docker compose -f docker-compose.test.yml -p signage-prod down
+```
+
+Do not use `down -v` on production unless you intentionally want to remove container volumes and test data.
+
+## 18. Recovery Checklist
 
 If the VM must be rebuilt:
 
 1. Create a new Debian 12 VM.
-2. Install Docker, Nginx, and Cloudflare Tunnel.
-3. Restore `/opt/signage`.
-4. Restore PostgreSQL data from the latest backup if needed.
-5. Restore uploads and branding assets.
-6. Restore Nginx and Cloudflare Tunnel configuration.
-7. Start Docker Compose services.
-8. Verify public routes and emergency broadcast delivery.
+2. Install Docker, Nginx, Git, and Cloudflare Tunnel.
+3. Clone `https://github.com/dcswami/signage-chatgpt.git`.
+4. Restore `.env`.
+5. Restore `data/app-data.json`.
+6. Restore PostgreSQL backup if production database persistence is enabled.
+7. Restore Nginx and Cloudflare Tunnel configuration.
+8. Start Docker Compose services.
+9. Verify `/admin`, `/api/health`, kiosk pages, preview pages, live refresh, and emergency broadcast audio.
