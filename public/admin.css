@@ -1,0 +1,194 @@
+:root {
+  --bg: #eef1f3;
+  --panel: #ffffff;
+  --ink: #173848;
+  --muted: #60727c;
+  --line: #d7e0e5;
+  --accent: #b6691d;
+  --available: #9bd092;
+  --busy: #d48d90;
+  --warning: #f1c66d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+}
+
+.admin-shell {
+  margin: 0 auto;
+  max-width: 1480px;
+  padding: 32px;
+}
+
+.admin-header {
+  align-items: end;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 28px;
+}
+
+.admin-header p {
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.admin-header h1 {
+  font-size: 48px;
+  line-height: 1;
+  margin: 0;
+}
+
+.admin-header a,
+button {
+  background: var(--ink);
+  border: 0;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 10px 14px;
+  text-decoration: none;
+}
+
+.admin-grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 20px;
+}
+
+.span-2 {
+  grid-column: span 2;
+}
+
+.panel h2 {
+  font-size: 24px;
+  margin: 0 0 16px;
+}
+
+.room-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.room-card {
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.room-card.available {
+  border-left: 8px solid var(--available);
+}
+
+.room-card.busy {
+  border-left: 8px solid var(--busy);
+}
+
+.room-card.warning {
+  border-left: 8px solid var(--warning);
+}
+
+.room-card h3 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.room-card p {
+  color: var(--muted);
+  margin: 0;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.button-row button {
+  background: #eef4f6;
+  color: var(--ink);
+  padding: 8px 10px;
+}
+
+form {
+  display: grid;
+  gap: 12px;
+}
+
+label {
+  color: var(--muted);
+  display: grid;
+  font-size: 14px;
+  gap: 6px;
+}
+
+input,
+select,
+textarea {
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font: inherit;
+  padding: 10px;
+}
+
+textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+
+select[multiple] {
+  min-height: 110px;
+}
+
+.list {
+  display: grid;
+  gap: 10px;
+}
+
+.list-item {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+}
+
+.list-item strong,
+.list-item span {
+  display: block;
+}
+
+.list-item span {
+  color: var(--muted);
+  font-size: 14px;
+  margin-top: 3px;
+}
+
+iframe {
+  border: 1px solid var(--line);
+  height: 520px;
+  width: 100%;
+}
+
+@media (max-width: 900px) {
+  .admin-grid,
+  .room-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .span-2 {
+    grid-column: auto;
+  }
+}

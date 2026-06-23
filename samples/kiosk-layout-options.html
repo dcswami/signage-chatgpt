@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kiosk Layout Options</title>
+    <link rel="stylesheet" href="kiosk-layout-options.css" />
+  </head>
+  <body>
+    <main class="sample-page">
+      <header class="sample-header">
+        <div>
+          <p class="sample-kicker">Signage Management System</p>
+          <h1>Kiosk Layout Options</h1>
+        </div>
+        <p class="sample-note">Three kiosk themes, each shown in Available, Busy, and Buffer/Warning states.</p>
+      </header>
+
+      <section class="sample-option" aria-labelledby="option-classic">
+        <div class="sample-title-row">
+          <h2 id="option-classic">1. Classic Institutional</h2>
+          <span>Built-in theme</span>
+        </div>
+        <div class="state-grid">
+          <article class="kiosk-frame theme-classic" data-room-state="available">
+            <header class="kiosk-top">
+              <img class="kiosk-logo" src="../assets/branding/aksharderi-small2.png" alt="BAPS logo" />
+              <div><p class="center-name">BAPS LA Center</p><p class="building-name">Shishu Building</p></div>
+              <time>8:05 AM</time>
+            </header>
+            <section class="classic-main">
+              <div class="classic-left"><div class="kiosk-status"><p class="state-label">Available</p><h3>Available Until</h3><p class="kiosk-status-time">4:00 PM</p></div></div>
+              <div class="kiosk-events" aria-label="Upcoming events">
+                <div class="event-card"><strong>iB Parent's Meeting</strong><span>Mon, Jun 22, 4:00 PM - 5:00 PM</span></div>
+                <div class="event-card"><strong>Karyakar Meeting</strong><span>Mon, Jun 22, 5:00 PM - 5:30 PM</span></div>
+                <div class="event-card"><strong>iB Practice Session</strong><span>Mon, Jun 22, 5:30 PM - 7:00 PM</span></div>
+              </div>
+            </section>
+            <footer class="kiosk-footer">
+              <strong>Room 108 (Shishu Room)</strong>
+              <div class="footer-booking"><div class="qr-code qr-small" aria-label="QR code placeholder"><span></span><span></span><span></span></div><p>https://lamandir.site/erf</p></div>
+            </footer>
+          </article>
+
+          <article class="kiosk-frame theme-classic" data-room-state="busy">
+            <header class="kiosk-top">
+              <img class="kiosk-logo" src="../assets/branding/aksharderi-small2.png" alt="BAPS logo" />
+              <div><p class="center-name">BAPS LA Center</p><p class="building-name">Shishu Building</p></div>
+              <time>8:05 AM</time>
+            </header>
+            <section class="classic-main">
+              <div class="classic-left"><div class="kiosk-status"><p class="state-label">Busy</p><h3>Gujarati Class - I</h3><p class="kiosk-status-time">Until 2:00 PM</p></div></div>
+              <div class="kiosk-events" aria-label="Upcoming events">
+                <div class="event-card"><strong>iB Parent's Meeting</strong><span>Mon, Jun 22, 4:00 PM - 5:00 PM</span></div>
+                <div class="event-card"><strong>Karyakar Meeting</strong><span>Mon, Jun 22, 5:00 PM - 5:30 PM</span></div>
+                <div class="event-card"><strong>iB Practice Session</strong><span>Mon, Jun 22, 5:30 PM - 7:00 PM</span></div>
+              </div>
+            </section>
+            <footer class="kiosk-footer">
+              <strong>Room 108 (Shishu Room)</strong>
+              <div class="footer-booking"><div class="qr-code qr-small" aria-label="QR code placeholder"><span></span><span></span><span></span></div><p>https://lamandir.site/erf</p></div>
+            </footer>
+          </article>
+
+          <article class="kiosk-frame theme-classic" data-room-state="warning">
+            <header class="kiosk-top">
+              <img class="kiosk-logo" src="../assets/branding/aksharderi-small2.png" alt="BAPS logo" />
+              <div><p class="center-name">BAPS LA Center</p><p class="building-name">Shishu Building</p></div>
+              <time>1:50 PM</time>
+            </header>
+            <section class="classic-main">
+              <div class="classic-left"><div class="kiosk-status"><p class="state-label">Buffer / Warning</p><h3>Gujarati Class - I</h3><p class="kiosk-status-time">Ends in 10 min</p></div></div>
+              <div class="kiosk-events" aria-label="Upcoming events">
+                <div class="event-card"><strong>iB Parent's Meeting</strong><span>Mon, Jun 22, 4:00 PM - 5:00 PM</span></div>
+                <div class="event-card"><strong>Karyakar Meeting</strong><span>Mon, Jun 22, 5:00 PM - 5:30 PM</span></div>
+                <div class="event-card"><strong>iB Practice Session</strong><span>Mon, Jun 22, 5:30 PM - 7:00 PM</span></div>
+              </div>
+            </section>
+            <footer class="kiosk-footer">
+              <strong>Room 108 (Shishu Room)</strong>
+              <div class="footer-booking"><div class="qr-code qr-small" aria-label="QR code placeholder"><span></span><span></span><span></span></div><p>https://lamandir.site/erf</p></div>
+            </footer>
+          </article>
+        </div>
+      </section>
+
+      <section class="sample-option" aria-labelledby="option-formal">
+        <div class="sample-title-row">
+          <h2 id="option-formal">4. Event Formal</h2>
+          <span>Built-in theme</span>
+        </div>
+        <div class="state-grid">
+          <article class="kiosk-frame theme-formal" data-room-state="available">
+            <header class="kiosk-top">
+              <img class="kiosk-logo" src="../assets/branding/aksharderi-small2.png" alt="BAPS logo" />
+              <div><p class="center-name">BAPS LA Center</p><p class="building-name">Shishu Building</p></div>
+              <time>8:05 AM</time>
+            </header>
+            <section class="formal-content">
+              <div class="formal-current"><p>Available</p><h3>Available Until</h3><span>4:00 PM</span></div>
+              <div class="kiosk-events formal-events" aria-label="Upcoming events">
+                <p>Upcoming Events</p>
+                <div class="event-card"><strong>iB Parent's Meeting</strong><span>Mon, Jun 22, 4:00 PM - 5:00 PM</span></div>
+                <div class="event-card"><strong>Karyakar Meeting</strong><span>Mon, Jun 22, 5:00 PM - 5:30 PM</span></div>
+                <div class="event-card"><strong>iB Practice Session</strong><span>Mon, Jun 22, 5:30 PM - 7:00 PM</span></div>
+              </div>
+            </section>
+            <footer class="kiosk-footer">
+              <strong>Room 108 (Shishu Room)</strong>
+              <div class="footer-booking"><div class="qr-code qr-small" aria-label="QR code placeholder"><span></span><span></span><span></span></div><p>https://lamandir.site/erf</p></div>
+            </footer>
+          </article>
+
+          <article class="kiosk-frame theme-formal" data-room-state="busy">
+            <header class="kiosk-top">
+              <img class="kiosk-logo" src="../assets/branding/aksharderi-small2.png" alt="BAPS logo" />
+              <div><p class="center-name">BAPS LA Center</p><p class="building-name">Shishu Building</p></div>
+              <time>8:05 AM</time>
+            </header>
+            <section class="formal-content">
+              <div class="formal-current"><p>Current Event</p><h3>Gujarati Class - I</h3><span>Until 2:00 PM</span></div>
+              <div class="kiosk-events formal-events" aria-label="Upcoming events">
+                <p>Upcoming Events</p>
+                <div class="event-card"><strong>iB Parent's Meeting</strong><span>Mon, Jun 22, 4:00 PM - 5:00 PM</span></div>
+                <div class="event-card"><strong>Karyakar Meeting</strong><span>Mon, Jun 22, 5:00 PM - 5:30 PM</span></div>
+                <div class="event-card"><strong>iB Practice Session</strong><span>Mon, Jun 22, 5:30 PM - 7:00 PM</span></div>
+              </div>
+            </section>
+            <footer class="kiosk-footer">
+              <strong>Room 108 (Shishu Room)</strong>
+              <div class="footer-booking"><div class="qr-code qr-small" aria-label="QR code placeholder"><span></span><span></span><span></span></div><p>https://lamandir.site/erf</p></div>
+            </footer>
+          </article>
+
+          <article class="kiosk-frame theme-formal" data-room-state="warning">
+            <header class="kiosk-top">
+              <img class="kiosk-logo" src="../assets/branding/aksharderi-small2.png" alt="BAPS logo" />
+              <div><p class="center-name">BAPS LA Center</p><p class="building-name">Shishu Building</p></div>
+              <time>1:50 PM</time>
+            </header>
+            <section class="formal-content">
+              <div class="formal-current"><p>Buffer / Warning</p><h3>Gujarati Class - I</h3><span>Ends in 10 min</span></div>
+              <div class="kiosk-events formal-events" aria-label="Upcoming events">
+                <p>Upcoming Events</p>
+                <div class="event-card"><strong>iB Parent's Meeting</strong><span>Mon, Jun 22, 4:00 PM - 5:00 PM</span></div>
+                <div class="event-card"><strong>Karyakar Meeting</strong><span>Mon, Jun 22, 5:00 PM - 5:30 PM</span></div>
+                <div class="event-card"><strong>iB Practice Session</strong><span>Mon, Jun 22, 5:30 PM - 7:00 PM</span></div>
+              </div>
+            </section>
+            <footer class="kiosk-footer">
+              <strong>Room 108 (Shishu Room)</strong>
+              <div class="footer-booking"><div class="qr-code qr-small" aria-label="QR code placeholder"><span></span><span></span><span></span></div><p>https://lamandir.site/erf</p></div>
+            </footer>
+          </article>
+        </div>
+      </section>
+
+      <section class="sample-option" aria-labelledby="option-custom">
+        <div class="sample-title-row">
+          <h2 id="option-custom">5. Custom Background</h2>
+          <span>Built-in theme</span>
+        </div>
+        <div class="state-grid">
+          <article class="kiosk-frame theme-custom" data-room-state="available">
+            <header class="custom-top">
+              <img class="kiosk-logo" src="../assets/branding/aksharderi-small2.png" alt="BAPS logo" />
+              <div><p class="center-name">BAPS LA Center</p><p class="building-name">Shishu Building</p></div>
+              <time>8:05 AM</time>
+            </header>
+            <section class="custom-content">
+              <div class="custom-status"><p class="state-label">Available</p><h3>Available Until</h3><span>4:00 PM</span></div>
+              <div class="kiosk-events custom-events" aria-label="Upcoming events">
+                <p>Upcoming Events</p>
+                <div class="event-card"><strong>iB Parent's Meeting</strong><span>Mon, Jun 22, 4:00 PM - 5:00 PM</span></div>
+                <div class="event-card"><strong>Karyakar Meeting</strong><span>Mon, Jun 22, 5:00 PM - 5:30 PM</span></div>
+              </div>
+            </section>
+            <footer class="custom-footer">
+              <strong>Room 108 (Shishu Room)</strong>
+              <div class="footer-booking"><div class="qr-code qr-small" aria-label="QR code placeholder"><span></span><span></span><span></span></div><p>https://lamandir.site/erf</p></div>
+            </footer>
+          </article>
+
+          <article class="kiosk-frame theme-custom" data-room-state="busy">
+            <header class="custom-top">
+              <img class="kiosk-logo" src="../assets/branding/aksharderi-small2.png" alt="BAPS logo" />
+              <div><p class="center-name">BAPS LA Center</p><p class="building-name">Shishu Building</p></div>
+              <time>8:05 AM</time>
+            </header>
+            <section class="custom-content">
+              <div class="custom-status"><p class="state-label">Busy</p><h3>Gujarati Class - I</h3><span>Until 2:00 PM</span></div>
+              <div class="kiosk-events custom-events" aria-label="Upcoming events">
+                <p>Upcoming Events</p>
+                <div class="event-card"><strong>iB Parent's Meeting</strong><span>Mon, Jun 22, 4:00 PM - 5:00 PM</span></div>
+                <div class="event-card"><strong>Karyakar Meeting</strong><span>Mon, Jun 22, 5:00 PM - 5:30 PM</span></div>
+              </div>
+            </section>
+            <footer class="custom-footer">
+              <strong>Room 108 (Shishu Room)</strong>
+              <div class="footer-booking"><div class="qr-code qr-small" aria-label="QR code placeholder"><span></span><span></span><span></span></div><p>https://lamandir.site/erf</p></div>
+            </footer>
+          </article>
+
+          <article class="kiosk-frame theme-custom" data-room-state="warning">
+            <header class="custom-top">
+              <img class="kiosk-logo" src="../assets/branding/aksharderi-small2.png" alt="BAPS logo" />
+              <div><p class="center-name">BAPS LA Center</p><p class="building-name">Shishu Building</p></div>
+              <time>1:50 PM</time>
+            </header>
+            <section class="custom-content">
+              <div class="custom-status"><p class="state-label">Buffer / Warning</p><h3>Gujarati Class - I</h3><span>Ends in 10 min</span></div>
+              <div class="kiosk-events custom-events" aria-label="Upcoming events">
+                <p>Upcoming Events</p>
+                <div class="event-card"><strong>iB Parent's Meeting</strong><span>Mon, Jun 22, 4:00 PM - 5:00 PM</span></div>
+                <div class="event-card"><strong>Karyakar Meeting</strong><span>Mon, Jun 22, 5:00 PM - 5:30 PM</span></div>
+              </div>
+            </section>
+            <footer class="custom-footer">
+              <strong>Room 108 (Shishu Room)</strong>
+              <div class="footer-booking"><div class="qr-code qr-small" aria-label="QR code placeholder"><span></span><span></span><span></span></div><p>https://lamandir.site/erf</p></div>
+            </footer>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,45 @@
+@import url("/samples/kiosk-layout-options.css");
+
+html,
+body {
+  background: #000;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  display: grid;
+}
+
+.kiosk-frame {
+  box-shadow: none;
+  height: 100vh;
+  min-height: 0;
+  width: 100vw;
+}
+
+.loading {
+  align-content: center;
+  color: #173848;
+  display: grid;
+  font: 700 36px Arial, Helvetica, sans-serif;
+  grid-row: 1 / -1;
+  justify-content: center;
+}
+
+[data-room-state="broadcast"] {
+  background: #b00020;
+  color: #fff;
+}
+
+[data-room-state="broadcast"] .kiosk-status,
+[data-room-state="broadcast"] .formal-current,
+[data-room-state="broadcast"] .custom-status {
+  color: #fff;
+}
+
+[data-room-state="broadcast"] .state-label,
+[data-room-state="broadcast"] .formal-current p {
+  color: #fff;
+}
