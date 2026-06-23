@@ -12,6 +12,7 @@ const dataFile = path.join(dataDir, "app-data.json");
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || "0.0.0.0";
 const baseUrl = process.env.APP_BASE_URL || `http://localhost:${port}`;
+const assetVersion = process.env.APP_BUILD_VERSION || Date.now().toString(36);
 
 const clients = new Map();
 
@@ -299,7 +300,7 @@ function kioskPage(roomCode, preview = false) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(room.name)}</title>
-    <link rel="stylesheet" href="/static/kiosk.css" />
+    <link rel="stylesheet" href="/static/kiosk.css?v=${assetVersion}" />
   </head>
   <body>
     <main id="kiosk" class="kiosk-frame" data-room-code="${escapeHtml(room.code)}" data-preview="${preview ? "true" : "false"}">
@@ -315,7 +316,7 @@ function kioskPage(roomCode, preview = false) {
     <audio id="alertSound" preload="auto">
       <source src="/assets/audio/alarm.mp3" type="audio/mpeg" />
     </audio>
-    <script src="/static/kiosk.js"></script>
+    <script src="/static/kiosk.js?v=${assetVersion}"></script>
   </body>
 </html>`;
 }

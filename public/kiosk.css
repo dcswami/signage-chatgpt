@@ -50,6 +50,10 @@ body {
   grid-template-columns: 1fr;
 }
 
+[data-room-state="broadcast"] .kiosk-events {
+  display: none !important;
+}
+
 [data-room-state="broadcast"] .classic-left,
 [data-room-state="broadcast"] .formal-current,
 [data-room-state="broadcast"] .custom-status {
