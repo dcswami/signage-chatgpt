@@ -9,6 +9,12 @@ CREATE TABLE IF NOT EXISTS application_state (
 CREATE TABLE IF NOT EXISTS centers (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name text NOT NULL,
+  description text,
+  logo_url text,
+  contact_name text,
+  contact_email text,
+  contact_phone text,
+  booking_url text,
   timezone text NOT NULL,
   default_theme_id uuid,
   settings jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -21,6 +27,11 @@ CREATE TABLE IF NOT EXISTS campuses (
   center_id uuid NOT NULL REFERENCES centers(id),
   name text NOT NULL,
   address text,
+  contact_name text,
+  contact_email text,
+  contact_phone text,
+  booking_url text,
+  default_theme_id uuid,
   settings jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -31,6 +42,11 @@ CREATE TABLE IF NOT EXISTS buildings (
   campus_id uuid NOT NULL REFERENCES campuses(id),
   name text NOT NULL,
   code text,
+  address text,
+  floors text,
+  timezone text,
+  booking_url text,
+  default_theme_id uuid,
   settings jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -59,9 +75,15 @@ CREATE TABLE IF NOT EXISTS rooms (
   theme_id uuid REFERENCES kiosk_themes(id),
   code text UNIQUE NOT NULL,
   name text NOT NULL,
+  room_number text,
+  floor text,
   room_type text,
   capacity integer,
-  booking_url text NOT NULL,
+  booking_url text,
+  equipment text,
+  accessibility_notes text,
+  maintenance_status text NOT NULL DEFAULT 'available' CHECK (maintenance_status IN ('available', 'maintenance', 'closed')),
+  privacy_mode text NOT NULL DEFAULT 'standard' CHECK (privacy_mode IN ('standard', 'private-title', 'hide-details')),
   status text NOT NULL DEFAULT 'available' CHECK (status IN ('available', 'busy', 'warning', 'broadcast')),
   current_event_title text,
   current_event_until text,
@@ -226,19 +248,41 @@ CREATE TABLE IF NOT EXISTS kiosk_devices (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS room_groups (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  description text,
+  room_ids uuid[] NOT NULL DEFAULT '{}',
+  active boolean NOT NULL DEFAULT true,
+  created_by uuid REFERENCES users(id),
+  updated_by uuid REFERENCES users(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz
+);
+
 CREATE TABLE IF NOT EXISTS broadcasts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  template_id uuid,
   title text NOT NULL,
   message text NOT NULL,
   severity text NOT NULL,
-  target_scope jsonb NOT NULL DEFAULT '{}'::jsonb,
-  active boolean NOT NULL DEFAULT false,
+  audible_alert boolean NOT NULL DEFAULT true,
+  center_ids uuid[] NOT NULL DEFAULT '{}',
+  campus_ids uuid[] NOT NULL DEFAULT '{}',
+  building_ids uuid[] NOT NULL DEFAULT '{}',
+  room_group_ids uuid[] NOT NULL DEFAULT '{}',
+  room_ids uuid[] NOT NULL DEFAULT '{}',
+  resolved_room_codes text[] NOT NULL DEFAULT '{}',
   created_by uuid REFERENCES users(id),
+  updated_by uuid REFERENCES users(id),
+  starts_at timestamptz NOT NULL,
+  ends_at timestamptz,
   started_at timestamptz,
   ended_at timestamptz,
   ended_by uuid REFERENCES users(id),
-  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'ended')),
-  created_at timestamptz NOT NULL DEFAULT now()
+  status text NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'active', 'ended', 'cancelled')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz
 );
 
 CREATE TABLE IF NOT EXISTS broadcast_templates (
@@ -260,10 +304,13 @@ CREATE TABLE IF NOT EXISTS broadcast_templates (
 
 CREATE TABLE IF NOT EXISTS notifications (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid REFERENCES users(id) ON DELETE CASCADE,
   title text NOT NULL,
   message text NOT NULL,
   severity text NOT NULL DEFAULT 'info',
-  recipient_scope jsonb NOT NULL DEFAULT '{}'::jsonb,
+  source text,
+  source_id uuid,
+  action_url text,
   read_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -313,4 +360,5 @@ CREATE INDEX IF NOT EXISTS idx_calendar_sync_history_created_at ON calendar_sync
 CREATE INDEX IF NOT EXISTS idx_theme_schedules_time ON theme_schedules(starts_at, ends_at);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
+CREATE INDEX IF NOT EXISTS idx_broadcasts_status_time ON broadcasts(status, starts_at, ends_at);
 CREATE INDEX IF NOT EXISTS idx_email_delivery_history_created_at ON email_delivery_history(created_at);
