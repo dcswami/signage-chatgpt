@@ -79,6 +79,9 @@ try {
   const initialState = await request("/api/state");
   assert.equal(initialState.rooms.length, 3);
   assert.equal(initialState.settings.email.hasPassword, false);
+  assert.equal(initialState.roles.some(role => role.id === "campus-manager"), true);
+  assert.equal(initialState.roles.some(role => role.id === "building-manager"), true);
+  assert.equal(initialState.broadcastTemplates.length >= 4, true);
 
   const emailSettings = await request("/api/settings/email", {
     method: "PUT",
@@ -144,14 +147,18 @@ try {
       name: "Integration User",
       email: "integration.user@example.org",
       status: "invited",
-      roleIds: ["center-admin"],
+      roleIds: ["campus-manager", "building-manager"],
       centerIds: [center.id],
+      campusIds: [campus.id],
+      buildingIds: [building.id],
       features: ["Notifications"],
       sendInvitation: true
     })
   }, 201);
   assert.equal(user.status, "invited");
-  assert.deepEqual(user.roleIds, ["center-admin"]);
+  assert.deepEqual(user.roleIds, ["campus-manager", "building-manager"]);
+  assert.deepEqual(user.campusIds, [campus.id]);
+  assert.deepEqual(user.buildingIds, [building.id]);
   assert.deepEqual(user.features, ["Notifications"]);
   assert.equal(user.invitedAt !== null, true);
 
@@ -161,25 +168,55 @@ try {
       ...user,
       name: "Updated Integration User",
       status: "suspended",
-      roleIds: ["room-manager"],
+      roleIds: ["building-manager"],
       centerIds: [center.id],
+      campusIds: [],
+      buildingIds: [building.id],
       features: ["Notifications", "Emergency & Safety Broadcast"]
     })
   });
   assert.equal(updatedUser.status, "suspended");
-  assert.deepEqual(updatedUser.roleIds, ["room-manager"]);
+  assert.deepEqual(updatedUser.roleIds, ["building-manager"]);
+  assert.deepEqual(updatedUser.buildingIds, [building.id]);
 
   const manualEmail = await request("/api/email/send", {
     method: "POST",
     body: JSON.stringify({
       userIds: [],
-      roleIds: ["room-manager"],
+      roleIds: ["building-manager"],
       centerIds: [],
       subject: "Integration notification",
       message: "This is an integration notification."
     })
   });
   assert.equal(manualEmail.results[0].status, "sent");
+
+  const broadcastTemplate = await request("/api/broadcast-templates", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Integration Safety Template",
+      title: "INTEGRATION ALERT",
+      message: "This is a managed integration template.",
+      severity: "critical",
+      visualStyle: "emergency",
+      audibleAlert: true,
+      defaultTargetScope: "buildings",
+      active: true
+    })
+  }, 201);
+  assert.equal(broadcastTemplate.approvalRequired, true);
+
+  const updatedBroadcastTemplate = await request(`/api/broadcast-templates/${broadcastTemplate.id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      ...broadcastTemplate,
+      name: "Updated Integration Safety Template",
+      severity: "warning",
+      audibleAlert: false
+    })
+  });
+  assert.equal(updatedBroadcastTemplate.name, "Updated Integration Safety Template");
+  assert.equal(updatedBroadcastTemplate.approvalRequired, true);
 
   const updatedRoom = await request(`/api/rooms/${room.id}`, {
     method: "PUT",
@@ -206,6 +243,7 @@ try {
     body: JSON.stringify({
       title: "SCOPED TEST",
       message: "Integration test",
+      templateId: broadcastTemplate.id,
       targetRoomCodes: ["updated-integration-room"],
       confirm: true
     })
@@ -213,9 +251,13 @@ try {
   const targetRoom = await request("/api/rooms/updated-integration-room");
   const otherRoom = await request("/api/rooms/room-108-shishu");
   assert.equal(targetRoom.activeBroadcast.title, "SCOPED TEST");
+  assert.equal(targetRoom.activeBroadcast.templateId, broadcastTemplate.id);
   assert.equal(otherRoom.activeBroadcast, null);
 
   await request("/api/broadcasts/end", { method: "POST", body: "{}" });
+  await request(`/api/broadcast-templates/${broadcastTemplate.id}`, { method: "DELETE" });
+  const stateAfterTemplateDelete = await request("/api/state");
+  assert.equal(stateAfterTemplateDelete.broadcastTemplates.some(item => item.id === broadcastTemplate.id), false);
   await request(`/api/rooms/${room.id}`, { method: "DELETE" });
   await request(`/api/buildings/${building.id}`, { method: "DELETE" });
   await request(`/api/campuses/${campus.id}`, { method: "DELETE" });

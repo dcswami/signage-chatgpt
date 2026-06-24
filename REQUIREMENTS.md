@@ -21,6 +21,7 @@ The Signage Management System provides room-facing digital signage for classroom
 - Visitor: Views signage outside a room and scans a QR code to book or request a room.
 - Student or Employee: Checks current and upcoming room events and books available rooms if permitted.
 - Room Manager: Manages room details, schedules, conflicts, and signage settings for assigned rooms.
+- Campus Manager: Manages one or more assigned campuses, including buildings and rooms within those campuses.
 - Building Manager: Manages rooms, broadcasts, and notifications within assigned buildings.
 - Campus Administrator: Manages buildings, users, rooms, and settings for a campus.
 - Center Administrator: Manages centers, campuses, global settings, integrations, and feature access.

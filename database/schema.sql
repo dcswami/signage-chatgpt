@@ -99,6 +99,18 @@ CREATE TABLE IF NOT EXISTS user_center_access (
   PRIMARY KEY (user_id, center_id)
 );
 
+CREATE TABLE IF NOT EXISTS user_campus_access (
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  campus_id uuid NOT NULL REFERENCES campuses(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, campus_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_building_access (
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  building_id uuid NOT NULL REFERENCES buildings(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, building_id)
+);
+
 CREATE TABLE IF NOT EXISTS user_feature_grants (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -195,6 +207,23 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   started_at timestamptz,
   ended_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS broadcast_templates (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  title text NOT NULL,
+  message text NOT NULL,
+  severity text NOT NULL,
+  visual_style text NOT NULL DEFAULT 'emergency',
+  audible_alert boolean NOT NULL DEFAULT true,
+  default_target_scope text NOT NULL DEFAULT 'rooms',
+  approval_required boolean NOT NULL DEFAULT true,
+  active boolean NOT NULL DEFAULT true,
+  created_by uuid REFERENCES users(id),
+  updated_by uuid REFERENCES users(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS notifications (

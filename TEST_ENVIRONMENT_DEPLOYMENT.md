@@ -261,6 +261,10 @@ In the admin portal:
 18. Open **Email Notifications**, save the SMTP settings, and send a test message.
 19. Send administrative emails using a specific user, role, and center target, and confirm delivery appears in Email History without duplicate recipients.
 20. Confirm the SMTP password is never displayed after saving.
+21. Confirm **Campus Manager** and **Building Manager** appear in the role list.
+22. Assign a test user to multiple campuses and buildings and confirm the access scope persists.
+23. Create, edit, and delete a Broadcast Template.
+24. Launch a broadcast from a prepared template and confirm the final publish confirmation is still required.
 
 ## 9. Configure SMTP Email
 

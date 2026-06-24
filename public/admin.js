@@ -121,6 +121,24 @@ function renderBroadcastTargets() {
   `).join("");
 }
 
+function renderBroadcastTemplates() {
+  const activeTemplates = state.broadcastTemplates.filter(template => template.active);
+  const templateSelect = document.querySelector("#broadcastTemplateSelect");
+  const selectedId = templateSelect.value;
+  templateSelect.innerHTML = `<option value="">Custom message</option>${activeTemplates.map(template =>
+    `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)}</option>`
+  ).join("")}`;
+  if (activeTemplates.some(template => template.id === selectedId)) templateSelect.value = selectedId;
+
+  document.querySelector("#broadcastTemplateList").innerHTML = state.broadcastTemplates.map(template =>
+    entityItem(
+      template,
+      `${template.severity} / ${template.active ? "Active" : "Inactive"} / Confirmation required`,
+      "broadcastTemplate"
+    )
+  ).join("") || `<p class="empty-state">No broadcast templates configured.</p>`;
+}
+
 function entityItem(entity, meta, type) {
   return `
     <article class="entity-item">
@@ -163,7 +181,7 @@ function renderThemes() {
 
 function renderUsersRoles() {
   document.querySelector("#userRoleList").innerHTML = `<div class="list">
-    ${state.roles.map(role => `<div class="list-item"><strong>${escapeHtml(role.name)}</strong><span>${role.cloneable ? "Cloneable role" : "System locked"}</span></div>`).join("")}
+    ${state.roles.map(role => `<div class="list-item"><strong>${escapeHtml(role.name)}</strong><span>${role.cloneable ? "Cloneable role" : "System locked"} / ${role.permissions.map(escapeHtml).join(", ")}</span></div>`).join("")}
   </div>`;
 }
 
@@ -188,7 +206,11 @@ function renderUsers() {
       <td><strong>${escapeHtml(user.name)}</strong><span class="subtle">${escapeHtml(user.email)}</span></td>
       <td><span class="status-pill user-${escapeHtml(user.status)}">${escapeHtml(user.status)}</span>${user.twoFactorEnabled ? `<span class="subtle">2FA enabled</span>` : ""}</td>
       <td>${user.roleIds.map(roleName).map(escapeHtml).join(", ") || "None"}</td>
-      <td>${user.centerIds.map(centerName).map(escapeHtml).join(", ") || "None"}</td>
+      <td>${[
+        ...user.centerIds.map(centerName),
+        ...user.campusIds.map(campusName),
+        ...user.buildingIds.map(buildingName)
+      ].map(escapeHtml).join(", ") || "None"}</td>
       <td><span class="feature-summary">${user.features.map(escapeHtml).join(", ") || "None"}</span></td>
       <td><div class="row-actions">
         <button type="button" class="secondary" data-edit="user" data-id="${escapeHtml(user.id)}">Edit</button>
@@ -271,10 +293,32 @@ function fieldsFor(type, entity = {}) {
       </div>
       <label>Roles <select name="roleIds" multiple>${optionList(state.roles, "", item => item.name)}</select></label>
       <label>Centers <select name="centerIds" multiple>${optionList(state.centers, "", item => item.name)}</select></label>
+      <label>Campuses <select name="campusIds" multiple>${optionList(state.campuses, "", item => `${item.name} - ${centerName(item.centerId)}`)}</select></label>
+      <label>Buildings <select name="buildingIds" multiple>${optionList(state.buildings, "", item => `${item.name} - ${campusName(item.campusId)}`)}</select></label>
       <fieldset class="feature-fieldset"><legend>Feature Access Grants</legend>
         ${state.features.map(feature => `<label class="check-label"><input type="checkbox" name="features" value="${escapeHtml(feature)}" ${entity.features?.includes(feature) ? "checked" : ""} /> ${escapeHtml(feature)}</label>`).join("")}
       </fieldset>
       ${entity.id ? "" : `<label class="check-label"><input name="sendInvitation" type="checkbox" /> Send invitation email after creating user</label>`}
+    `;
+  }
+  if (type === "broadcastTemplate") {
+    const severity = entity.severity || "urgent";
+    return `
+      <label>Template Name <input name="name" required maxlength="160" value="${escapeHtml(entity.name)}" /></label>
+      <label>Broadcast Title <input name="title" required maxlength="200" value="${escapeHtml(entity.title)}" /></label>
+      <label>Message <textarea name="message" required maxlength="5000">${escapeHtml(entity.message)}</textarea></label>
+      <div class="form-grid">
+        <label>Severity <select name="severity" required>
+          ${["warning", "urgent", "critical"].map(value => `<option value="${value}" ${value === severity ? "selected" : ""}>${value[0].toUpperCase()}${value.slice(1)}</option>`).join("")}
+        </select></label>
+        <label>Visual Style <input name="visualStyle" maxlength="60" value="${escapeHtml(entity.visualStyle || "emergency")}" /></label>
+        <label>Default Target Scope <select name="defaultTargetScope">
+          ${["rooms", "buildings", "campuses", "centers"].map(value => `<option value="${value}" ${value === (entity.defaultTargetScope || "rooms") ? "selected" : ""}>${value[0].toUpperCase()}${value.slice(1)}</option>`).join("")}
+        </select></label>
+      </div>
+      <label class="check-label"><input name="audibleAlert" type="checkbox" ${entity.audibleAlert !== false ? "checked" : ""} /> Play alert sound</label>
+      <label class="check-label"><input name="active" type="checkbox" ${entity.active !== false ? "checked" : ""} /> Active</label>
+      <p class="help-text">Confirmation is mandatory for every template and cannot be disabled.</p>
     `;
   }
   if (type === "center") {
@@ -323,21 +367,33 @@ function fieldsFor(type, entity = {}) {
 }
 
 function findEntity(type, id) {
-  const collection = { center: state.centers, campus: state.campuses, building: state.buildings, room: state.rooms, user: state.users }[type];
+  const collection = {
+    center: state.centers,
+    campus: state.campuses,
+    building: state.buildings,
+    room: state.rooms,
+    user: state.users,
+    broadcastTemplate: state.broadcastTemplates
+  }[type];
   return collection?.find(item => item.id === id);
 }
 
 function openEntityDialog(type, id = "") {
   const entity = id ? findEntity(type, id) : {};
-  document.querySelector("#entityDialogTitle").textContent = `${id ? "Edit" : "New"} ${type[0].toUpperCase()}${type.slice(1)}`;
+  const labels = { broadcastTemplate: "Broadcast Template" };
+  document.querySelector("#entityDialogTitle").textContent = `${id ? "Edit" : "New"} ${labels[type] || `${type[0].toUpperCase()}${type.slice(1)}`}`;
   entityForm.elements.entityType.value = type;
   entityForm.elements.entityId.value = id;
   document.querySelector("#entityFields").innerHTML = fieldsFor(type, entity);
   if (type === "user") {
     const selectedRoles = new Set(entity.roleIds || []);
     const selectedCenters = new Set(entity.centerIds || []);
+    const selectedCampuses = new Set(entity.campusIds || []);
+    const selectedBuildings = new Set(entity.buildingIds || []);
     Array.from(entityForm.elements.roleIds.options).forEach(option => { option.selected = selectedRoles.has(option.value); });
     Array.from(entityForm.elements.centerIds.options).forEach(option => { option.selected = selectedCenters.has(option.value); });
+    Array.from(entityForm.elements.campusIds.options).forEach(option => { option.selected = selectedCampuses.has(option.value); });
+    Array.from(entityForm.elements.buildingIds.options).forEach(option => { option.selected = selectedBuildings.has(option.value); });
   }
   document.querySelector("#formError").textContent = "";
   entityDialog.showModal();
@@ -366,14 +422,23 @@ async function saveEntity(event) {
   if (type === "user") {
     data.roleIds = Array.from(entityForm.elements.roleIds.selectedOptions).map(option => option.value);
     data.centerIds = Array.from(entityForm.elements.centerIds.selectedOptions).map(option => option.value);
+    data.campusIds = Array.from(entityForm.elements.campusIds.selectedOptions).map(option => option.value);
+    data.buildingIds = Array.from(entityForm.elements.buildingIds.selectedOptions).map(option => option.value);
     data.features = Array.from(entityForm.querySelectorAll('input[name="features"]:checked')).map(input => input.value);
     data.sendInvitation = Boolean(entityForm.elements.sendInvitation?.checked);
+  } else if (type === "broadcastTemplate") {
+    data.audibleAlert = entityForm.elements.audibleAlert.checked;
+    data.active = entityForm.elements.active.checked;
   } else {
     data.active = entityForm.elements.active.checked;
   }
   try {
-    const plural = type === "campus" ? "campuses" : `${type}s`;
-    const result = await api(`/api/${plural}${id ? `/${id}` : ""}`, {
+    const endpoint = type === "campus"
+      ? "campuses"
+      : type === "broadcastTemplate"
+        ? "broadcast-templates"
+        : `${type}s`;
+    const result = await api(`/api/${endpoint}${id ? `/${id}` : ""}`, {
       method: id ? "PUT" : "POST",
       body: JSON.stringify(data)
     });
@@ -459,7 +524,11 @@ async function sendAdministrativeEmail(event) {
 async function deleteEntity(type, id) {
   const entity = findEntity(type, id);
   if (!entity || !confirm(`Delete ${entity.name}? This action is recorded in the audit log.`)) return;
-  const plural = type === "campus" ? "campuses" : `${type}s`;
+  const plural = type === "campus"
+    ? "campuses"
+    : type === "broadcastTemplate"
+      ? "broadcast-templates"
+      : `${type}s`;
   try {
     await api(`/api/${plural}/${id}`, { method: "DELETE" });
     await load();
@@ -498,6 +567,8 @@ async function publishBroadcast(event) {
     body: JSON.stringify({
       title: form.get("title"),
       message: form.get("message"),
+      severity: form.get("severity"),
+      templateId: form.get("templateId") || null,
       targetRoomCodes,
       confirm: true
     })
@@ -524,6 +595,7 @@ function render() {
   renderDashboardFilters();
   renderDashboardRows();
   renderBroadcastTargets();
+  renderBroadcastTemplates();
   renderEntityLists();
   renderThemes();
   renderUsers();
@@ -556,6 +628,14 @@ document.querySelector("#smtpForm").addEventListener("submit", saveSmtpSettings)
 document.querySelector("#smtpTestForm").addEventListener("submit", testSmtp);
 document.querySelector("#emailForm").addEventListener("submit", sendAdministrativeEmail);
 document.querySelector("#broadcastForm").addEventListener("submit", publishBroadcast);
+document.querySelector("#broadcastTemplateSelect").addEventListener("change", event => {
+  const template = state.broadcastTemplates.find(item => item.id === event.target.value);
+  if (!template) return;
+  const form = document.querySelector("#broadcastForm");
+  form.elements.title.value = template.title;
+  form.elements.message.value = template.message;
+  form.elements.severity.value = template.severity;
+});
 document.querySelector("#endBroadcast").addEventListener("click", endBroadcast);
 document.querySelector("#closeDialog").addEventListener("click", () => entityDialog.close());
 document.querySelector("#cancelDialog").addEventListener("click", () => entityDialog.close());

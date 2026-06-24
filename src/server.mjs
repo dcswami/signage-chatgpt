@@ -101,6 +101,8 @@ const seedData = {
   roles: [
     { id: "system-admin", name: "System Admin", cloneable: true, permissions: ["manage_all"] },
     { id: "center-admin", name: "Center Admin", cloneable: true, permissions: ["manage_center", "broadcast", "view_dashboard"] },
+    { id: "campus-manager", name: "Campus Manager", cloneable: true, permissions: ["manage_campuses", "manage_buildings", "manage_rooms", "broadcast", "view_dashboard"] },
+    { id: "building-manager", name: "Building Manager", cloneable: true, permissions: ["manage_buildings", "manage_rooms", "broadcast", "view_dashboard"] },
     { id: "room-manager", name: "Room Manager", cloneable: true, permissions: ["manage_rooms", "view_dashboard"] }
   ],
   users: [
@@ -110,6 +112,8 @@ const seedData = {
       email: "admin@example.org",
       roleIds: ["system-admin"],
       centerIds: ["center-la"],
+      campusIds: [],
+      buildingIds: [],
       features: [
         "Calendar Sync",
         "Calendar Event Conflict Resolution",
@@ -150,6 +154,56 @@ const seedData = {
     { roomId: "room-301", title: "Karyakar Meeting", detail: "Mon, Jun 22, 5:00 PM - 5:30 PM" }
   ],
   broadcasts: [],
+  broadcastTemplates: [
+    {
+      id: "broadcast-template-evacuation",
+      name: "Evacuation Order",
+      title: "CRITICAL EVACUATION SIREN",
+      message: "URGENT: ALL INSTRUCTORS & STUDENTS IMMEDIATELY CLEAR THE PREMISES. PROCEED TO CAMPUS LAWN AREA.",
+      severity: "critical",
+      visualStyle: "emergency",
+      audibleAlert: true,
+      defaultTargetScope: "rooms",
+      approvalRequired: true,
+      active: true
+    },
+    {
+      id: "broadcast-template-weather",
+      name: "Severe Weather Sheltering",
+      title: "IMPORTANT SYSTEM OVERRIDE",
+      message: "TORNADO WARNING IN EFFECT. MOVE ALL STUDENTS TO THE LOWEST LEVEL CENTRAL HALLWAYS IMMEDIATELY.",
+      severity: "urgent",
+      visualStyle: "emergency",
+      audibleAlert: true,
+      defaultTargetScope: "rooms",
+      approvalRequired: true,
+      active: true
+    },
+    {
+      id: "broadcast-template-lockdown",
+      name: "Campus Lockdown",
+      title: "CRITICAL EVACUATION SIREN",
+      message: "SECURITY ACTION IN PROGRESS. LOCK CLASSROOM DOORS, TURN OUT LIGHTS, AND COVER ALL WINDOW GLASS.",
+      severity: "critical",
+      visualStyle: "emergency",
+      audibleAlert: true,
+      defaultTargetScope: "rooms",
+      approvalRequired: true,
+      active: true
+    },
+    {
+      id: "broadcast-template-fire-drill",
+      name: "Fire Drill / System Testing",
+      title: "IMPORTANT SYSTEM OVERRIDE",
+      message: "ADMINISTRATIVE OVERRIDE: ACTIVE ALARM DRILL RUNNING. VACATE BUILDING ACCORDING TO DRILL PROTOCOLS.",
+      severity: "urgent",
+      visualStyle: "emergency",
+      audibleAlert: true,
+      defaultTargetScope: "rooms",
+      approvalRequired: true,
+      active: true
+    }
+  ],
   emailNotifications: [],
   activeBroadcast: null,
   auditLogs: []
@@ -169,7 +223,7 @@ function normalizeData(data) {
       }
     }
   };
-  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "upcomingEvents", "broadcasts", "emailNotifications", "auditLogs"]) {
+  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "auditLogs"]) {
     if (!Array.isArray(normalized[key])) normalized[key] = structuredClone(seedData[key] || []);
   }
   normalized.centers = normalized.centers.map(center => ({ active: true, ...center }));
@@ -185,12 +239,27 @@ function normalizeData(data) {
     status: "active",
     roleIds: [],
     centerIds: [],
+    campusIds: [],
+    buildingIds: [],
     features: [],
     twoFactorEnabled: false,
     invitedAt: null,
     lastEmailAt: null,
     ...user,
     email: String(user.email || "").toLowerCase()
+  }));
+  for (const role of seedData.roles) {
+    if (!normalized.roles.some(item => item.id === role.id)) normalized.roles.push(structuredClone(role));
+  }
+  normalized.broadcastTemplates = normalized.broadcastTemplates.map(template => ({
+    severity: "urgent",
+    visualStyle: "emergency",
+    audibleAlert: true,
+    defaultTargetScope: "rooms",
+    approvalRequired: true,
+    active: true,
+    ...template,
+    approvalRequired: true
   }));
   return normalized;
 }
@@ -265,6 +334,8 @@ function publicUser(user) {
     status: user.status,
     roleIds: user.roleIds,
     centerIds: user.centerIds,
+    campusIds: user.campusIds,
+    buildingIds: user.buildingIds,
     features: user.features,
     twoFactorEnabled: Boolean(user.twoFactorEnabled),
     invitedAt: user.invitedAt || null,
@@ -491,7 +562,7 @@ function adminPage() {
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>User</th><th>Status</th><th>Roles</th><th>Centers</th><th>Features</th><th>Actions</th></tr></thead>
+              <thead><tr><th>User</th><th>Status</th><th>Roles</th><th>Access Scope</th><th>Features</th><th>Actions</th></tr></thead>
               <tbody id="userRows"></tbody>
             </table>
           </div>
@@ -551,14 +622,29 @@ function adminPage() {
 
       <section class="tab-panel" data-panel="broadcast">
         <section class="panel broadcast-panel">
-          <h2>Emergency & Safety Broadcast</h2>
+          <div class="panel-heading">
+            <div><h2>Emergency & Safety Broadcast</h2><p>Prepared templates still require confirmation before publishing.</p></div>
+          </div>
           <form id="broadcastForm">
+            <label>Prepared Template <select name="templateId" id="broadcastTemplateSelect"><option value="">Custom message</option></select></label>
             <label>Title <input name="title" value="IMPORTANT SYSTEM OVERRIDE" /></label>
             <label>Message <textarea name="message">ADMINISTRATIVE OVERRIDE: ACTIVE ALARM DRILL RUNNING. VACATE BUILDING ACCORDING TO DRILL PROTOCOLS.</textarea></label>
+            <label>Severity <select name="severity">
+              <option value="urgent">Urgent</option>
+              <option value="critical">Critical</option>
+              <option value="warning">Warning</option>
+            </select></label>
             <label>Target Rooms <select name="targetRoomCodes" multiple id="targetRooms"></select></label>
             <button type="submit">Confirm & Publish</button>
             <button type="button" id="endBroadcast">End Broadcast</button>
           </form>
+        </section>
+        <section class="panel">
+          <div class="panel-heading">
+            <div><h2>Broadcast Templates</h2><p>System Administrators can maintain ready-to-launch safety messages.</p></div>
+            <button type="button" data-new="broadcastTemplate">New Template</button>
+          </div>
+          <div id="broadcastTemplateList" class="entity-list"></div>
         </section>
       </section>
 
@@ -672,6 +758,7 @@ async function handleApi(req, res, url) {
       features: db.features,
       roles: db.roles,
       users: db.users.map(publicUser),
+      broadcastTemplates: db.broadcastTemplates,
       calendarAccounts: db.calendarAccounts,
       activeBroadcast: db.activeBroadcast,
       emailNotifications: db.emailNotifications.slice(0, 50),
@@ -838,6 +925,8 @@ async function handleApi(req, res, url) {
     if (!allowedStatuses.has(status)) return validationError(res, "Select a valid user status.");
     if (!validIds(body.roleIds || [], db.roles)) return validationError(res, "One or more roles are invalid.");
     if (!validIds(body.centerIds || [], db.centers)) return validationError(res, "One or more centers are invalid.");
+    if (!validIds(body.campusIds || [], db.campuses)) return validationError(res, "One or more campuses are invalid.");
+    if (!validIds(body.buildingIds || [], db.buildings)) return validationError(res, "One or more buildings are invalid.");
     const features = Array.isArray(body.features) ? body.features.filter(feature => db.features.includes(feature)) : [];
     const now = new Date().toISOString();
     const user = {
@@ -847,6 +936,8 @@ async function handleApi(req, res, url) {
       status,
       roleIds: body.roleIds || [],
       centerIds: body.centerIds || [],
+      campusIds: body.campusIds || [],
+      buildingIds: body.buildingIds || [],
       features,
       twoFactorEnabled: false,
       invitedAt: null,
@@ -892,6 +983,8 @@ async function handleApi(req, res, url) {
     if (!allowedStatuses.has(status)) return validationError(res, "Select a valid user status.");
     if (!validIds(body.roleIds || [], db.roles)) return validationError(res, "One or more roles are invalid.");
     if (!validIds(body.centerIds || [], db.centers)) return validationError(res, "One or more centers are invalid.");
+    if (!validIds(body.campusIds || [], db.campuses)) return validationError(res, "One or more campuses are invalid.");
+    if (!validIds(body.buildingIds || [], db.buildings)) return validationError(res, "One or more buildings are invalid.");
     const features = Array.isArray(body.features) ? body.features.filter(feature => db.features.includes(feature)) : [];
     Object.assign(user, {
       name,
@@ -899,6 +992,8 @@ async function handleApi(req, res, url) {
       status,
       roleIds: body.roleIds || [],
       centerIds: body.centerIds || [],
+      campusIds: body.campusIds || [],
+      buildingIds: body.buildingIds || [],
       features,
       updatedAt: new Date().toISOString()
     });
@@ -929,6 +1024,75 @@ async function handleApi(req, res, url) {
       await saveData();
       return json(res, 502, { error: `Invitation email failed: ${error.message}` });
     }
+  }
+  if (req.method === "POST" && url.pathname === "/api/broadcast-templates") {
+    const body = await readBody(req);
+    const name = cleanText(body.name);
+    const title = cleanText(body.title, 200);
+    const message = cleanText(body.message, 5000);
+    const severity = cleanText(body.severity, 30) || "urgent";
+    const allowedSeverities = new Set(["warning", "urgent", "critical"]);
+    if (!name) return validationError(res, "Template name is required.");
+    if (!title) return validationError(res, "Broadcast title is required.");
+    if (!message) return validationError(res, "Broadcast message is required.");
+    if (!allowedSeverities.has(severity)) return validationError(res, "Select a valid severity.");
+    const now = new Date().toISOString();
+    const template = {
+      id: entityId("broadcast-template"),
+      name,
+      title,
+      message,
+      severity,
+      visualStyle: cleanText(body.visualStyle, 60) || "emergency",
+      audibleAlert: body.audibleAlert !== false,
+      defaultTargetScope: cleanText(body.defaultTargetScope, 40) || "rooms",
+      approvalRequired: true,
+      active: body.active !== false,
+      createdAt: now,
+      updatedAt: now
+    };
+    db.broadcastTemplates.push(template);
+    addAudit("broadcast.template.create", { templateId: template.id, name: template.name });
+    await saveData();
+    return json(res, 201, template);
+  }
+  const broadcastTemplateMatch = url.pathname.match(/^\/api\/broadcast-templates\/([^/]+)$/);
+  if (req.method === "PUT" && broadcastTemplateMatch) {
+    const template = db.broadcastTemplates.find(item => item.id === broadcastTemplateMatch[1]);
+    if (!template) return json(res, 404, { error: "Broadcast template not found" });
+    const body = await readBody(req);
+    const name = cleanText(body.name);
+    const title = cleanText(body.title, 200);
+    const message = cleanText(body.message, 5000);
+    const severity = cleanText(body.severity, 30);
+    const allowedSeverities = new Set(["warning", "urgent", "critical"]);
+    if (!name) return validationError(res, "Template name is required.");
+    if (!title) return validationError(res, "Broadcast title is required.");
+    if (!message) return validationError(res, "Broadcast message is required.");
+    if (!allowedSeverities.has(severity)) return validationError(res, "Select a valid severity.");
+    Object.assign(template, {
+      name,
+      title,
+      message,
+      severity,
+      visualStyle: cleanText(body.visualStyle, 60) || "emergency",
+      audibleAlert: body.audibleAlert !== false,
+      defaultTargetScope: cleanText(body.defaultTargetScope, 40) || "rooms",
+      approvalRequired: true,
+      active: body.active !== false,
+      updatedAt: new Date().toISOString()
+    });
+    addAudit("broadcast.template.update", { templateId: template.id, name: template.name });
+    await saveData();
+    return json(res, 200, template);
+  }
+  if (req.method === "DELETE" && broadcastTemplateMatch) {
+    const template = db.broadcastTemplates.find(item => item.id === broadcastTemplateMatch[1]);
+    if (!template) return json(res, 404, { error: "Broadcast template not found" });
+    db.broadcastTemplates = db.broadcastTemplates.filter(item => item.id !== template.id);
+    addAudit("broadcast.template.delete", { templateId: template.id, name: template.name });
+    await saveData();
+    return json(res, 200, { deleted: true });
   }
   if (req.method === "POST" && url.pathname === "/api/centers") {
     const body = await readBody(req);
@@ -1188,11 +1352,16 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/broadcasts") {
     const body = await readBody(req);
     if (!body.confirm) return json(res, 400, { error: "Broadcast confirmation is required" });
+    const template = body.templateId
+      ? db.broadcastTemplates.find(item => item.id === body.templateId && item.active)
+      : null;
+    if (body.templateId && !template) return validationError(res, "Select an active broadcast template.");
     const broadcast = {
       id: crypto.randomUUID(),
-      title: String(body.title || "IMPORTANT SYSTEM OVERRIDE"),
-      message: String(body.message || ""),
-      severity: String(body.severity || "urgent"),
+      templateId: template?.id || null,
+      title: cleanText(body.title || template?.title || "IMPORTANT SYSTEM OVERRIDE", 200),
+      message: cleanText(body.message || template?.message || "", 5000),
+      severity: cleanText(body.severity || template?.severity || "urgent", 30),
       targetRoomCodes: Array.isArray(body.targetRoomCodes) ? body.targetRoomCodes : db.rooms.map(room => room.code),
       createdAt: new Date().toISOString()
     };
