@@ -14,6 +14,7 @@ const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || "0.0.0.0";
 const baseUrl = process.env.APP_BASE_URL || `http://localhost:${port}`;
 const assetVersion = process.env.APP_BUILD_VERSION || Date.now().toString(36);
+const themeAssetsDir = process.env.THEME_ASSETS_DIR || path.join(rootDir, "assets", "uploads", "themes");
 
 const clients = new Map();
 const permissionCatalog = [
@@ -46,6 +47,10 @@ const defaultThemeTokens = {
   footerText: "#b6691d",
   ink: "#202020",
   panel: "rgba(255, 255, 255, 0.58)",
+  upcomingTileBg: "rgba(255, 255, 255, 0.58)",
+  upcomingTitleText: "#202020",
+  upcomingDetailText: "rgba(32, 32, 32, 0.68)",
+  backgroundImage: "",
   headerFont: "Arial, Helvetica, sans-serif",
   footerFont: "Arial, Helvetica, sans-serif",
   eventDetailFont: "Arial, Helvetica, sans-serif",
@@ -132,7 +137,7 @@ const seedData = {
   themes: [
     { id: "classic-institutional", name: "Classic Institutional", builtIn: true, cloneable: true, baseThemeId: "classic-institutional", published: true, cssTokens: defaultThemeTokens },
     { id: "event-formal", name: "Event Formal", builtIn: true, cloneable: true, baseThemeId: "event-formal", published: true, cssTokens: { ...defaultThemeTokens, footerFont: 'Georgia, "Times New Roman", serif', eventDetailFont: 'Georgia, "Times New Roman", serif' } },
-    { id: "custom-background", name: "Custom Background", builtIn: true, cloneable: true, baseThemeId: "custom-background", published: true, cssTokens: { ...defaultThemeTokens, headerFont: 'Georgia, "Times New Roman", serif', footerFont: 'Georgia, "Times New Roman", serif', eventDetailFont: 'Georgia, "Times New Roman", serif' } }
+    { id: "custom-background", name: "Custom Background", builtIn: true, cloneable: true, baseThemeId: "custom-background", published: true, cssTokens: { ...defaultThemeTokens, backgroundImage: "/assets/backgrounds/background.png", upcomingTileBg: "rgba(255, 244, 219, 0.62)", upcomingTitleText: "#261407", upcomingDetailText: "rgba(38, 20, 7, 0.72)", headerFont: 'Georgia, "Times New Roman", serif', footerFont: 'Georgia, "Times New Roman", serif', eventDetailFont: 'Georgia, "Times New Roman", serif' } }
   ],
   roles: [
     { id: "system-admin", name: "System Admin", builtIn: true, cloneable: true, active: true, permissions: permissionCatalog },
@@ -167,6 +172,7 @@ const seedData = {
   calendarAssignments: [],
   calendarEvents: [],
   calendarSyncHistory: [],
+  themeSchedules: [],
   upcomingEvents: [
     { roomId: "room-108", title: "iB Parent's Meeting", detail: "Mon, Jun 22, 4:00 PM - 5:00 PM" },
     { roomId: "room-108", title: "Karyakar Meeting", detail: "Mon, Jun 22, 5:00 PM - 5:30 PM" },
@@ -247,7 +253,7 @@ function normalizeData(data) {
       }
     }
   };
-  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "calendarAssignments", "calendarEvents", "calendarSyncHistory", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "auditLogs"]) {
+  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "calendarAssignments", "calendarEvents", "calendarSyncHistory", "themeSchedules", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "auditLogs"]) {
     if (!Array.isArray(normalized[key])) normalized[key] = structuredClone(seedData[key] || []);
   }
   normalized.centers = normalized.centers.map(center => ({ active: true, ...center }));
@@ -313,6 +319,17 @@ function normalizeData(data) {
     lastSyncError: "",
     ...assignment
   }));
+  normalized.themeSchedules = normalized.themeSchedules.map(schedule => ({
+    centerIds: [],
+    campusIds: [],
+    buildingIds: [],
+    roomIds: [],
+    createdBy: null,
+    updatedBy: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: null,
+    ...schedule
+  }));
   normalized.broadcastTemplates = normalized.broadcastTemplates.map(template => ({
     severity: "urgent",
     visualStyle: "emergency",
@@ -366,7 +383,7 @@ function readBody(req) {
     let body = "";
     req.on("data", chunk => {
       body += chunk;
-      if (body.length > 1_000_000) req.destroy();
+      if (body.length > 8_000_000) req.destroy();
     });
     req.on("end", () => {
       if (!body) return resolve({});
@@ -379,17 +396,62 @@ function readBody(req) {
   });
 }
 
-function publicRoom(room, themeOverrideId = "") {
+function scheduleTargetRooms(schedule) {
+  return db.rooms.filter(room =>
+    schedule.roomIds?.includes(room.id)
+    || schedule.buildingIds?.includes(room.buildingId)
+    || schedule.campusIds?.includes(room.campusId)
+    || schedule.centerIds?.includes(room.centerId)
+  );
+}
+
+function activeThemeSchedule(room, at = new Date()) {
+  const timestamp = at.getTime();
+  return db.themeSchedules
+    .filter(schedule =>
+      new Date(schedule.startsAt).getTime() <= timestamp
+      && new Date(schedule.endsAt).getTime() > timestamp
+      && scheduleTargetRooms(schedule).some(target => target.id === room.id)
+    )
+    .sort((a, b) => b.startsAt.localeCompare(a.startsAt) || b.createdAt.localeCompare(a.createdAt))[0] || null;
+}
+
+function publicThemeSchedule(schedule) {
+  const owner = db.users.find(user => user.id === schedule.createdBy);
+  const updatedBy = db.users.find(user => user.id === schedule.updatedBy);
+  const theme = db.themes.find(item => item.id === schedule.themeId);
+  const roomIds = scheduleTargetRooms(schedule).map(room => room.id);
+  return {
+    ...schedule,
+    themeName: theme?.name || "Unknown theme",
+    ownerName: owner?.name || "System",
+    updatedByName: schedule.updatedAt ? updatedBy?.name || owner?.name || "System" : "",
+    resolvedRoomIds: roomIds,
+    resolvedRoomCount: roomIds.length
+  };
+}
+
+function publicRoom(room, themeOverrideId = "", stateOverride = "") {
   const center = db.centers.find(item => item.id === room.centerId);
   const campus = db.campuses.find(item => item.id === room.campusId);
   const building = db.buildings.find(item => item.id === room.buildingId);
-  const requestedThemeId = themeOverrideId || room.themeId;
+  const scheduledTheme = themeOverrideId ? null : activeThemeSchedule(room);
+  const requestedThemeId = themeOverrideId || scheduledTheme?.themeId || room.themeId;
   const theme = db.themes.find(item => item.id === requestedThemeId && (themeOverrideId || (item.published !== false && item.archived !== true)))
     || db.themes.find(item => item.id === room.themeId)
     || db.themes[0];
   const events = db.upcomingEvents.filter(item => item.roomId === room.id).slice(0, 4);
+  const previewState = ["available", "busy", "warning"].includes(stateOverride) ? stateOverride : "";
+  const previewValues = previewState === "available"
+    ? { status: "available", currentEventTitle: "", currentEventUntil: "4:00 PM" }
+    : previewState === "warning"
+      ? { status: "warning", currentEventTitle: "Sample Event Near Completion", currentEventUntil: "5 min" }
+      : previewState === "busy"
+        ? { status: "busy", currentEventTitle: "Sample Current Event", currentEventUntil: "2:00 PM" }
+        : {};
   return {
     ...room,
+    ...previewValues,
     centerName: center?.name || "Center",
     campusName: campus?.name || "Campus",
     buildingName: building?.name || "Building",
@@ -402,6 +464,8 @@ function publicRoom(room, themeOverrideId = "") {
     themeName: theme?.name || "Theme",
     themeBaseId: theme?.baseThemeId || theme?.sourceThemeId || theme?.id || "classic-institutional",
     themeCssTokens: theme?.cssTokens || defaultThemeTokens,
+    scheduledThemeId: scheduledTheme?.themeId || null,
+    activeThemeScheduleId: scheduledTheme?.id || null,
     buildVersion: assetVersion,
     upcomingEvents: events,
     activeBroadcast: db.activeBroadcast?.targetRoomCodes?.includes(room.code) ? db.activeBroadcast : null
@@ -482,7 +546,8 @@ function publicViewer(user) {
     id: user?.id || "",
     name: user?.name || "",
     isSystemAdmin: viewerIsSystemAdmin(user),
-    permissions: [...viewerPermissions(user)]
+    permissions: [...viewerPermissions(user)],
+    accessibleRoomIds: db.rooms.filter(room => viewerCanAccessRoom(user, room)).map(room => room.id)
   };
 }
 
@@ -660,6 +725,56 @@ function validUrl(value) {
   }
 }
 
+function cleanIdArray(value) {
+  return Array.isArray(value) ? [...new Set(value.map(item => cleanText(item, 160)).filter(Boolean))] : [];
+}
+
+function scheduleFromBody(body, existing = {}) {
+  return {
+    ...existing,
+    themeId: cleanText(body.themeId, 160),
+    startsAt: cleanText(body.startsAt, 80),
+    endsAt: cleanText(body.endsAt, 80),
+    centerIds: cleanIdArray(body.centerIds),
+    campusIds: cleanIdArray(body.campusIds),
+    buildingIds: cleanIdArray(body.buildingIds),
+    roomIds: cleanIdArray(body.roomIds)
+  };
+}
+
+function validateThemeSchedule(schedule, viewer) {
+  const theme = db.themes.find(item => item.id === schedule.themeId && item.published !== false && item.archived !== true);
+  if (!theme) return "Select an available published theme.";
+  if (!Number.isFinite(new Date(schedule.startsAt).getTime()) || !Number.isFinite(new Date(schedule.endsAt).getTime())) {
+    return "Enter valid schedule start and end times.";
+  }
+  if (new Date(schedule.endsAt) <= new Date(schedule.startsAt)) return "Schedule end time must be after its start time.";
+  const targetIds = [...schedule.centerIds, ...schedule.campusIds, ...schedule.buildingIds, ...schedule.roomIds];
+  if (!targetIds.length) return "Select at least one center, campus, building, or room.";
+  if (schedule.centerIds.some(id => !db.centers.some(item => item.id === id))) return "One or more selected centers are invalid.";
+  if (schedule.campusIds.some(id => !db.campuses.some(item => item.id === id))) return "One or more selected campuses are invalid.";
+  if (schedule.buildingIds.some(id => !db.buildings.some(item => item.id === id))) return "One or more selected buildings are invalid.";
+  if (schedule.roomIds.some(id => !db.rooms.some(item => item.id === id))) return "One or more selected rooms are invalid.";
+  const rooms = scheduleTargetRooms(schedule);
+  if (!rooms.length) return "The selected targets do not contain any rooms.";
+  if (rooms.some(room => !viewerCanAccessRoom(viewer, room))) return "One or more selected targets include rooms outside your assigned scope.";
+  return "";
+}
+
+function uploadedThemeAssetPath(assetUrl) {
+  const prefix = "/assets/uploads/themes/";
+  if (!assetUrl?.startsWith(prefix)) return "";
+  const filename = path.basename(assetUrl.slice(prefix.length));
+  return path.join(themeAssetsDir, filename);
+}
+
+function validImageSignature(buffer, mimeType) {
+  if (mimeType === "image/png") return buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  if (mimeType === "image/jpeg") return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer.at(-2) === 0xff && buffer.at(-1) === 0xd9;
+  if (mimeType === "image/webp") return buffer.subarray(0, 4).toString() === "RIFF" && buffer.subarray(8, 12).toString() === "WEBP";
+  return false;
+}
+
 function validationError(res, message) {
   return json(res, 400, { error: message });
 }
@@ -727,6 +842,7 @@ function adminPage() {
         <button type="button" data-tab="users">Users</button>
         <button type="button" data-tab="calendars">Calendar Sync</button>
         <button type="button" data-tab="themes">Theme Editor</button>
+        <button type="button" data-tab="theme-scheduler">Theme Scheduler</button>
         <button type="button" data-tab="notifications">Email Notifications</button>
         <button type="button" data-tab="broadcast">Emergency Broadcast</button>
         <button type="button" data-tab="configuration">Configuration</button>
@@ -851,16 +967,71 @@ function adminPage() {
           </section>
           <section class="panel">
             <div class="panel-heading"><div><h2>Live Theme Preview</h2><p id="themePreviewTitle">Select a cloned theme to edit.</p></div></div>
-            <label>Preview Room <select id="themePreviewRoom"></select></label>
+            <div class="form-grid">
+              <label>Preview Room <select id="themePreviewRoom"></select></label>
+              <label>Preview State <select id="themePreviewState">
+                <option value="available">Available</option>
+                <option value="busy">Busy</option>
+                <option value="warning">Buffer / Warning</option>
+              </select></label>
+            </div>
             <form id="themeEditorForm" hidden>
               <input type="hidden" name="themeId" />
               <label>Theme Name <input name="name" required /></label>
+              <fieldset class="theme-background-field">
+                <legend>Background Image</legend>
+                <img id="themeBackgroundPreview" alt="Theme background preview" hidden />
+                <label>Upload PNG, JPEG, or WebP
+                  <input name="backgroundImageFile" type="file" accept="image/png,image/jpeg,image/webp" />
+                </label>
+                <div class="button-row">
+                  <button type="button" class="secondary" id="uploadThemeBackground">Upload / Replace</button>
+                  <button type="button" class="danger-text" id="deleteThemeBackground">Remove Background</button>
+                </div>
+                <p id="themeBackgroundStatus" class="form-status" role="status"></p>
+              </fieldset>
               <div id="themeTokenFields" class="form-grid"></div>
               <label class="check-label"><input name="published" type="checkbox" /> Published</label>
               <label class="check-label"><input name="archived" type="checkbox" /> Archived</label>
               <button type="submit">Save Theme</button>
             </form>
             <iframe id="themePreviewFrame" class="theme-preview-frame" title="Theme preview" src="/preview/room-108-shishu"></iframe>
+          </section>
+        </section>
+      </section>
+
+      <section class="tab-panel" data-panel="theme-scheduler">
+        <section class="panel">
+          <div class="panel-heading"><div><h2>Schedule Theme Override</h2><p>Scheduled themes temporarily override each room's default theme.</p></div></div>
+          <form id="themeScheduleForm">
+            <input type="hidden" name="scheduleId" />
+            <div class="form-grid">
+              <label>Theme <select name="themeId" id="scheduleTheme" required></select></label>
+              <label>Start <input name="startsAt" type="datetime-local" required /></label>
+              <label>End <input name="endsAt" type="datetime-local" required /></label>
+            </div>
+            <div class="scheduler-target-grid">
+              <label>Centers <select name="centerIds" id="scheduleCenters" multiple></select></label>
+              <label>Campuses <select name="campusIds" id="scheduleCampuses" multiple></select></label>
+              <label>Buildings <select name="buildingIds" id="scheduleBuildings" multiple></select></label>
+              <label>Rooms <select name="roomIds" id="scheduleRooms" multiple></select></label>
+            </div>
+            <p class="help-text">Select one or more centers, campuses, buildings, or rooms. Only rooms in your assigned scope are included.</p>
+            <div class="button-row">
+              <button type="submit">Save Schedule</button>
+              <button type="button" class="secondary" id="cancelThemeSchedule" hidden>Cancel Edit</button>
+            </div>
+            <p id="themeScheduleStatus" class="form-status" role="status"></p>
+          </form>
+        </section>
+        <section class="management-grid">
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Upcoming Schedule</h2><p>Active and future theme overrides.</p></div></div>
+            <div id="upcomingThemeSchedules" class="entity-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Past Schedules</h2><p>Completed overrides from the last two years.</p></div></div>
+            <div id="pastThemeSchedules" class="entity-list"></div>
           </section>
         </section>
       </section>
@@ -978,7 +1149,7 @@ function adminPage() {
 </html>`;
 }
 
-function kioskPage(roomCode, preview = false, themeOverrideId = "") {
+function kioskPage(roomCode, preview = false, themeOverrideId = "", stateOverride = "") {
   const room = db.rooms.find(item => item.code === roomCode);
   if (!room) return null;
   return `<!doctype html>
@@ -990,7 +1161,7 @@ function kioskPage(roomCode, preview = false, themeOverrideId = "") {
     <link rel="stylesheet" href="/static/kiosk.css?v=${assetVersion}" />
   </head>
   <body>
-    <main id="kiosk" class="kiosk-frame" data-room-code="${escapeHtml(room.code)}" data-preview="${preview ? "true" : "false"}" data-theme-override="${escapeHtml(themeOverrideId)}" data-build-version="${escapeHtml(assetVersion)}">
+    <main id="kiosk" class="kiosk-frame" data-room-code="${escapeHtml(room.code)}" data-preview="${preview ? "true" : "false"}" data-theme-override="${escapeHtml(themeOverrideId)}" data-state-override="${escapeHtml(stateOverride)}" data-build-version="${escapeHtml(assetVersion)}">
       <section class="loading">Loading room signage...</section>
     </main>
     <section id="soundGate" class="sound-gate" ${preview ? "hidden" : ""}>
@@ -1022,6 +1193,9 @@ function contentType(filePath) {
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
     ".mp3": "audio/mpeg",
     ".html": "text/html; charset=utf-8",
     ".md": "text/markdown; charset=utf-8",
@@ -1068,6 +1242,10 @@ async function handleApi(req, res, url) {
       calendarAccounts: db.calendarAccounts.map(publicCalendarAccount),
       calendarAssignments: db.calendarAssignments,
       calendarSyncHistory: db.calendarSyncHistory.slice(0, 50),
+      themeSchedules: db.themeSchedules
+        .filter(schedule => new Date(schedule.endsAt).getTime() >= Date.now() - 2 * 365 * 24 * 60 * 60 * 1000)
+        .filter(schedule => scheduleTargetRooms(schedule).some(room => viewerCanAccessRoom(viewer, room)))
+        .map(publicThemeSchedule),
       activeBroadcast: db.activeBroadcast,
       broadcastHistory: viewerIsSystemAdmin(viewer) ? db.broadcasts.slice(0, 100).map(publicBroadcast) : [],
       emailNotifications: db.emailNotifications.slice(0, 50),
@@ -1901,7 +2079,11 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && roomMatch) {
     const room = db.rooms.find(item => item.code === roomMatch[1]);
     if (!room) return json(res, 404, { error: "Room not found" });
-    return json(res, 200, publicRoom(room, cleanText(url.searchParams.get("theme"), 120)));
+    return json(res, 200, publicRoom(
+      room,
+      cleanText(url.searchParams.get("theme"), 120),
+      cleanText(url.searchParams.get("state"), 20)
+    ));
   }
   if (req.method === "PUT" && roomMatch) {
     if (!requirePermission(req, res, "room.manage")) return;
@@ -2001,6 +2183,7 @@ async function handleApi(req, res, url) {
       severity: cleanText(body.severity || template?.severity || "urgent", 30),
       targetRoomCodes,
       createdBy: viewer?.id || null,
+      updatedBy: null,
       startedAt: new Date().toISOString(),
       endedAt: null,
       endedBy: null,
@@ -2036,6 +2219,65 @@ async function handleApi(req, res, url) {
     notifyAllRooms();
     return json(res, 200, { ended: Boolean(ended) });
   }
+  if (req.method === "POST" && url.pathname === "/api/theme-schedules") {
+    if (!requirePermission(req, res, "theme.manage")) return;
+    const body = await readBody(req);
+    const viewer = currentViewer(req);
+    const schedule = scheduleFromBody(body, {
+      id: entityId("theme-schedule"),
+      createdBy: viewer?.id || null,
+      createdAt: new Date().toISOString(),
+      updatedAt: null
+    });
+    const error = validateThemeSchedule(schedule, viewer);
+    if (error) return validationError(res, error);
+    schedule.startsAt = new Date(schedule.startsAt).toISOString();
+    schedule.endsAt = new Date(schedule.endsAt).toISOString();
+    db.themeSchedules.push(schedule);
+    addAudit("theme.schedule.create", { scheduleId: schedule.id, themeId: schedule.themeId, roomCount: scheduleTargetRooms(schedule).length });
+    await saveData();
+    notifyChangedRooms(scheduleTargetRooms(schedule).map(room => room.code));
+    return json(res, 201, publicThemeSchedule(schedule));
+  }
+  const themeScheduleMatch = url.pathname.match(/^\/api\/theme-schedules\/([^/]+)$/);
+  if (req.method === "PUT" && themeScheduleMatch) {
+    if (!requirePermission(req, res, "theme.manage")) return;
+    const schedule = db.themeSchedules.find(item => item.id === themeScheduleMatch[1]);
+    if (!schedule) return json(res, 404, { error: "Theme schedule not found" });
+    const viewer = currentViewer(req);
+    if (scheduleTargetRooms(schedule).some(room => !viewerCanAccessRoom(viewer, room))) {
+      return json(res, 403, { error: "This schedule includes rooms outside your assigned scope." });
+    }
+    const previousRooms = scheduleTargetRooms(schedule);
+    const updated = scheduleFromBody(await readBody(req), schedule);
+    const error = validateThemeSchedule(updated, viewer);
+    if (error) return validationError(res, error);
+    updated.startsAt = new Date(updated.startsAt).toISOString();
+    updated.endsAt = new Date(updated.endsAt).toISOString();
+    updated.updatedBy = viewer?.id || null;
+    updated.updatedAt = new Date().toISOString();
+    Object.assign(schedule, updated);
+    const changedRooms = [...previousRooms, ...scheduleTargetRooms(schedule)].map(room => room.code);
+    addAudit("theme.schedule.update", { scheduleId: schedule.id, themeId: schedule.themeId, roomCount: scheduleTargetRooms(schedule).length });
+    await saveData();
+    notifyChangedRooms(changedRooms);
+    return json(res, 200, publicThemeSchedule(schedule));
+  }
+  if (req.method === "DELETE" && themeScheduleMatch) {
+    if (!requirePermission(req, res, "theme.manage")) return;
+    const schedule = db.themeSchedules.find(item => item.id === themeScheduleMatch[1]);
+    if (!schedule) return json(res, 404, { error: "Theme schedule not found" });
+    const viewer = currentViewer(req);
+    const rooms = scheduleTargetRooms(schedule);
+    if (rooms.some(room => !viewerCanAccessRoom(viewer, room))) {
+      return json(res, 403, { error: "This schedule includes rooms outside your assigned scope." });
+    }
+    db.themeSchedules = db.themeSchedules.filter(item => item.id !== schedule.id);
+    addAudit("theme.schedule.delete", { scheduleId: schedule.id, themeId: schedule.themeId });
+    await saveData();
+    notifyChangedRooms(rooms.map(room => room.code));
+    return json(res, 200, { deleted: true });
+  }
   const themeCloneMatch = url.pathname.match(/^\/api\/themes\/([^/]+)\/clone$/);
   if (req.method === "POST" && themeCloneMatch) {
     if (!requirePermission(req, res, "theme.manage")) return;
@@ -2062,6 +2304,57 @@ async function handleApi(req, res, url) {
     await saveData();
     return json(res, 201, clone);
   }
+  const themeBackgroundMatch = url.pathname.match(/^\/api\/themes\/([^/]+)\/background$/);
+  if (req.method === "POST" && themeBackgroundMatch) {
+    if (!requirePermission(req, res, "theme.manage")) return;
+    const theme = db.themes.find(item => item.id === themeBackgroundMatch[1]);
+    if (!theme) return json(res, 404, { error: "Theme not found" });
+    if (theme.builtIn) return json(res, 409, { error: "Clone a built-in theme before uploading a background." });
+    const body = await readBody(req);
+    const mimeTypes = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp" };
+    const mimeType = cleanText(body.mimeType, 80);
+    const extension = mimeTypes[mimeType];
+    if (!extension) return validationError(res, "Upload a PNG, JPEG, or WebP image.");
+    const data = String(body.data || "").replace(/^data:[^;]+;base64,/, "");
+    let image;
+    try {
+      image = Buffer.from(data, "base64");
+    } catch {
+      return validationError(res, "The uploaded image could not be decoded.");
+    }
+    if (!image.length || image.length > 5 * 1024 * 1024) return validationError(res, "Background images must be between 1 byte and 5 MB.");
+    if (!validImageSignature(image, mimeType)) return validationError(res, "The uploaded file does not match its declared image type.");
+    await fs.mkdir(themeAssetsDir, { recursive: true });
+    const filename = `${theme.id}-${crypto.randomUUID()}${extension}`;
+    const assetUrl = `/assets/uploads/themes/${filename}`;
+    await fs.writeFile(path.join(themeAssetsDir, filename), image);
+    const previousAsset = theme.cssTokens?.backgroundImage || "";
+    theme.cssTokens = { ...defaultThemeTokens, ...theme.cssTokens, backgroundImage: assetUrl };
+    theme.updatedAt = new Date().toISOString();
+    const previousPath = uploadedThemeAssetPath(previousAsset);
+    const previousInUse = db.themes.some(item => item.id !== theme.id && item.cssTokens?.backgroundImage === previousAsset);
+    if (previousPath && !previousInUse) await fs.rm(previousPath, { force: true });
+    addAudit("theme.background.upload", { themeId: theme.id, assetUrl, originalName: cleanText(body.filename, 255) });
+    await saveData();
+    notifyAllRooms();
+    return json(res, 200, theme);
+  }
+  if (req.method === "DELETE" && themeBackgroundMatch) {
+    if (!requirePermission(req, res, "theme.manage")) return;
+    const theme = db.themes.find(item => item.id === themeBackgroundMatch[1]);
+    if (!theme) return json(res, 404, { error: "Theme not found" });
+    if (theme.builtIn) return json(res, 409, { error: "Built-in theme backgrounds cannot be removed." });
+    const assetUrl = theme.cssTokens?.backgroundImage || "";
+    theme.cssTokens = { ...defaultThemeTokens, ...theme.cssTokens, backgroundImage: "" };
+    theme.updatedAt = new Date().toISOString();
+    const assetPath = uploadedThemeAssetPath(assetUrl);
+    const inUse = db.themes.some(item => item.id !== theme.id && item.cssTokens?.backgroundImage === assetUrl);
+    if (assetPath && !inUse) await fs.rm(assetPath, { force: true });
+    addAudit("theme.background.delete", { themeId: theme.id, assetUrl });
+    await saveData();
+    notifyAllRooms();
+    return json(res, 200, theme);
+  }
   const themeMatch = url.pathname.match(/^\/api\/themes\/([^/]+)$/);
   if (req.method === "PUT" && themeMatch) {
     if (!requirePermission(req, res, "theme.manage")) return;
@@ -2072,7 +2365,7 @@ async function handleApi(req, res, url) {
     const allowedTokens = new Set(Object.keys(defaultThemeTokens));
     const cssTokens = {};
     for (const [key, value] of Object.entries(body.cssTokens || {})) {
-      if (allowedTokens.has(key)) cssTokens[key] = cleanText(value, 200);
+      if (allowedTokens.has(key) && key !== "backgroundImage") cssTokens[key] = cleanText(value, 200);
     }
     Object.assign(theme, {
       name: cleanText(body.name) || theme.name,
@@ -2084,7 +2377,7 @@ async function handleApi(req, res, url) {
     });
     addAudit("theme.update", { themeId: theme.id, published: theme.published, archived: theme.archived });
     await saveData();
-    notifyChangedRooms(db.rooms.filter(room => room.themeId === theme.id).map(room => room.code));
+    notifyAllRooms();
     return json(res, 200, theme);
   }
   return json(res, 404, { error: "API route not found" });
@@ -2094,13 +2387,19 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, baseUrl);
     if (url.pathname.startsWith("/static/")) return serveFile(req, res, path.join(rootDir, "public"), "/static/");
+    if (url.pathname.startsWith("/assets/uploads/themes/")) return serveFile(req, res, themeAssetsDir, "/assets/uploads/themes/");
     if (url.pathname.startsWith("/assets/")) return serveFile(req, res, path.join(rootDir, "assets"), "/assets/");
     if (url.pathname.startsWith("/samples/")) return serveFile(req, res, path.join(rootDir, "samples"), "/samples/");
     if (url.pathname.startsWith("/api/")) return handleApi(req, res, url);
     if (url.pathname === "/" || url.pathname === "/admin") return send(res, 200, adminPage());
     const previewMatch = url.pathname.match(/^\/preview\/([^/]+)$/);
     if (previewMatch) {
-      const page = kioskPage(previewMatch[1], true, cleanText(url.searchParams.get("theme"), 120));
+      const page = kioskPage(
+        previewMatch[1],
+        true,
+        cleanText(url.searchParams.get("theme"), 120),
+        cleanText(url.searchParams.get("state"), 20)
+      );
       return page ? send(res, 200, page) : send(res, 404, "Room not found");
     }
     const roomCode = url.pathname.slice(1);

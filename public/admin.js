@@ -183,6 +183,73 @@ function renderThemes() {
   roomSelect.innerHTML = optionList(state.rooms, selectedRoomId, room => `${room.name} - ${room.buildingName}`);
 }
 
+function accessibleScheduleRooms() {
+  const allowed = new Set(state.viewer.accessibleRoomIds || []);
+  return state.rooms.filter(room => allowed.has(room.id));
+}
+
+function scheduleTargetSummary(schedule) {
+  const labels = [
+    ...schedule.centerIds.map(centerName),
+    ...schedule.campusIds.map(campusName),
+    ...schedule.buildingIds.map(buildingName),
+    ...schedule.roomIds.map(id => state.rooms.find(room => room.id === id)?.name || "Unknown room")
+  ];
+  return `${labels.join(", ")} / ${schedule.resolvedRoomCount} room${schedule.resolvedRoomCount === 1 ? "" : "s"}`;
+}
+
+function scheduleItem(schedule, upcoming) {
+  const active = new Date(schedule.startsAt) <= new Date() && new Date(schedule.endsAt) > new Date();
+  return `<article class="entity-item">
+    <div>
+      <strong>${escapeHtml(schedule.themeName)}</strong>
+      <span>${active ? "Active now / " : ""}${new Date(schedule.startsAt).toLocaleString()} - ${new Date(schedule.endsAt).toLocaleString()}</span>
+      <span>${escapeHtml(scheduleTargetSummary(schedule))}</span>
+      <span>Owner: ${escapeHtml(schedule.ownerName)}${schedule.updatedAt ? ` / Updated by ${escapeHtml(schedule.updatedByName)}` : ""}</span>
+    </div>
+    ${upcoming ? `<div class="entity-actions">
+      <button type="button" class="secondary" data-edit-theme-schedule="${escapeHtml(schedule.id)}">Edit</button>
+      <button type="button" class="danger-text" data-delete-theme-schedule="${escapeHtml(schedule.id)}">Delete</button>
+    </div>` : ""}
+  </article>`;
+}
+
+function renderThemeSchedules() {
+  const rooms = accessibleScheduleRooms();
+  const roomIds = new Set(rooms.map(room => room.id));
+  const fullyAccessible = (allRooms, id, key) => {
+    const targetRooms = allRooms.filter(room => room[key] === id);
+    return targetRooms.length > 0 && targetRooms.every(room => roomIds.has(room.id));
+  };
+  const centers = state.centers.filter(center => fullyAccessible(state.rooms, center.id, "centerId"));
+  const campuses = state.campuses.filter(campus => fullyAccessible(state.rooms, campus.id, "campusId"));
+  const buildings = state.buildings.filter(building => fullyAccessible(state.rooms, building.id, "buildingId"));
+  const retainSelection = select => new Set(Array.from(select.selectedOptions).map(option => option.value));
+  const renderMulti = (selector, items, label) => {
+    const select = document.querySelector(selector);
+    const selected = retainSelection(select);
+    select.innerHTML = items.map(item => `<option value="${escapeHtml(item.id)}" ${selected.has(item.id) ? "selected" : ""}>${escapeHtml(label(item))}</option>`).join("");
+  };
+  const themeSelect = document.querySelector("#scheduleTheme");
+  const selectedTheme = themeSelect.value;
+  themeSelect.innerHTML = optionList(state.themes.filter(theme => theme.published && !theme.archived), selectedTheme);
+  renderMulti("#scheduleCenters", centers, center => center.name);
+  renderMulti("#scheduleCampuses", campuses, campus => `${campus.name} - ${centerName(campus.centerId)}`);
+  renderMulti("#scheduleBuildings", buildings, building => `${building.name} - ${campusName(building.campusId)}`);
+  renderMulti("#scheduleRooms", rooms, room => `${room.name} - ${room.buildingName}`);
+
+  const now = Date.now();
+  const schedules = state.themeSchedules.filter(schedule => schedule.resolvedRoomIds.some(id => roomIds.has(id)));
+  const upcoming = schedules.filter(schedule => new Date(schedule.endsAt).getTime() > now)
+    .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  const past = schedules.filter(schedule => new Date(schedule.endsAt).getTime() <= now)
+    .sort((a, b) => b.endsAt.localeCompare(a.endsAt));
+  document.querySelector("#upcomingThemeSchedules").innerHTML = upcoming.map(schedule => scheduleItem(schedule, true)).join("")
+    || `<p class="empty-state">No active or upcoming theme schedules.</p>`;
+  document.querySelector("#pastThemeSchedules").innerHTML = past.map(schedule => scheduleItem(schedule, false)).join("")
+    || `<p class="empty-state">No completed theme schedules in the last two years.</p>`;
+}
+
 function renderUsersRoles() {
   document.querySelector("#roleManagerList").innerHTML = state.roles.map(role => `
     <article class="entity-item">
@@ -773,6 +840,9 @@ const themeTokenLabels = {
   footerText: "Footer Text",
   ink: "General Text",
   panel: "Event Panel",
+  upcomingTileBg: "Upcoming Event Tile",
+  upcomingTitleText: "Upcoming Event Title",
+  upcomingDetailText: "Upcoming Event Details",
   headerFont: "Header Font",
   footerFont: "Footer Font",
   eventDetailFont: "Event Detail Font",
@@ -788,6 +858,9 @@ const themeTokenProperties = {
   footerText: "--footer-text",
   ink: "--ink",
   panel: "--panel",
+  upcomingTileBg: "--upcoming-tile-bg",
+  upcomingTitleText: "--upcoming-title-text",
+  upcomingDetailText: "--upcoming-detail-text",
   headerFont: "--theme-header-font",
   footerFont: "--theme-footer-font",
   eventDetailFont: "--theme-event-detail-font",
@@ -801,7 +874,9 @@ const themeColorTokens = new Set([
   "warningBg",
   "warningText",
   "footerText",
-  "ink"
+  "ink",
+  "upcomingTitleText",
+  "upcomingDetailText"
 ]);
 
 function colorParts(value) {
@@ -834,13 +909,14 @@ function themeTokenField(key, label, value) {
   if (themeColorTokens.has(key)) {
     return `<label>${escapeHtml(label)} <input name="${escapeHtml(key)}" type="color" value="${escapeHtml(colorParts(value).hex)}" /></label>`;
   }
-  if (key === "panel") {
+  if (key === "panel" || key === "upcomingTileBg") {
     const parts = colorParts(value);
-    const transparency = Math.round((1 - parts.opacity) * 100);
+    const transparency = Math.round((1 - parts.opacity) * 20) * 5;
+    const prefix = key === "panel" ? "panel" : "upcomingTile";
     return `<fieldset class="color-opacity-field">
       <legend>${escapeHtml(label)}</legend>
-      <label>Color <input name="panelColor" type="color" value="${escapeHtml(parts.hex)}" /></label>
-      <label>Transparency <input name="panelTransparency" type="range" min="0" max="100" step="5" value="${transparency}" /><output id="panelTransparencyValue">${transparency}%</output></label>
+      <label>Color <input name="${prefix}Color" type="color" value="${escapeHtml(parts.hex)}" /></label>
+      <label>Transparency <input name="${prefix}Transparency" type="range" min="0" max="100" step="5" value="${transparency}" /><output id="${prefix}TransparencyValue">${transparency}%</output></label>
     </fieldset>`;
   }
   return `<label>${escapeHtml(label)} <input name="${escapeHtml(key)}" value="${escapeHtml(value || "")}" /></label>`;
@@ -854,7 +930,8 @@ function refreshThemePreview(theme) {
   const room = selectedThemePreviewRoom();
   if (!theme || !room) return;
   document.querySelector("#themePreviewTitle").textContent = `${theme.name} using ${room.name}`;
-  document.querySelector("#themePreviewFrame").src = `/preview/${encodeURIComponent(room.code)}?theme=${encodeURIComponent(theme.id)}`;
+  const stateValue = document.querySelector("#themePreviewState").value || "available";
+  document.querySelector("#themePreviewFrame").src = `/preview/${encodeURIComponent(room.code)}?theme=${encodeURIComponent(theme.id)}&state=${encodeURIComponent(stateValue)}`;
 }
 
 function editTheme(themeId) {
@@ -866,6 +943,11 @@ function editTheme(themeId) {
   form.elements.name.value = theme.name;
   form.elements.published.checked = theme.published;
   form.elements.archived.checked = theme.archived;
+  const backgroundPreview = document.querySelector("#themeBackgroundPreview");
+  backgroundPreview.src = theme.cssTokens.backgroundImage || "";
+  backgroundPreview.hidden = !theme.cssTokens.backgroundImage;
+  document.querySelector("#deleteThemeBackground").disabled = !theme.cssTokens.backgroundImage;
+  document.querySelector("#themeBackgroundStatus").textContent = theme.cssTokens.backgroundImage || "No background image assigned.";
   document.querySelector("#themeTokenFields").innerHTML = Object.entries(themeTokenLabels)
     .map(([key, label]) => themeTokenField(key, label, theme.cssTokens[key]))
     .join("");
@@ -879,6 +961,7 @@ async function saveTheme(event) {
   const cssTokens = {};
   for (const key of Object.keys(themeTokenLabels)) {
     if (key === "panel") cssTokens.panel = rgbaValue(values.panelColor, 1 - Number(values.panelTransparency) / 100);
+    else if (key === "upcomingTileBg") cssTokens.upcomingTileBg = rgbaValue(values.upcomingTileColor, 1 - Number(values.upcomingTileTransparency) / 100);
     else cssTokens[key] = values[key];
   }
   await api(`/api/themes/${values.themeId}`, {
@@ -894,6 +977,144 @@ async function saveTheme(event) {
   editTheme(values.themeId);
 }
 
+function fileDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error("Unable to read the selected image."));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadThemeBackground() {
+  const form = document.querySelector("#themeEditorForm");
+  const themeId = form.elements.themeId.value;
+  const file = form.elements.backgroundImageFile.files[0];
+  const status = document.querySelector("#themeBackgroundStatus");
+  if (!themeId || !file) {
+    status.textContent = "Select a PNG, JPEG, or WebP image first.";
+    return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    status.textContent = "Background images must be 5 MB or smaller.";
+    return;
+  }
+  status.textContent = "Uploading background image...";
+  try {
+    const theme = await api(`/api/themes/${themeId}/background`, {
+      method: "POST",
+      body: JSON.stringify({
+        filename: file.name,
+        mimeType: file.type,
+        data: await fileDataUrl(file)
+      })
+    });
+    await load();
+    editTheme(theme.id);
+    status.textContent = "Background image uploaded.";
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function deleteThemeBackground() {
+  const themeId = document.querySelector("#themeEditorForm").elements.themeId.value;
+  if (!themeId || !confirm("Remove this theme background image?")) return;
+  try {
+    const theme = await api(`/api/themes/${themeId}/background`, { method: "DELETE" });
+    await load();
+    editTheme(theme.id);
+  } catch (error) {
+    document.querySelector("#themeBackgroundStatus").textContent = error.message;
+  }
+}
+
+function localDateTimeValue(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function selectedValues(selector) {
+  return Array.from(document.querySelector(selector).selectedOptions).map(option => option.value);
+}
+
+function resetThemeScheduleForm() {
+  const form = document.querySelector("#themeScheduleForm");
+  form.reset();
+  form.elements.scheduleId.value = "";
+  document.querySelector("#cancelThemeSchedule").hidden = true;
+  document.querySelector("#themeScheduleStatus").textContent = "";
+  renderThemeSchedules();
+}
+
+function editThemeSchedule(scheduleId) {
+  const schedule = state.themeSchedules.find(item => item.id === scheduleId);
+  if (!schedule) return;
+  const form = document.querySelector("#themeScheduleForm");
+  form.elements.scheduleId.value = schedule.id;
+  form.elements.themeId.value = schedule.themeId;
+  form.elements.startsAt.value = localDateTimeValue(schedule.startsAt);
+  form.elements.endsAt.value = localDateTimeValue(schedule.endsAt);
+  const selections = {
+    centerIds: new Set(schedule.centerIds),
+    campusIds: new Set(schedule.campusIds),
+    buildingIds: new Set(schedule.buildingIds),
+    roomIds: new Set(schedule.roomIds)
+  };
+  for (const [name, values] of Object.entries(selections)) {
+    Array.from(form.elements[name].options).forEach(option => { option.selected = values.has(option.value); });
+  }
+  document.querySelector("#cancelThemeSchedule").hidden = false;
+  document.querySelector("#themeScheduleStatus").textContent = `Editing schedule owned by ${schedule.ownerName}.`;
+}
+
+async function saveThemeSchedule(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const id = form.elements.scheduleId.value;
+  const start = new Date(form.elements.startsAt.value);
+  const end = new Date(form.elements.endsAt.value);
+  const status = document.querySelector("#themeScheduleStatus");
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
+    status.textContent = "Enter valid schedule start and end times.";
+    return;
+  }
+  const payload = {
+    themeId: form.elements.themeId.value,
+    startsAt: start.toISOString(),
+    endsAt: end.toISOString(),
+    centerIds: selectedValues("#scheduleCenters"),
+    campusIds: selectedValues("#scheduleCampuses"),
+    buildingIds: selectedValues("#scheduleBuildings"),
+    roomIds: selectedValues("#scheduleRooms")
+  };
+  status.textContent = "Saving schedule...";
+  try {
+    await api(`/api/theme-schedules${id ? `/${id}` : ""}`, {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify(payload)
+    });
+    await load();
+    resetThemeScheduleForm();
+    status.textContent = "Theme schedule saved.";
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function deleteThemeSchedule(scheduleId) {
+  if (!confirm("Delete this upcoming theme schedule?")) return;
+  try {
+    await api(`/api/theme-schedules/${scheduleId}`, { method: "DELETE" });
+    await load();
+    resetThemeScheduleForm();
+  } catch (error) {
+    document.querySelector("#themeScheduleStatus").textContent = error.message;
+  }
+}
+
 function render() {
   document.querySelector("#storageBadge").textContent = state.storageType === "postgresql" ? "PostgreSQL" : "Local JSON";
   renderSummary();
@@ -903,6 +1124,7 @@ function render() {
   renderBroadcastTemplates();
   renderEntityLists();
   renderThemes();
+  renderThemeSchedules();
   renderUsers();
   renderEmailSettings();
   renderEmailHistory();
@@ -939,7 +1161,15 @@ document.querySelector("#themePreviewRoom").addEventListener("change", () => {
   const themeId = document.querySelector("#themeEditorForm").elements.themeId.value;
   refreshThemePreview(state.themes.find(theme => theme.id === themeId));
 });
+document.querySelector("#themePreviewState").addEventListener("change", () => {
+  const themeId = document.querySelector("#themeEditorForm").elements.themeId.value;
+  refreshThemePreview(state.themes.find(theme => theme.id === themeId));
+});
 document.querySelector("#themeEditorForm").addEventListener("submit", saveTheme);
+document.querySelector("#uploadThemeBackground").addEventListener("click", uploadThemeBackground);
+document.querySelector("#deleteThemeBackground").addEventListener("click", deleteThemeBackground);
+document.querySelector("#themeScheduleForm").addEventListener("submit", saveThemeSchedule);
+document.querySelector("#cancelThemeSchedule").addEventListener("click", resetThemeScheduleForm);
 document.querySelector("#themeEditorForm").addEventListener("input", event => {
   let tokenName = event.target.name;
   let value = event.target.value;
@@ -948,6 +1178,11 @@ document.querySelector("#themeEditorForm").addEventListener("input", event => {
     const form = event.currentTarget;
     value = rgbaValue(form.elements.panelColor.value, 1 - Number(form.elements.panelTransparency.value) / 100);
     document.querySelector("#panelTransparencyValue").textContent = `${Math.round(Number(form.elements.panelTransparency.value))}%`;
+  } else if (tokenName === "upcomingTileColor" || tokenName === "upcomingTileTransparency") {
+    tokenName = "upcomingTileBg";
+    const form = event.currentTarget;
+    value = rgbaValue(form.elements.upcomingTileColor.value, 1 - Number(form.elements.upcomingTileTransparency.value) / 100);
+    document.querySelector("#upcomingTileTransparencyValue").textContent = `${Math.round(Number(form.elements.upcomingTileTransparency.value))}%`;
   }
   const property = themeTokenProperties[tokenName];
   const kiosk = document.querySelector("#themePreviewFrame").contentDocument?.querySelector("#kiosk");
@@ -993,6 +1228,10 @@ document.addEventListener("click", event => {
   if (deleteAssignmentButton) return deleteCalendarAssignment(deleteAssignmentButton.dataset.deleteAssignment);
   const editThemeButton = event.target.closest("[data-edit-theme]");
   if (editThemeButton) return editTheme(editThemeButton.dataset.editTheme);
+  const editScheduleButton = event.target.closest("[data-edit-theme-schedule]");
+  if (editScheduleButton) return editThemeSchedule(editScheduleButton.dataset.editThemeSchedule);
+  const deleteScheduleButton = event.target.closest("[data-delete-theme-schedule]");
+  if (deleteScheduleButton) return deleteThemeSchedule(deleteScheduleButton.dataset.deleteThemeSchedule);
 });
 
 document.addEventListener("change", event => {

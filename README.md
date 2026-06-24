@@ -24,6 +24,8 @@ The scaffold includes:
 - Calendar account management for Google service accounts, Microsoft 365 applications, and public iCalendar URLs.
 - Per-room calendar assignment, calendar discovery/verification, paginated manual and scheduled sync, recurring-event loading, private-event masking, and sync history.
 - Editable cloned-theme design tokens with selectable-room live preview, color pickers, panel opacity, draft, publish, and archive states.
+- Persistent theme background image upload/removal and configurable upcoming-event tile colors.
+- Scoped theme scheduling for centers, campuses, buildings, and rooms with owner tracking and two-year history.
 - Encrypted SMTP settings, connection testing, invitation emails, manual notifications, and delivery history.
 - Emergency and safety broadcast template creation, editing, deletion, and launch selection.
 - System Administrator-only emergency and safety broadcast lifecycle history.

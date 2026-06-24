@@ -278,6 +278,12 @@ In the admin portal:
 35. In **Theme Editor**, switch the Preview Room dropdown and confirm the iframe changes rooms without closing the editor.
 36. Change each status color with its color picker and adjust Event Panel transparency; confirm the preview updates before saving.
 37. Leave a tablet kiosk asleep or backgrounded, change its assigned theme, then wake the device and confirm it refreshes within 10 seconds without manually reloading.
+38. Clone a theme, upload a PNG, JPEG, or WebP background image, save the theme, and confirm the image appears in all three preview states.
+39. Rebuild the application container and confirm the uploaded background still loads from the persistent `./data/theme-assets` volume.
+40. Change the upcoming-event tile background, title, and detail colors and confirm the preview updates.
+41. Open **Theme Scheduler**, schedule a published theme for one or more eligible targets, and confirm the owner name appears.
+42. Confirm the scheduled theme overrides Room Management during the active window and automatically returns to the room theme afterward.
+43. Confirm completed schedules appear under **Past Schedules** and records older than two years are not displayed.
 
 ## 9. Configure SMTP Email
 
@@ -335,5 +341,6 @@ Only use `down -v` when you intentionally want to delete the test database and R
 
 - PostgreSQL is the primary application data store.
 - `data/app-data.json` is retained as an automatically updated compatibility mirror and migration source.
+- Uploaded theme background images are retained in `data/theme-assets`; include this directory in backups.
 - Redis is included for future multi-instance broadcast fan-out and background jobs.
 - Authentication and production role enforcement remain future implementation layers.

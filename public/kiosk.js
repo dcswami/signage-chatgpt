@@ -1,6 +1,7 @@
 const root = document.querySelector("#kiosk");
 const roomCode = root.dataset.roomCode;
 const themeOverride = root.dataset.themeOverride;
+const stateOverride = root.dataset.stateOverride;
 const isPreview = root.dataset.preview === "true";
 const alertSound = document.querySelector("#alertSound");
 const soundGate = document.querySelector("#soundGate");
@@ -14,6 +15,7 @@ let renderPromise = null;
 async function fetchRoom() {
   const query = new URLSearchParams({ refresh: Date.now().toString() });
   if (themeOverride) query.set("theme", themeOverride);
+  if (stateOverride) query.set("state", stateOverride);
   const response = await fetch(`/api/rooms/${roomCode}?${query}`, {
     cache: "no-store",
     headers: { "Cache-Control": "no-cache" }
@@ -41,6 +43,9 @@ function applyThemeTokens(tokens = {}) {
     footerText: "--footer-text",
     ink: "--ink",
     panel: "--panel",
+    upcomingTileBg: "--upcoming-tile-bg",
+    upcomingTitleText: "--upcoming-title-text",
+    upcomingDetailText: "--upcoming-detail-text",
     headerFont: "--theme-header-font",
     footerFont: "--theme-footer-font",
     eventDetailFont: "--theme-event-detail-font",
@@ -49,6 +54,10 @@ function applyThemeTokens(tokens = {}) {
   for (const [key, property] of Object.entries(properties)) {
     if (tokens[key]) root.style.setProperty(property, tokens[key]);
   }
+  root.style.setProperty(
+    "--theme-background-image",
+    tokens.backgroundImage ? `url("${String(tokens.backgroundImage).replaceAll('"', '\\"')}")` : "none"
+  );
 }
 
 function statusTitle(room) {

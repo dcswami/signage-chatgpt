@@ -69,6 +69,7 @@ const child = spawn(process.execPath, ["src/server.mjs"], {
     DATA_DIR: dataDir,
     HOST: "127.0.0.1",
     PORT: String(port),
+    THEME_ASSETS_DIR: path.join(dataDir, "theme-assets"),
     CREDENTIAL_ENCRYPTION_KEY: "integration-test-credential-key-123456789"
   },
   stdio: ["ignore", "pipe", "pipe"]
@@ -324,15 +325,86 @@ try {
       cssTokens: {
         ...clone.cssTokens,
         availableBg: "#d8f3dc",
+        upcomingTileBg: "rgba(12, 34, 56, 0.65)",
+        upcomingTitleText: "#ffffff",
         headerFont: "Georgia, serif"
       }
     })
   });
   assert.equal(updatedTheme.published, true);
   assert.equal(updatedTheme.cssTokens.availableBg, "#d8f3dc");
+  assert.equal(updatedTheme.cssTokens.upcomingTileBg, "rgba(12, 34, 56, 0.65)");
+  const backgroundTheme = await request(`/api/themes/${clone.id}/background`, {
+    method: "POST",
+    body: JSON.stringify({
+      filename: "integration.png",
+      mimeType: "image/png",
+      data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    })
+  });
+  assert.match(backgroundTheme.cssTokens.backgroundImage, /^\/assets\/uploads\/themes\//);
+  const uploadedBackgroundResponse = await fetch(`${baseUrl}${backgroundTheme.cssTokens.backgroundImage}`);
+  assert.equal(uploadedBackgroundResponse.status, 200);
+  assert.equal(uploadedBackgroundResponse.headers.get("content-type"), "image/png");
   const themedRoom = await request(`/api/rooms/room-108-shishu?theme=${clone.id}`);
   assert.equal(themedRoom.themeName, "Updated Integration Theme");
   assert.equal(themedRoom.themeCssTokens.headerFont, "Georgia, serif");
+  const warningPreview = await request(`/api/rooms/room-108-shishu?theme=${clone.id}&state=warning`);
+  assert.equal(warningPreview.status, "warning");
+  assert.equal(warningPreview.currentEventTitle, "Sample Event Near Completion");
+
+  const activeSchedule = await request("/api/theme-schedules", {
+    method: "POST",
+    body: JSON.stringify({
+      themeId: clone.id,
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      centerIds: [],
+      campusIds: [],
+      buildingIds: [],
+      roomIds: [room.id]
+    })
+  }, 201);
+  assert.equal(activeSchedule.ownerName, "System Administrator");
+  const updatedSchedule = await request(`/api/theme-schedules/${activeSchedule.id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      ...activeSchedule,
+      endsAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString()
+    })
+  });
+  assert.equal(updatedSchedule.updatedByName, "System Administrator");
+  const scheduledRoom = await request("/api/rooms/updated-integration-room");
+  assert.equal(scheduledRoom.themeName, "Updated Integration Theme");
+  assert.equal(scheduledRoom.activeThemeScheduleId, activeSchedule.id);
+
+  const pastSchedule = await request("/api/theme-schedules", {
+    method: "POST",
+    body: JSON.stringify({
+      themeId: clone.id,
+      startsAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      endsAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      centerIds: [],
+      campusIds: [],
+      buildingIds: [building.id],
+      roomIds: []
+    })
+  }, 201);
+  const oldSchedule = await request("/api/theme-schedules", {
+    method: "POST",
+    body: JSON.stringify({
+      themeId: clone.id,
+      startsAt: new Date(Date.now() - 3 * 365 * 24 * 60 * 60 * 1000).toISOString(),
+      endsAt: new Date(Date.now() - 3 * 365 * 24 * 60 * 60 * 1000 + 60 * 60 * 1000).toISOString(),
+      centerIds: [],
+      campusIds: [],
+      buildingIds: [],
+      roomIds: [room.id]
+    })
+  }, 201);
+  const scheduleState = await request("/api/state");
+  assert.equal(scheduleState.themeSchedules.some(item => item.id === pastSchedule.id && item.ownerName === "System Administrator"), true);
+  assert.equal(scheduleState.themeSchedules.some(item => item.id === oldSchedule.id), false);
 
   const broadcast = await request("/api/broadcasts", {
     method: "POST",
@@ -361,6 +433,10 @@ try {
   assert.equal(stateAfterTemplateDelete.broadcastTemplates.some(item => item.id === broadcastTemplate.id), false);
   await request(`/api/calendar-assignments/${calendarAssignment.id}`, { method: "DELETE" });
   await request(`/api/calendar-accounts/${calendarAccount.id}`, { method: "DELETE" });
+  await request(`/api/theme-schedules/${activeSchedule.id}`, { method: "DELETE" });
+  await request(`/api/theme-schedules/${pastSchedule.id}`, { method: "DELETE" });
+  await request(`/api/theme-schedules/${oldSchedule.id}`, { method: "DELETE" });
+  await request(`/api/themes/${clone.id}/background`, { method: "DELETE" });
   await request(`/api/rooms/${room.id}`, { method: "DELETE" });
   await request(`/api/buildings/${building.id}`, { method: "DELETE" });
   await request(`/api/campuses/${campus.id}`, { method: "DELETE" });
@@ -378,6 +454,8 @@ try {
   assert.match(adminHtml, /Calendar Accounts/);
   assert.match(adminHtml, /Live Theme Preview/);
   assert.match(adminHtml, /themePreviewRoom/);
+  assert.match(adminHtml, /Theme Scheduler/);
+  assert.match(adminHtml, /Upcoming Schedule/);
   assert.match(adminHtml, /Broadcast History/);
   assert.match(adminHtml, /Published By/);
   assert.equal(smtpMessages.length >= 3, true);

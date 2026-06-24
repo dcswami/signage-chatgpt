@@ -19,6 +19,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   background: var(--bg);
   color: var(--ink);
@@ -466,6 +470,39 @@ th {
   font-weight: 700;
 }
 
+.theme-background-field {
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  margin: 14px 0;
+  padding: 12px;
+}
+
+.theme-background-field legend {
+  color: var(--muted);
+  font-size: 14px;
+  padding: 0 6px;
+}
+
+.theme-background-field img {
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--line);
+  max-height: 180px;
+  object-fit: cover;
+  width: 100%;
+}
+
+.scheduler-target-grid {
+  display: grid;
+  gap: 13px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 14px 0;
+}
+
+.scheduler-target-grid select {
+  min-height: 180px;
+}
+
 .assignment-list {
   border-top: 1px solid var(--line);
   margin-top: 18px;
@@ -611,6 +648,10 @@ dialog form {
     grid-template-columns: 1fr;
   }
 
+  .scheduler-target-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .filters {
     grid-template-columns: 1fr;
   }
@@ -631,7 +672,8 @@ dialog form {
   .summary-grid,
   .management-grid,
   .admin-grid,
-  .form-grid {
+  .form-grid,
+  .scheduler-target-grid {
     grid-template-columns: 1fr;
   }
 

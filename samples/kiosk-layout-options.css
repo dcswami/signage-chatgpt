@@ -8,6 +8,10 @@
   --footer-text: #b6691d;
   --ink: #202020;
   --panel: rgba(255, 255, 255, 0.58);
+  --upcoming-tile-bg: rgba(255, 255, 255, 0.58);
+  --upcoming-title-text: #202020;
+  --upcoming-detail-text: rgba(32, 32, 32, 0.68);
+  --theme-background-image: none;
   --page: #eef1f3;
   --formal-bg: #f4eee6;
   --formal-panel: #fff8ef;
@@ -105,6 +109,10 @@ body {
   padding: 28px;
   position: relative;
   width: 100%;
+  background-image: var(--theme-background-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
 }
 
 .state-grid {
@@ -240,7 +248,8 @@ body {
 }
 
 .event-card {
-  background: var(--panel);
+  background: var(--upcoming-tile-bg);
+  color: var(--upcoming-title-text);
   line-height: 1.12;
   min-height: 78px;
   overflow: hidden;
@@ -256,13 +265,14 @@ body {
 }
 
 .event-card strong {
+  color: var(--upcoming-title-text);
   font-family: var(--theme-upcoming-font);
   font-size: clamp(18px, 1.3vw, 24px);
   font-weight: 500;
 }
 
 .event-card span {
-  color: rgba(32, 32, 32, 0.68);
+  color: var(--upcoming-detail-text);
   font-family: var(--theme-upcoming-font);
   font-size: clamp(14px, 1vw, 20px);
   font-weight: 300;
@@ -271,7 +281,7 @@ body {
 
 /* 1. Classic Institutional */
 .theme-classic {
-  background: var(--available-bg);
+  background-color: var(--available-bg);
   --theme-header-font: Arial, Helvetica, sans-serif;
   --theme-footer-font: Arial, Helvetica, sans-serif;
   --theme-event-detail-font: Arial, Helvetica, sans-serif;
@@ -279,11 +289,11 @@ body {
 }
 
 .theme-classic[data-room-state="busy"] {
-  background: var(--busy-bg);
+  background-color: var(--busy-bg);
 }
 
 .theme-classic[data-room-state="warning"] {
-  background: var(--warning-bg);
+  background-color: var(--warning-bg);
 }
 
 .classic-main {
@@ -356,7 +366,7 @@ body {
 
 /* 2. Event Formal */
 .theme-formal {
-  background: var(--formal-bg);
+  background-color: var(--formal-bg);
   border: 16px solid var(--formal-accent);
   --theme-header-font: Arial, Helvetica, sans-serif;
   --theme-footer-font: Georgia, "Times New Roman", serif;
@@ -422,14 +432,15 @@ body {
 }
 
 .formal-events .event-card {
-  background: var(--formal-panel);
+  background: var(--upcoming-tile-bg);
 }
 
 /* 5. Custom Background */
 .theme-custom {
-  background:
+  background-color: #33200f;
+  background-image:
     linear-gradient(rgba(33, 18, 8, 0.08), rgba(33, 18, 8, 0.08)),
-    url("../assets/backgrounds/background.png") center / cover no-repeat;
+    var(--theme-background-image);
   color: #fff4db;
   --theme-header-font: Georgia, "Times New Roman", serif;
   --theme-footer-font: Georgia, "Times New Roman", serif;
@@ -536,8 +547,8 @@ body {
 }
 
 .custom-events .event-card {
-  background: color-mix(in srgb, var(--custom-paper) 70%, transparent);
-  color: #261407;
+  background: var(--upcoming-tile-bg);
+  color: var(--upcoming-title-text);
 }
 
 .custom-footer {

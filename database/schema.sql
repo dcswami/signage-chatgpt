@@ -82,6 +82,22 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS theme_schedules (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  theme_id uuid NOT NULL REFERENCES kiosk_themes(id),
+  starts_at timestamptz NOT NULL,
+  ends_at timestamptz NOT NULL,
+  center_ids uuid[] NOT NULL DEFAULT '{}',
+  campus_ids uuid[] NOT NULL DEFAULT '{}',
+  building_ids uuid[] NOT NULL DEFAULT '{}',
+  room_ids uuid[] NOT NULL DEFAULT '{}',
+  created_by uuid REFERENCES users(id),
+  updated_by uuid REFERENCES users(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz,
+  CHECK (ends_at > starts_at)
+);
+
 CREATE TABLE IF NOT EXISTS roles (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name text NOT NULL,
@@ -294,6 +310,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_rooms_code ON rooms(code);
 CREATE INDEX IF NOT EXISTS idx_calendar_events_room_time ON calendar_events(room_id, starts_at, ends_at);
 CREATE INDEX IF NOT EXISTS idx_calendar_sync_history_created_at ON calendar_sync_history(created_at);
+CREATE INDEX IF NOT EXISTS idx_theme_schedules_time ON theme_schedules(starts_at, ends_at);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
 CREATE INDEX IF NOT EXISTS idx_email_delivery_history_created_at ON email_delivery_history(created_at);

@@ -332,6 +332,7 @@ Important current behavior:
 - Live kiosk updates use Server-Sent Events.
 - PostgreSQL stores the primary application state.
 - `/opt/signage/source/data/app-data.json` is maintained as a compatibility mirror and first-run migration source.
+- Uploaded theme backgrounds are persisted under `/opt/signage/source/data/theme-assets` and mounted into the app container.
 - On the first database-backed startup, existing JSON state is imported automatically without changing room codes.
 - Redis is available for future production broadcast fan-out and job processing.
 
@@ -809,6 +810,10 @@ fi
 
 if [ -f data/app-data.json ]; then
   cp data/app-data.json "$BACKUP_DIR/app-data-$STAMP.json"
+fi
+
+if [ -d data/theme-assets ]; then
+  tar -czf "$BACKUP_DIR/theme-assets-$STAMP.tar.gz" -C data theme-assets
 fi
 
 docker compose -f docker-compose.test.yml -p "$COMPOSE_PROJECT" exec -T postgres pg_dump -U "${POSTGRES_USER:-signage_app}" "${POSTGRES_DB:-signage}" | gzip > "$BACKUP_DIR/postgres-$STAMP.sql.gz"
