@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import { createStore } from "./storage.mjs";
 import { encryptCredential, publicEmailSettings, sendEmail, verifySmtp } from "./email.mjs";
+import { syncCalendar } from "./calendar.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -15,6 +16,41 @@ const baseUrl = process.env.APP_BASE_URL || `http://localhost:${port}`;
 const assetVersion = process.env.APP_BUILD_VERSION || Date.now().toString(36);
 
 const clients = new Map();
+const permissionCatalog = [
+  "dashboard.view",
+  "center.manage",
+  "campus.manage",
+  "building.manage",
+  "room.manage",
+  "room.status.change",
+  "user.manage",
+  "role.manage",
+  "calendar.manage",
+  "calendar.sync",
+  "theme.manage",
+  "notification.manage",
+  "broadcast.publish",
+  "broadcast.template.manage",
+  "broadcast.history.view",
+  "audit.view",
+  "settings.manage"
+];
+
+const defaultThemeTokens = {
+  availableBg: "#9bd092",
+  availableText: "#005d0d",
+  busyBg: "#d48d90",
+  busyText: "#6c0000",
+  warningBg: "#f1c66d",
+  warningText: "#654000",
+  footerText: "#b6691d",
+  ink: "#202020",
+  panel: "rgba(255, 255, 255, 0.58)",
+  headerFont: "Arial, Helvetica, sans-serif",
+  footerFont: "Arial, Helvetica, sans-serif",
+  eventDetailFont: "Arial, Helvetica, sans-serif",
+  upcomingFont: "Arial, Helvetica, sans-serif"
+};
 
 const seedData = {
   settings: {
@@ -94,16 +130,16 @@ const seedData = {
     }
   ],
   themes: [
-    { id: "classic-institutional", name: "Classic Institutional", builtIn: true, cloneable: true },
-    { id: "event-formal", name: "Event Formal", builtIn: true, cloneable: true },
-    { id: "custom-background", name: "Custom Background", builtIn: true, cloneable: true }
+    { id: "classic-institutional", name: "Classic Institutional", builtIn: true, cloneable: true, baseThemeId: "classic-institutional", published: true, cssTokens: defaultThemeTokens },
+    { id: "event-formal", name: "Event Formal", builtIn: true, cloneable: true, baseThemeId: "event-formal", published: true, cssTokens: { ...defaultThemeTokens, footerFont: 'Georgia, "Times New Roman", serif', eventDetailFont: 'Georgia, "Times New Roman", serif' } },
+    { id: "custom-background", name: "Custom Background", builtIn: true, cloneable: true, baseThemeId: "custom-background", published: true, cssTokens: { ...defaultThemeTokens, headerFont: 'Georgia, "Times New Roman", serif', footerFont: 'Georgia, "Times New Roman", serif', eventDetailFont: 'Georgia, "Times New Roman", serif' } }
   ],
   roles: [
-    { id: "system-admin", name: "System Admin", cloneable: true, permissions: ["manage_all"] },
-    { id: "center-admin", name: "Center Admin", cloneable: true, permissions: ["manage_center", "broadcast", "view_dashboard"] },
-    { id: "campus-manager", name: "Campus Manager", cloneable: true, permissions: ["manage_campuses", "manage_buildings", "manage_rooms", "broadcast", "view_dashboard"] },
-    { id: "building-manager", name: "Building Manager", cloneable: true, permissions: ["manage_buildings", "manage_rooms", "broadcast", "view_dashboard"] },
-    { id: "room-manager", name: "Room Manager", cloneable: true, permissions: ["manage_rooms", "view_dashboard"] }
+    { id: "system-admin", name: "System Admin", builtIn: true, cloneable: true, active: true, permissions: permissionCatalog },
+    { id: "center-admin", name: "Center Admin", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "center.manage", "campus.manage", "building.manage", "room.manage", "room.status.change", "user.manage", "calendar.manage", "calendar.sync", "theme.manage", "notification.manage", "broadcast.publish", "broadcast.history.view"] },
+    { id: "campus-manager", name: "Campus Manager", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "campus.manage", "building.manage", "room.manage", "room.status.change", "calendar.sync", "broadcast.publish"] },
+    { id: "building-manager", name: "Building Manager", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "building.manage", "room.manage", "room.status.change", "calendar.sync", "broadcast.publish"] },
+    { id: "room-manager", name: "Room Manager", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "room.manage", "room.status.change"] }
   ],
   users: [
     {
@@ -127,22 +163,10 @@ const seedData = {
       lastEmailAt: null
     }
   ],
-  calendarAccounts: [
-    {
-      id: "calendar-google-main",
-      provider: "Google Calendar",
-      accountName: "LA Center Google Calendar",
-      accessLevel: "writable",
-      calendars: ["Room 108", "Room 205", "Room 301"]
-    },
-    {
-      id: "calendar-public-feed",
-      provider: "Public URL",
-      accountName: "Public Room Feed",
-      accessLevel: "read-only",
-      calendars: ["Public Events"]
-    }
-  ],
+  calendarAccounts: [],
+  calendarAssignments: [],
+  calendarEvents: [],
+  calendarSyncHistory: [],
   upcomingEvents: [
     { roomId: "room-108", title: "iB Parent's Meeting", detail: "Mon, Jun 22, 4:00 PM - 5:00 PM" },
     { roomId: "room-108", title: "Karyakar Meeting", detail: "Mon, Jun 22, 5:00 PM - 5:30 PM" },
@@ -223,7 +247,7 @@ function normalizeData(data) {
       }
     }
   };
-  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "auditLogs"]) {
+  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "calendarAssignments", "calendarEvents", "calendarSyncHistory", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "auditLogs"]) {
     if (!Array.isArray(normalized[key])) normalized[key] = structuredClone(seedData[key] || []);
   }
   normalized.centers = normalized.centers.map(center => ({ active: true, ...center }));
@@ -234,6 +258,14 @@ function normalizeData(data) {
     roomType: "Classroom",
     capacity: null,
     ...room
+  }));
+  normalized.themes = normalized.themes.map(theme => ({
+    baseThemeId: theme.sourceThemeId || theme.id,
+    published: true,
+    archived: false,
+    cssTokens: structuredClone(defaultThemeTokens),
+    ...theme,
+    cssTokens: { ...defaultThemeTokens, ...theme.cssTokens }
   }));
   normalized.users = normalized.users.map(user => ({
     status: "active",
@@ -249,8 +281,36 @@ function normalizeData(data) {
     email: String(user.email || "").toLowerCase()
   }));
   for (const role of seedData.roles) {
-    if (!normalized.roles.some(item => item.id === role.id)) normalized.roles.push(structuredClone(role));
+    const existing = normalized.roles.find(item => item.id === role.id);
+    if (!existing) normalized.roles.push(structuredClone(role));
+    else Object.assign(existing, { builtIn: true, active: existing.active !== false, permissions: existing.permissions?.includes("manage_all") ? permissionCatalog : existing.permissions });
   }
+  normalized.roles = normalized.roles.map(role => ({
+    builtIn: false,
+    cloneable: true,
+    active: true,
+    permissions: [],
+    ...role
+  }));
+  normalized.calendarAccounts = normalized.calendarAccounts
+    .filter(account => ["google", "microsoft365", "public-url"].includes(account.provider))
+    .map(account => ({
+      accessLevel: "read-only",
+      active: true,
+      encryptedCredential: "",
+      calendars: [],
+      syncIntervalMinutes: 15,
+      lastSuccessfulSyncAt: null,
+      lastSyncError: "",
+      ...account
+    }));
+  normalized.calendarAssignments = normalized.calendarAssignments.map(assignment => ({
+    active: true,
+    lastAttemptAt: null,
+    lastSuccessfulSyncAt: null,
+    lastSyncError: "",
+    ...assignment
+  }));
   normalized.broadcastTemplates = normalized.broadcastTemplates.map(template => ({
     severity: "urgent",
     visualStyle: "emergency",
@@ -261,6 +321,15 @@ function normalizeData(data) {
     ...template,
     approvalRequired: true
   }));
+  normalized.broadcasts = normalized.broadcasts.map(broadcast => ({
+    endedAt: null,
+    endedBy: null,
+    status: broadcast.endedAt ? "ended" : "active",
+    ...broadcast
+  }));
+  const cutoff = Date.now() - 183 * 24 * 60 * 60 * 1000;
+  normalized.calendarSyncHistory = normalized.calendarSyncHistory.filter(item => new Date(item.createdAt).getTime() >= cutoff);
+  normalized.auditLogs = normalized.auditLogs.filter(item => new Date(item.createdAt).getTime() >= cutoff);
   return normalized;
 }
 
@@ -303,11 +372,14 @@ function readBody(req) {
   });
 }
 
-function publicRoom(room) {
+function publicRoom(room, themeOverrideId = "") {
   const center = db.centers.find(item => item.id === room.centerId);
   const campus = db.campuses.find(item => item.id === room.campusId);
   const building = db.buildings.find(item => item.id === room.buildingId);
-  const theme = db.themes.find(item => item.id === room.themeId);
+  const requestedThemeId = themeOverrideId || room.themeId;
+  const theme = db.themes.find(item => item.id === requestedThemeId && (themeOverrideId || (item.published !== false && item.archived !== true)))
+    || db.themes.find(item => item.id === room.themeId)
+    || db.themes[0];
   const events = db.upcomingEvents.filter(item => item.roomId === room.id).slice(0, 4);
   return {
     ...room,
@@ -321,9 +393,160 @@ function publicRoom(room) {
       minute: "2-digit"
     }).format(new Date()),
     themeName: theme?.name || "Theme",
+    themeBaseId: theme?.baseThemeId || theme?.sourceThemeId || theme?.id || "classic-institutional",
+    themeCssTokens: theme?.cssTokens || defaultThemeTokens,
     upcomingEvents: events,
     activeBroadcast: db.activeBroadcast?.targetRoomCodes?.includes(room.code) ? db.activeBroadcast : null
   };
+}
+
+function publicCalendarAccount(account) {
+  return {
+    id: account.id,
+    provider: account.provider,
+    accountName: account.accountName,
+    accessLevel: account.accessLevel,
+    active: account.active,
+    tenantId: account.tenantId || "",
+    clientId: account.clientId || "",
+    mailbox: account.mailbox || "",
+    hasCredential: Boolean(account.encryptedCredential),
+    calendars: account.calendars || [],
+    syncIntervalMinutes: account.syncIntervalMinutes || 15,
+    lastSuccessfulSyncAt: account.lastSuccessfulSyncAt || null,
+    lastSyncError: account.lastSyncError || ""
+  };
+}
+
+function currentViewer(req) {
+  const requestedId = String(req.headers["x-user-id"] || "");
+  if (requestedId) return db.users.find(user => user.id === requestedId) || null;
+  return db.users.find(user => user.roleIds.includes("system-admin")) || db.users[0] || null;
+}
+
+function viewerPermissions(user) {
+  const permissions = new Set();
+  for (const roleId of user?.roleIds || []) {
+    const role = db.roles.find(item => item.id === roleId && item.active !== false);
+    for (const permission of role?.permissions || []) permissions.add(permission);
+  }
+  return permissions;
+}
+
+function viewerIsSystemAdmin(user) {
+  return Boolean(user?.roleIds?.includes("system-admin"));
+}
+
+function viewerHasPermission(req, permission) {
+  const viewer = currentViewer(req);
+  return viewerIsSystemAdmin(viewer) || viewerPermissions(viewer).has(permission);
+}
+
+function viewerCanAccessRoom(user, room) {
+  if (viewerIsSystemAdmin(user)) return true;
+  return Boolean(
+    user?.centerIds?.includes(room.centerId)
+    || user?.campusIds?.includes(room.campusId)
+    || user?.buildingIds?.includes(room.buildingId)
+  );
+}
+
+function requirePermission(req, res, permission) {
+  if (viewerHasPermission(req, permission)) return true;
+  json(res, 403, { error: `Permission required: ${permission}` });
+  return false;
+}
+
+function publicViewer(user) {
+  return {
+    id: user?.id || "",
+    name: user?.name || "",
+    isSystemAdmin: viewerIsSystemAdmin(user),
+    permissions: [...viewerPermissions(user)]
+  };
+}
+
+function calendarDetailLine(event, timezone) {
+  const start = new Date(event.startsAt);
+  const end = new Date(event.endsAt);
+  const day = new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "short", month: "short", day: "numeric" }).format(start);
+  const time = value => new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit" }).format(value);
+  return `${day}, ${time(start)} - ${time(end)}`;
+}
+
+function refreshRoomEvents(roomId) {
+  const room = db.rooms.find(item => item.id === roomId);
+  if (!room) return;
+  const center = db.centers.find(item => item.id === room.centerId);
+  const timezone = center?.timezone || "UTC";
+  const now = new Date();
+  const events = db.calendarEvents
+    .filter(item => item.roomId === roomId && new Date(item.endsAt) >= now)
+    .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  db.upcomingEvents = db.upcomingEvents.filter(item => item.roomId !== roomId);
+  db.upcomingEvents.push(...events.slice(0, 4).map(event => ({
+    roomId,
+    title: event.title,
+    detail: calendarDetailLine(event, timezone)
+  })));
+  const current = events.find(event => new Date(event.startsAt) <= now && new Date(event.endsAt) > now);
+  if (current) {
+    const remainingMinutes = Math.max(0, Math.ceil((new Date(current.endsAt) - now) / 60000));
+    room.currentEventTitle = current.title;
+    room.currentEventUntil = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit" }).format(new Date(current.endsAt));
+    room.status = remainingMinutes <= (new Date(current.endsAt) - new Date(current.startsAt) > 30 * 60000 ? 10 : 5) ? "warning" : "busy";
+  } else {
+    room.status = "available";
+    room.currentEventTitle = "";
+    room.currentEventUntil = events[0]
+      ? new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit" }).format(new Date(events[0].startsAt))
+      : "";
+  }
+}
+
+async function syncAssignment(assignment) {
+  const account = db.calendarAccounts.find(item => item.id === assignment.accountId);
+  const calendar = account?.calendars?.find(item => item.id === assignment.calendarId);
+  const room = db.rooms.find(item => item.id === assignment.roomId);
+  if (!account || !calendar || !room) throw new Error("Calendar assignment is incomplete.");
+  const startedAt = new Date();
+  assignment.lastAttemptAt = startedAt.toISOString();
+  try {
+    const events = await syncCalendar(account, calendar, new Date(startedAt.getTime() - 24 * 60 * 60 * 1000), new Date(startedAt.getTime() + 90 * 24 * 60 * 60 * 1000));
+    db.calendarEvents = db.calendarEvents.filter(item => item.roomId !== room.id || item.assignmentId !== assignment.id);
+    db.calendarEvents.push(...events.map(event => ({ ...event, id: entityId("calendar-event"), assignmentId: assignment.id, roomId: room.id, provider: account.provider })));
+    assignment.lastSuccessfulSyncAt = new Date().toISOString();
+    assignment.lastSyncError = "";
+    account.lastSuccessfulSyncAt = assignment.lastSuccessfulSyncAt;
+    account.lastSyncError = "";
+    db.calendarSyncHistory.unshift({
+      id: entityId("calendar-sync"),
+      assignmentId: assignment.id,
+      roomId: room.id,
+      accountId: account.id,
+      status: "success",
+      eventCount: events.length,
+      createdAt: new Date().toISOString()
+    });
+    refreshRoomEvents(room.id);
+    notifyRoom(room.code);
+    return { eventCount: events.length };
+  } catch (error) {
+    assignment.lastSyncError = cleanText(error.message, 500);
+    account.lastSyncError = assignment.lastSyncError;
+    db.calendarSyncHistory.unshift({
+      id: entityId("calendar-sync"),
+      assignmentId: assignment.id,
+      roomId: room.id,
+      accountId: account.id,
+      status: "failed",
+      error: assignment.lastSyncError,
+      createdAt: new Date().toISOString()
+    });
+    throw error;
+  } finally {
+    db.calendarSyncHistory = db.calendarSyncHistory.slice(0, 500);
+  }
 }
 
 function publicUser(user) {
@@ -482,6 +705,8 @@ function adminPage() {
         <button type="button" class="active" data-tab="dashboard">Dashboard</button>
         <button type="button" data-tab="locations">Locations & Rooms</button>
         <button type="button" data-tab="users">Users</button>
+        <button type="button" data-tab="calendars">Calendar Sync</button>
+        <button type="button" data-tab="themes">Theme Editor</button>
         <button type="button" data-tab="notifications">Email Notifications</button>
         <button type="button" data-tab="broadcast">Emergency Broadcast</button>
         <button type="button" data-tab="configuration">Configuration</button>
@@ -569,6 +794,56 @@ function adminPage() {
         </section>
       </section>
 
+      <section class="tab-panel" data-panel="calendars">
+        <section class="management-grid">
+          <section class="panel">
+            <div class="panel-heading">
+              <div><h2>Calendar Accounts</h2><p>Google service accounts, Microsoft 365 applications, and public calendar URLs.</p></div>
+              <button type="button" data-new="calendarAccount">New Account</button>
+            </div>
+            <div id="calendarAccountList" class="entity-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Room Calendar Assignment</h2><p>Each room maps to one calendar source in this release.</p></div></div>
+            <form id="calendarAssignmentForm">
+              <label>Room <select name="roomId" id="calendarAssignmentRoom" required></select></label>
+              <label>Account <select name="accountId" id="calendarAssignmentAccount" required></select></label>
+              <label>Calendar <select name="calendarId" id="calendarAssignmentCalendar" required></select></label>
+              <button type="submit">Assign Calendar</button>
+            </form>
+            <div id="calendarAssignmentList" class="entity-list assignment-list"></div>
+          </section>
+        </section>
+        <section class="panel">
+          <div class="panel-heading"><div><h2>Sync History</h2><p>Manual and scheduled synchronization results retained for up to six months.</p></div></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Time</th><th>Room</th><th>Account</th><th>Status</th><th>Events</th></tr></thead>
+            <tbody id="calendarSyncRows"></tbody>
+          </table></div>
+        </section>
+      </section>
+
+      <section class="tab-panel" data-panel="themes">
+        <section class="management-grid theme-editor-grid">
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Themes</h2><p>Clone built-in themes, then edit and publish the custom copy.</p></div></div>
+            <div id="themeManagerList" class="entity-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Live Theme Preview</h2><p id="themePreviewTitle">Select a cloned theme to edit.</p></div></div>
+            <form id="themeEditorForm" hidden>
+              <input type="hidden" name="themeId" />
+              <label>Theme Name <input name="name" required /></label>
+              <div id="themeTokenFields" class="form-grid"></div>
+              <label class="check-label"><input name="published" type="checkbox" /> Published</label>
+              <label class="check-label"><input name="archived" type="checkbox" /> Archived</label>
+              <button type="submit">Save Theme</button>
+            </form>
+            <iframe id="themePreviewFrame" class="theme-preview-frame" title="Theme preview" src="/preview/room-108-shishu"></iframe>
+          </section>
+        </section>
+      </section>
+
       <section class="tab-panel" data-panel="notifications">
         <section class="management-grid email-grid">
           <section class="panel">
@@ -646,13 +921,21 @@ function adminPage() {
           </div>
           <div id="broadcastTemplateList" class="entity-list"></div>
         </section>
+        <section class="panel" id="broadcastHistoryPanel" hidden>
+          <div class="panel-heading"><div><h2>Broadcast History</h2><p>System Administrator view of broadcast lifecycle and targets.</p></div></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Started</th><th>Title</th><th>Severity</th><th>Targets</th><th>Status</th><th>Ended</th></tr></thead>
+            <tbody id="broadcastHistoryRows"></tbody>
+          </table></div>
+        </section>
       </section>
 
       <section class="tab-panel" data-panel="configuration">
         <section class="admin-grid">
-          <section class="panel"><h2>Themes</h2><div id="themeList"></div></section>
-          <section class="panel"><h2>Roles</h2><div id="userRoleList"></div></section>
-          <section class="panel"><h2>Calendar Accounts</h2><div id="calendarList"></div></section>
+          <section class="panel span-2">
+            <div class="panel-heading"><div><h2>Permission & Role Editor</h2><p>Configure module and action permissions, clone roles, and protect assignments.</p></div><button type="button" data-new="role">New Role</button></div>
+            <div id="roleManagerList" class="entity-list"></div>
+          </section>
           <section class="panel"><h2>Recent Audit Activity</h2><div id="auditList"></div></section>
         </section>
       </section>
@@ -674,7 +957,7 @@ function adminPage() {
 </html>`;
 }
 
-function kioskPage(roomCode, preview = false) {
+function kioskPage(roomCode, preview = false, themeOverrideId = "") {
   const room = db.rooms.find(item => item.code === roomCode);
   if (!room) return null;
   return `<!doctype html>
@@ -686,7 +969,7 @@ function kioskPage(roomCode, preview = false) {
     <link rel="stylesheet" href="/static/kiosk.css?v=${assetVersion}" />
   </head>
   <body>
-    <main id="kiosk" class="kiosk-frame" data-room-code="${escapeHtml(room.code)}" data-preview="${preview ? "true" : "false"}">
+    <main id="kiosk" class="kiosk-frame" data-room-code="${escapeHtml(room.code)}" data-preview="${preview ? "true" : "false"}" data-theme-override="${escapeHtml(themeOverrideId)}">
       <section class="loading">Loading room signage...</section>
     </main>
     <section id="soundGate" class="sound-gate" ${preview ? "hidden" : ""}>
@@ -744,6 +1027,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, { status: "healthy", app: "signage", storage: store.type, time: new Date().toISOString() });
   }
   if (req.method === "GET" && url.pathname === "/api/state") {
+    const viewer = currentViewer(req);
     return json(res, 200, {
       settings: {
         ...db.settings,
@@ -756,16 +1040,264 @@ async function handleApi(req, res, url) {
       rooms: db.rooms.map(publicRoom),
       themes: db.themes,
       features: db.features,
+      permissionCatalog,
       roles: db.roles,
       users: db.users.map(publicUser),
       broadcastTemplates: db.broadcastTemplates,
-      calendarAccounts: db.calendarAccounts,
+      calendarAccounts: db.calendarAccounts.map(publicCalendarAccount),
+      calendarAssignments: db.calendarAssignments,
+      calendarSyncHistory: db.calendarSyncHistory.slice(0, 50),
       activeBroadcast: db.activeBroadcast,
+      broadcastHistory: viewerIsSystemAdmin(viewer) ? db.broadcasts.slice(0, 100) : [],
       emailNotifications: db.emailNotifications.slice(0, 50),
-      auditLogs: db.auditLogs.slice(0, 20)
+      auditLogs: viewerIsSystemAdmin(viewer) ? db.auditLogs.slice(0, 20) : [],
+      viewer: publicViewer(viewer)
     });
   }
+  if (req.method === "GET" && url.pathname === "/api/broadcasts/history") {
+    const viewer = currentViewer(req);
+    if (!viewerIsSystemAdmin(viewer)) return json(res, 403, { error: "System Administrator access is required." });
+    return json(res, 200, db.broadcasts.slice(0, 500));
+  }
+  if (req.method === "POST" && url.pathname === "/api/roles") {
+    if (!requirePermission(req, res, "role.manage")) return;
+    const body = await readBody(req);
+    const name = cleanText(body.name);
+    const permissions = Array.isArray(body.permissions) ? [...new Set(body.permissions)].filter(item => permissionCatalog.includes(item)) : [];
+    if (!name) return validationError(res, "Role name is required.");
+    const role = { id: entityId("role"), name, builtIn: false, cloneable: true, active: body.active !== false, permissions };
+    db.roles.push(role);
+    addAudit("role.create", { roleId: role.id, name });
+    await saveData();
+    return json(res, 201, role);
+  }
+  const roleMatch = url.pathname.match(/^\/api\/roles\/([^/]+)$/);
+  if (req.method === "PUT" && roleMatch) {
+    if (!requirePermission(req, res, "role.manage")) return;
+    const role = db.roles.find(item => item.id === roleMatch[1]);
+    if (!role) return json(res, 404, { error: "Role not found" });
+    const body = await readBody(req);
+    const name = cleanText(body.name);
+    const permissions = Array.isArray(body.permissions) ? [...new Set(body.permissions)].filter(item => permissionCatalog.includes(item)) : [];
+    if (!name) return validationError(res, "Role name is required.");
+    Object.assign(role, { name, permissions, active: body.active !== false });
+    addAudit("role.update", { roleId: role.id, name });
+    await saveData();
+    return json(res, 200, role);
+  }
+  if (req.method === "DELETE" && roleMatch) {
+    if (!requirePermission(req, res, "role.manage")) return;
+    const role = db.roles.find(item => item.id === roleMatch[1]);
+    if (!role) return json(res, 404, { error: "Role not found" });
+    if (role.builtIn) return json(res, 409, { error: "Built-in roles cannot be deleted." });
+    if (db.users.some(user => user.roleIds.includes(role.id) && user.status !== "deactivated")) {
+      return json(res, 409, { error: "Reassign active users before deleting this role." });
+    }
+    db.roles = db.roles.filter(item => item.id !== role.id);
+    addAudit("role.delete", { roleId: role.id, name: role.name });
+    await saveData();
+    return json(res, 200, { deleted: true });
+  }
+  const roleCloneMatch = url.pathname.match(/^\/api\/roles\/([^/]+)\/clone$/);
+  if (req.method === "POST" && roleCloneMatch) {
+    if (!requirePermission(req, res, "role.manage")) return;
+    const source = db.roles.find(item => item.id === roleCloneMatch[1]);
+    if (!source) return json(res, 404, { error: "Role not found" });
+    const body = await readBody(req);
+    const role = {
+      ...structuredClone(source),
+      id: entityId("role"),
+      name: cleanText(body.name) || `${source.name} Copy`,
+      builtIn: false,
+      active: true,
+      sourceRoleId: source.id
+    };
+    db.roles.push(role);
+    addAudit("role.clone", { sourceRoleId: source.id, roleId: role.id });
+    await saveData();
+    return json(res, 201, role);
+  }
+  if (req.method === "POST" && url.pathname === "/api/calendar-accounts") {
+    if (!requirePermission(req, res, "calendar.manage")) return;
+    const body = await readBody(req);
+    const provider = cleanText(body.provider, 30);
+    const accountName = cleanText(body.accountName);
+    if (!["google", "microsoft365", "public-url"].includes(provider)) return validationError(res, "Select a valid calendar provider.");
+    if (!accountName) return validationError(res, "Calendar account name is required.");
+    let encryptedCredential = "";
+    if (provider === "google") {
+      try {
+        const credential = JSON.parse(String(body.credential || ""));
+        if (!credential.client_email || !credential.private_key) throw new Error("Missing service-account fields");
+        encryptedCredential = encryptCredential(String(body.credential));
+      } catch {
+        return validationError(res, "Enter Google service-account JSON containing client_email and private_key.");
+      }
+    } else if (provider === "microsoft365") {
+      if (!cleanText(body.tenantId, 255) || !cleanText(body.clientId, 255)) {
+        return validationError(res, "Microsoft Tenant ID and Client ID are required.");
+      }
+      if (!body.credential) return validationError(res, "Microsoft client secret is required.");
+      encryptedCredential = encryptCredential(String(body.credential));
+    }
+    const calendars = Array.isArray(body.calendars) ? body.calendars.map(item => ({
+      id: item.id || entityId("calendar"),
+      name: cleanText(item.name),
+      externalId: cleanText(item.externalId, 1000),
+      mailbox: cleanText(item.mailbox, 255)
+    })).filter(item => item.name && item.externalId) : [];
+    if (!calendars.length) return validationError(res, "Add at least one calendar.");
+    if (provider === "public-url" && calendars.some(item => {
+      try {
+        return !["http:", "https:"].includes(new URL(item.externalId).protocol);
+      } catch {
+        return true;
+      }
+    })) return validationError(res, "Public calendars require a valid HTTP or HTTPS URL.");
+    const account = {
+      id: entityId("calendar-account"),
+      provider,
+      accountName,
+      accessLevel: provider === "public-url" ? "read-only" : (body.accessLevel === "writable" ? "writable" : "read-only"),
+      tenantId: cleanText(body.tenantId, 255),
+      clientId: cleanText(body.clientId, 255),
+      mailbox: cleanText(body.mailbox, 255),
+      encryptedCredential,
+      calendars,
+      syncIntervalMinutes: Math.max(5, Number(body.syncIntervalMinutes || 15)),
+      active: body.active !== false,
+      lastSuccessfulSyncAt: null,
+      lastSyncError: ""
+    };
+    db.calendarAccounts.push(account);
+    addAudit("calendar.account.create", { accountId: account.id, provider, accountName });
+    await saveData();
+    return json(res, 201, publicCalendarAccount(account));
+  }
+  const calendarAccountMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)$/);
+  if (req.method === "PUT" && calendarAccountMatch) {
+    if (!requirePermission(req, res, "calendar.manage")) return;
+    const account = db.calendarAccounts.find(item => item.id === calendarAccountMatch[1]);
+    if (!account) return json(res, 404, { error: "Calendar account not found" });
+    const body = await readBody(req);
+    const provider = cleanText(body.provider, 30);
+    if (!["google", "microsoft365", "public-url"].includes(provider)) return validationError(res, "Select a valid calendar provider.");
+    const accountName = cleanText(body.accountName);
+    if (!accountName) return validationError(res, "Calendar account name is required.");
+    const calendars = Array.isArray(body.calendars) ? body.calendars.map(item => ({
+      id: item.id || entityId("calendar"),
+      name: cleanText(item.name),
+      externalId: cleanText(item.externalId, 1000),
+      mailbox: cleanText(item.mailbox, 255)
+    })).filter(item => item.name && item.externalId) : [];
+    if (!calendars.length) return validationError(res, "Add at least one calendar.");
+    if (provider === "public-url" && calendars.some(item => {
+      try {
+        return !["http:", "https:"].includes(new URL(item.externalId).protocol);
+      } catch {
+        return true;
+      }
+    })) return validationError(res, "Public calendars require a valid HTTP or HTTPS URL.");
+    if (provider === "microsoft365" && (!cleanText(body.tenantId, 255) || !cleanText(body.clientId, 255))) {
+      return validationError(res, "Microsoft Tenant ID and Client ID are required.");
+    }
+    let encryptedCredential = account.encryptedCredential;
+    if (body.credential) {
+      if (provider === "google") {
+        try {
+          const credential = JSON.parse(String(body.credential));
+          if (!credential.client_email || !credential.private_key) throw new Error("Missing service-account fields");
+        } catch {
+          return validationError(res, "Enter Google service-account JSON containing client_email and private_key.");
+        }
+      }
+      encryptedCredential = encryptCredential(String(body.credential));
+    }
+    if (provider !== "public-url" && !encryptedCredential) return validationError(res, "A provider credential is required.");
+    Object.assign(account, {
+      provider,
+      accountName,
+      accessLevel: provider === "public-url" ? "read-only" : (body.accessLevel === "writable" ? "writable" : "read-only"),
+      tenantId: cleanText(body.tenantId, 255),
+      clientId: cleanText(body.clientId, 255),
+      mailbox: cleanText(body.mailbox, 255),
+      encryptedCredential,
+      calendars,
+      syncIntervalMinutes: Math.max(5, Number(body.syncIntervalMinutes || 15)),
+      active: body.active !== false
+    });
+    addAudit("calendar.account.update", { accountId: account.id, provider });
+    await saveData();
+    return json(res, 200, publicCalendarAccount(account));
+  }
+  if (req.method === "DELETE" && calendarAccountMatch) {
+    if (!requirePermission(req, res, "calendar.manage")) return;
+    const account = db.calendarAccounts.find(item => item.id === calendarAccountMatch[1]);
+    if (!account) return json(res, 404, { error: "Calendar account not found" });
+    if (db.calendarAssignments.some(item => item.accountId === account.id)) return json(res, 409, { error: "Remove room assignments before deleting this account." });
+    db.calendarAccounts = db.calendarAccounts.filter(item => item.id !== account.id);
+    addAudit("calendar.account.delete", { accountId: account.id });
+    await saveData();
+    return json(res, 200, { deleted: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/calendar-assignments") {
+    if (!requirePermission(req, res, "calendar.manage")) return;
+    const body = await readBody(req);
+    const room = db.rooms.find(item => item.id === body.roomId);
+    const account = db.calendarAccounts.find(item => item.id === body.accountId);
+    const calendar = account?.calendars?.find(item => item.id === body.calendarId);
+    if (!room || !account || !calendar) return validationError(res, "Select a valid room and calendar.");
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
+    db.calendarAssignments = db.calendarAssignments.filter(item => item.roomId !== room.id);
+    const assignment = {
+      id: entityId("calendar-assignment"),
+      roomId: room.id,
+      accountId: account.id,
+      calendarId: calendar.id,
+      active: true,
+      lastAttemptAt: null,
+      lastSuccessfulSyncAt: null,
+      lastSyncError: ""
+    };
+    db.calendarAssignments.push(assignment);
+    addAudit("calendar.assignment.update", { roomId: room.id, accountId: account.id, calendarId: calendar.id });
+    await saveData();
+    return json(res, 201, assignment);
+  }
+  const calendarAssignmentMatch = url.pathname.match(/^\/api\/calendar-assignments\/([^/]+)$/);
+  if (req.method === "DELETE" && calendarAssignmentMatch) {
+    if (!requirePermission(req, res, "calendar.manage")) return;
+    const assignment = db.calendarAssignments.find(item => item.id === calendarAssignmentMatch[1]);
+    if (!assignment) return json(res, 404, { error: "Calendar assignment not found" });
+    const room = db.rooms.find(item => item.id === assignment.roomId);
+    if (!room || !viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
+    db.calendarAssignments = db.calendarAssignments.filter(item => item.id !== assignment.id);
+    db.calendarEvents = db.calendarEvents.filter(item => item.assignmentId !== assignment.id);
+    refreshRoomEvents(assignment.roomId);
+    addAudit("calendar.assignment.delete", { assignmentId: assignment.id });
+    await saveData();
+    return json(res, 200, { deleted: true });
+  }
+  const calendarSyncMatch = url.pathname.match(/^\/api\/calendar-assignments\/([^/]+)\/sync$/);
+  if (req.method === "POST" && calendarSyncMatch) {
+    if (!requirePermission(req, res, "calendar.sync")) return;
+    const assignment = db.calendarAssignments.find(item => item.id === calendarSyncMatch[1]);
+    if (!assignment) return json(res, 404, { error: "Calendar assignment not found" });
+    const room = db.rooms.find(item => item.id === assignment.roomId);
+    if (!room || !viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
+    try {
+      const result = await syncAssignment(assignment);
+      addAudit("calendar.sync", { assignmentId: assignment.id, status: "success", eventCount: result.eventCount });
+      await saveData();
+      return json(res, 200, result);
+    } catch (error) {
+      addAudit("calendar.sync", { assignmentId: assignment.id, status: "failed", error: cleanText(error.message, 300) });
+      await saveData();
+      return json(res, 502, { error: error.message });
+    }
+  }
   if (req.method === "PUT" && url.pathname === "/api/settings/email") {
+    if (!requirePermission(req, res, "settings.manage")) return;
     const body = await readBody(req);
     const host = cleanText(body.host, 255);
     const username = cleanText(body.username, 255);
@@ -811,6 +1343,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, publicEmailSettings(db.settings.email));
   }
   if (req.method === "POST" && url.pathname === "/api/settings/email/test") {
+    if (!requirePermission(req, res, "settings.manage")) return;
     const body = await readBody(req);
     const recipient = cleanText(body.recipient, 255).toLowerCase();
     if (recipient && !validEmail(recipient)) return validationError(res, "Enter a valid test recipient.");
@@ -862,6 +1395,7 @@ async function handleApi(req, res, url) {
     }
   }
   if (req.method === "POST" && url.pathname === "/api/email/send") {
+    if (!requirePermission(req, res, "notification.manage")) return;
     const body = await readBody(req);
     const subject = cleanText(body.subject, 200);
     const message = cleanText(body.message, 10000);
@@ -914,6 +1448,7 @@ async function handleApi(req, res, url) {
     return json(res, failed.length ? 207 : 200, { results });
   }
   if (req.method === "POST" && url.pathname === "/api/users") {
+    if (!requirePermission(req, res, "user.manage")) return;
     const body = await readBody(req);
     const name = cleanText(body.name);
     const email = cleanText(body.email, 255).toLowerCase();
@@ -970,6 +1505,7 @@ async function handleApi(req, res, url) {
   }
   const userMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
   if (req.method === "PUT" && userMatch) {
+    if (!requirePermission(req, res, "user.manage")) return;
     const user = db.users.find(item => item.id === userMatch[1]);
     if (!user) return json(res, 404, { error: "User not found" });
     const body = await readBody(req);
@@ -1003,6 +1539,7 @@ async function handleApi(req, res, url) {
   }
   const userInviteMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/invite$/);
   if (req.method === "POST" && userInviteMatch) {
+    if (!requirePermission(req, res, "user.manage")) return;
     const user = db.users.find(item => item.id === userInviteMatch[1]);
     if (!user) return json(res, 404, { error: "User not found" });
     const message = invitationMessage(user);
@@ -1026,6 +1563,7 @@ async function handleApi(req, res, url) {
     }
   }
   if (req.method === "POST" && url.pathname === "/api/broadcast-templates") {
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required." });
     const body = await readBody(req);
     const name = cleanText(body.name);
     const title = cleanText(body.title, 200);
@@ -1058,6 +1596,7 @@ async function handleApi(req, res, url) {
   }
   const broadcastTemplateMatch = url.pathname.match(/^\/api\/broadcast-templates\/([^/]+)$/);
   if (req.method === "PUT" && broadcastTemplateMatch) {
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required." });
     const template = db.broadcastTemplates.find(item => item.id === broadcastTemplateMatch[1]);
     if (!template) return json(res, 404, { error: "Broadcast template not found" });
     const body = await readBody(req);
@@ -1087,6 +1626,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, template);
   }
   if (req.method === "DELETE" && broadcastTemplateMatch) {
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required." });
     const template = db.broadcastTemplates.find(item => item.id === broadcastTemplateMatch[1]);
     if (!template) return json(res, 404, { error: "Broadcast template not found" });
     db.broadcastTemplates = db.broadcastTemplates.filter(item => item.id !== template.id);
@@ -1095,6 +1635,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, { deleted: true });
   }
   if (req.method === "POST" && url.pathname === "/api/centers") {
+    if (!requirePermission(req, res, "center.manage")) return;
     const body = await readBody(req);
     const name = cleanText(body.name);
     const timezone = cleanText(body.timezone, 80);
@@ -1117,6 +1658,7 @@ async function handleApi(req, res, url) {
   }
   const centerMatch = url.pathname.match(/^\/api\/centers\/([^/]+)$/);
   if (req.method === "PUT" && centerMatch) {
+    if (!requirePermission(req, res, "center.manage")) return;
     const center = db.centers.find(item => item.id === centerMatch[1]);
     if (!center) return json(res, 404, { error: "Center not found" });
     const body = await readBody(req);
@@ -1134,6 +1676,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, center);
   }
   if (req.method === "DELETE" && centerMatch) {
+    if (!requirePermission(req, res, "center.manage")) return;
     const center = db.centers.find(item => item.id === centerMatch[1]);
     if (!center) return json(res, 404, { error: "Center not found" });
     if (db.campuses.some(item => item.centerId === center.id) || db.rooms.some(item => item.centerId === center.id)) {
@@ -1146,6 +1689,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/campuses") {
+    if (!requirePermission(req, res, "campus.manage")) return;
     const body = await readBody(req);
     const name = cleanText(body.name);
     if (!name) return validationError(res, "Campus name is required.");
@@ -1164,6 +1708,7 @@ async function handleApi(req, res, url) {
   }
   const campusMatch = url.pathname.match(/^\/api\/campuses\/([^/]+)$/);
   if (req.method === "PUT" && campusMatch) {
+    if (!requirePermission(req, res, "campus.manage")) return;
     const campus = db.campuses.find(item => item.id === campusMatch[1]);
     if (!campus) return json(res, 404, { error: "Campus not found" });
     const body = await readBody(req);
@@ -1180,6 +1725,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, campus);
   }
   if (req.method === "DELETE" && campusMatch) {
+    if (!requirePermission(req, res, "campus.manage")) return;
     const campus = db.campuses.find(item => item.id === campusMatch[1]);
     if (!campus) return json(res, 404, { error: "Campus not found" });
     if (db.buildings.some(item => item.campusId === campus.id) || db.rooms.some(item => item.campusId === campus.id)) {
@@ -1192,6 +1738,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/buildings") {
+    if (!requirePermission(req, res, "building.manage")) return;
     const body = await readBody(req);
     const name = cleanText(body.name);
     if (!name) return validationError(res, "Building name is required.");
@@ -1210,6 +1757,7 @@ async function handleApi(req, res, url) {
   }
   const buildingMatch = url.pathname.match(/^\/api\/buildings\/([^/]+)$/);
   if (req.method === "PUT" && buildingMatch) {
+    if (!requirePermission(req, res, "building.manage")) return;
     const building = db.buildings.find(item => item.id === buildingMatch[1]);
     if (!building) return json(res, 404, { error: "Building not found" });
     const body = await readBody(req);
@@ -1226,6 +1774,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, building);
   }
   if (req.method === "DELETE" && buildingMatch) {
+    if (!requirePermission(req, res, "building.manage")) return;
     const building = db.buildings.find(item => item.id === buildingMatch[1]);
     if (!building) return json(res, 404, { error: "Building not found" });
     if (db.rooms.some(item => item.buildingId === building.id)) {
@@ -1238,6 +1787,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/rooms") {
+    if (!requirePermission(req, res, "room.manage")) return;
     const body = await readBody(req);
     const name = cleanText(body.name);
     const code = cleanText(body.code, 80).toLowerCase();
@@ -1276,9 +1826,10 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && roomMatch) {
     const room = db.rooms.find(item => item.code === roomMatch[1]);
     if (!room) return json(res, 404, { error: "Room not found" });
-    return json(res, 200, publicRoom(room));
+    return json(res, 200, publicRoom(room, cleanText(url.searchParams.get("theme"), 120)));
   }
   if (req.method === "PUT" && roomMatch) {
+    if (!requirePermission(req, res, "room.manage")) return;
     const room = db.rooms.find(item => item.id === roomMatch[1] || item.code === roomMatch[1]);
     if (!room) return json(res, 404, { error: "Room not found" });
     const body = await readBody(req);
@@ -1311,6 +1862,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, publicRoom(room));
   }
   if (req.method === "DELETE" && roomMatch) {
+    if (!requirePermission(req, res, "room.manage")) return;
     const room = db.rooms.find(item => item.id === roomMatch[1] || item.code === roomMatch[1]);
     if (!room) return json(res, 404, { error: "Room not found" });
     db.rooms = db.rooms.filter(item => item.id !== room.id);
@@ -1322,8 +1874,10 @@ async function handleApi(req, res, url) {
   }
   const statusMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/status$/);
   if (req.method === "POST" && statusMatch) {
+    if (!requirePermission(req, res, "room.status.change")) return;
     const room = db.rooms.find(item => item.code === statusMatch[1]);
     if (!room) return json(res, 404, { error: "Room not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
     const body = await readBody(req);
     const allowed = new Set(["available", "busy", "warning"]);
     if (!allowed.has(body.status)) return json(res, 400, { error: "Invalid status" });
@@ -1350,19 +1904,32 @@ async function handleApi(req, res, url) {
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/broadcasts") {
+    if (!requirePermission(req, res, "broadcast.publish")) return;
     const body = await readBody(req);
     if (!body.confirm) return json(res, 400, { error: "Broadcast confirmation is required" });
     const template = body.templateId
       ? db.broadcastTemplates.find(item => item.id === body.templateId && item.active)
       : null;
     if (body.templateId && !template) return validationError(res, "Select an active broadcast template.");
+    const targetRoomCodes = Array.isArray(body.targetRoomCodes) ? [...new Set(body.targetRoomCodes)] : db.rooms.map(room => room.code);
+    const targetRooms = targetRoomCodes.map(code => db.rooms.find(room => room.code === code)).filter(Boolean);
+    if (!targetRooms.length || targetRooms.length !== targetRoomCodes.length) return validationError(res, "Select valid target rooms.");
+    const viewer = currentViewer(req);
+    if (targetRooms.some(room => !viewerCanAccessRoom(viewer, room))) {
+      return json(res, 403, { error: "One or more target rooms are outside your assigned scope." });
+    }
     const broadcast = {
       id: crypto.randomUUID(),
       templateId: template?.id || null,
       title: cleanText(body.title || template?.title || "IMPORTANT SYSTEM OVERRIDE", 200),
       message: cleanText(body.message || template?.message || "", 5000),
       severity: cleanText(body.severity || template?.severity || "urgent", 30),
-      targetRoomCodes: Array.isArray(body.targetRoomCodes) ? body.targetRoomCodes : db.rooms.map(room => room.code),
+      targetRoomCodes,
+      createdBy: viewer?.id || null,
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      endedBy: null,
+      status: "active",
       createdAt: new Date().toISOString()
     };
     db.broadcasts.unshift(broadcast);
@@ -1373,7 +1940,21 @@ async function handleApi(req, res, url) {
     return json(res, 201, broadcast);
   }
   if (req.method === "POST" && url.pathname === "/api/broadcasts/end") {
+    if (!requirePermission(req, res, "broadcast.publish")) return;
     const ended = db.activeBroadcast;
+    const viewer = currentViewer(req);
+    if (ended && !viewerIsSystemAdmin(viewer)) {
+      const outsideScope = ended.targetRoomCodes
+        .map(code => db.rooms.find(room => room.code === code))
+        .filter(Boolean)
+        .some(room => !viewerCanAccessRoom(viewer, room));
+      if (outsideScope) return json(res, 403, { error: "This broadcast includes rooms outside your assigned scope." });
+    }
+    if (ended) {
+      ended.endedAt = new Date().toISOString();
+      ended.endedBy = viewer?.id || null;
+      ended.status = "ended";
+    }
     db.activeBroadcast = null;
     addAudit("broadcast.end", { id: ended?.id || null });
     await saveData();
@@ -1382,6 +1963,7 @@ async function handleApi(req, res, url) {
   }
   const themeCloneMatch = url.pathname.match(/^\/api\/themes\/([^/]+)\/clone$/);
   if (req.method === "POST" && themeCloneMatch) {
+    if (!requirePermission(req, res, "theme.manage")) return;
     const source = db.themes.find(theme => theme.id === themeCloneMatch[1]);
     if (!source) return json(res, 404, { error: "Theme not found" });
     if (!source.cloneable) return json(res, 409, { error: "This theme cannot be cloned." });
@@ -1393,12 +1975,42 @@ async function handleApi(req, res, url) {
       name,
       builtIn: false,
       cloneable: true,
-      sourceThemeId: source.id
+      sourceThemeId: source.id,
+      baseThemeId: source.baseThemeId || source.id,
+      cssTokens: structuredClone(source.cssTokens || defaultThemeTokens),
+      published: false,
+      archived: false,
+      updatedAt: new Date().toISOString()
     };
     db.themes.push(clone);
     addAudit("theme.clone", { sourceThemeId: source.id, themeId: clone.id, name: clone.name });
     await saveData();
     return json(res, 201, clone);
+  }
+  const themeMatch = url.pathname.match(/^\/api\/themes\/([^/]+)$/);
+  if (req.method === "PUT" && themeMatch) {
+    if (!requirePermission(req, res, "theme.manage")) return;
+    const theme = db.themes.find(item => item.id === themeMatch[1]);
+    if (!theme) return json(res, 404, { error: "Theme not found" });
+    if (theme.builtIn) return json(res, 409, { error: "Clone a built-in theme before editing it." });
+    const body = await readBody(req);
+    const allowedTokens = new Set(Object.keys(defaultThemeTokens));
+    const cssTokens = {};
+    for (const [key, value] of Object.entries(body.cssTokens || {})) {
+      if (allowedTokens.has(key)) cssTokens[key] = cleanText(value, 200);
+    }
+    Object.assign(theme, {
+      name: cleanText(body.name) || theme.name,
+      cssTokens: { ...defaultThemeTokens, ...theme.cssTokens, ...cssTokens },
+      published: body.published === true,
+      archived: body.archived === true,
+      updatedAt: new Date().toISOString(),
+      lastPublishedAt: body.published === true ? new Date().toISOString() : theme.lastPublishedAt || null
+    });
+    addAudit("theme.update", { themeId: theme.id, published: theme.published, archived: theme.archived });
+    await saveData();
+    notifyChangedRooms(db.rooms.filter(room => room.themeId === theme.id).map(room => room.code));
+    return json(res, 200, theme);
   }
   return json(res, 404, { error: "API route not found" });
 }
@@ -1413,7 +2025,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/" || url.pathname === "/admin") return send(res, 200, adminPage());
     const previewMatch = url.pathname.match(/^\/preview\/([^/]+)$/);
     if (previewMatch) {
-      const page = kioskPage(previewMatch[1], true);
+      const page = kioskPage(previewMatch[1], true, cleanText(url.searchParams.get("theme"), 120));
       return page ? send(res, 200, page) : send(res, 404, "Room not found");
     }
     const roomCode = url.pathname.slice(1);
@@ -1428,6 +2040,31 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+let scheduledSyncRunning = false;
+async function runScheduledCalendarSync() {
+  if (scheduledSyncRunning) return;
+  scheduledSyncRunning = true;
+  try {
+    for (const assignment of db.calendarAssignments.filter(item => item.active !== false)) {
+      const account = db.calendarAccounts.find(item => item.id === assignment.accountId && item.active !== false);
+      if (!account) continue;
+      const lastAttempt = assignment.lastAttemptAt ? new Date(assignment.lastAttemptAt).getTime() : 0;
+      if (Date.now() - lastAttempt < (account.syncIntervalMinutes || 15) * 60000) continue;
+      try {
+        await syncAssignment(assignment);
+      } catch (error) {
+        console.error(`Calendar sync failed for ${assignment.id}:`, error.message);
+      }
+    }
+    await saveData();
+  } finally {
+    scheduledSyncRunning = false;
+  }
+}
+
 server.listen(port, host, () => {
   console.log(`Signage app running at http://${host}:${port}`);
 });
+
+const calendarSyncTimer = setInterval(runScheduledCalendarSync, 60000);
+calendarSyncTimer.unref();

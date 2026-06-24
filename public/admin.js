@@ -170,19 +170,27 @@ function renderEntityLists() {
 }
 
 function renderThemes() {
-  document.querySelector("#themeList").innerHTML = `<div class="list">${state.themes.map(theme => `
-    <div class="list-item">
-      <strong>${escapeHtml(theme.name)}</strong>
-      <span>${theme.builtIn ? "Built-in system theme" : "Custom theme"} / ${theme.cloneable ? "Cloneable" : "Locked"}</span>
-      ${theme.cloneable ? `<button type="button" class="secondary compact" data-clone-theme="${escapeHtml(theme.id)}">Clone</button>` : ""}
-    </div>
-  `).join("")}</div>`;
+  document.querySelector("#themeManagerList").innerHTML = state.themes.map(theme => `
+    <article class="entity-item">
+      <div><strong>${escapeHtml(theme.name)}</strong><span>${theme.builtIn ? "Built-in" : "Custom"} / ${theme.published ? "Published" : "Draft"}${theme.archived ? " / Archived" : ""}</span></div>
+      <div class="entity-actions">
+        ${theme.builtIn ? `<button type="button" class="secondary" data-clone-theme="${escapeHtml(theme.id)}">Clone</button>` : `<button type="button" class="secondary" data-edit-theme="${escapeHtml(theme.id)}">Edit</button>`}
+      </div>
+    </article>
+  `).join("");
 }
 
 function renderUsersRoles() {
-  document.querySelector("#userRoleList").innerHTML = `<div class="list">
-    ${state.roles.map(role => `<div class="list-item"><strong>${escapeHtml(role.name)}</strong><span>${role.cloneable ? "Cloneable role" : "System locked"} / ${role.permissions.map(escapeHtml).join(", ")}</span></div>`).join("")}
-  </div>`;
+  document.querySelector("#roleManagerList").innerHTML = state.roles.map(role => `
+    <article class="entity-item">
+      <div><strong>${escapeHtml(role.name)}</strong><span>${role.builtIn ? "Built-in" : "Custom"} / ${role.active ? "Active" : "Inactive"} / ${role.permissions.length} permissions</span></div>
+      <div class="entity-actions">
+        <button type="button" class="secondary" data-edit="role" data-id="${escapeHtml(role.id)}">Edit</button>
+        <button type="button" class="secondary" data-clone-role="${escapeHtml(role.id)}">Clone</button>
+        ${role.builtIn ? "" : `<button type="button" class="danger-text" data-delete="role" data-id="${escapeHtml(role.id)}">Delete</button>`}
+      </div>
+    </article>
+  `).join("");
 }
 
 function filteredUsers() {
@@ -263,14 +271,66 @@ function renderEmailHistory() {
   `).join("") || `<tr><td colspan="5" class="empty-state">No email delivery attempts yet.</td></tr>`;
 }
 
+function providerLabel(provider) {
+  return { google: "Google Calendar", microsoft365: "Microsoft 365", "public-url": "Public URL" }[provider] || provider;
+}
+
 function renderCalendars() {
-  document.querySelector("#calendarList").innerHTML = `<div class="list">${state.calendarAccounts.map(account => `
-    <div class="list-item">
-      <strong>${escapeHtml(account.accountName)}</strong>
-      <span>${escapeHtml(account.provider)} / ${escapeHtml(account.accessLevel)}</span>
-      <span>${account.calendars.map(escapeHtml).join(", ")}</span>
-    </div>
-  `).join("")}</div>`;
+  document.querySelector("#calendarAccountList").innerHTML = state.calendarAccounts.map(account => `
+    <article class="entity-item">
+      <div><strong>${escapeHtml(account.accountName)}</strong><span>${escapeHtml(providerLabel(account.provider))} / ${escapeHtml(account.accessLevel)} / ${account.calendars.length} calendars${account.lastSyncError ? ` / Error: ${escapeHtml(account.lastSyncError)}` : ""}</span></div>
+      <div class="entity-actions">
+        <button type="button" class="secondary" data-edit="calendarAccount" data-id="${escapeHtml(account.id)}">Edit</button>
+        <button type="button" class="danger-text" data-delete="calendarAccount" data-id="${escapeHtml(account.id)}">Delete</button>
+      </div>
+    </article>
+  `).join("") || `<p class="empty-state">No calendar accounts configured.</p>`;
+
+  const roomSelect = document.querySelector("#calendarAssignmentRoom");
+  roomSelect.innerHTML = optionList(state.rooms, roomSelect.value, room => room.name);
+  const accountSelect = document.querySelector("#calendarAssignmentAccount");
+  accountSelect.innerHTML = optionList(state.calendarAccounts.filter(account => account.active), accountSelect.value, account => account.accountName);
+  renderCalendarChoices();
+
+  document.querySelector("#calendarAssignmentList").innerHTML = state.calendarAssignments.map(assignment => {
+    const room = state.rooms.find(item => item.id === assignment.roomId);
+    const account = state.calendarAccounts.find(item => item.id === assignment.accountId);
+    const calendar = account?.calendars.find(item => item.id === assignment.calendarId);
+    return `<article class="entity-item">
+      <div><strong>${escapeHtml(room?.name || "Unknown room")}</strong><span>${escapeHtml(account?.accountName || "Unknown account")} / ${escapeHtml(calendar?.name || "Unknown calendar")}${assignment.lastSyncError ? ` / ${escapeHtml(assignment.lastSyncError)}` : ""}</span></div>
+      <div class="entity-actions">
+        <button type="button" class="secondary" data-sync-calendar="${escapeHtml(assignment.id)}">Sync Now</button>
+        <button type="button" class="danger-text" data-delete-assignment="${escapeHtml(assignment.id)}">Remove</button>
+      </div>
+    </article>`;
+  }).join("") || `<p class="empty-state">No room calendars assigned.</p>`;
+
+  document.querySelector("#calendarSyncRows").innerHTML = state.calendarSyncHistory.map(item => {
+    const room = state.rooms.find(roomItem => roomItem.id === item.roomId);
+    const account = state.calendarAccounts.find(accountItem => accountItem.id === item.accountId);
+    return `<tr><td>${new Date(item.createdAt).toLocaleString()}</td><td>${escapeHtml(room?.name || "Unknown")}</td><td>${escapeHtml(account?.accountName || "Unknown")}</td><td><span class="status-pill email-${item.status === "success" ? "sent" : "failed"}">${escapeHtml(item.status)}</span>${item.error ? `<span class="subtle">${escapeHtml(item.error)}</span>` : ""}</td><td>${item.eventCount ?? "-"}</td></tr>`;
+  }).join("") || `<tr><td colspan="5" class="empty-state">No calendar sync history yet.</td></tr>`;
+}
+
+function renderCalendarChoices() {
+  const account = state.calendarAccounts.find(item => item.id === document.querySelector("#calendarAssignmentAccount").value);
+  document.querySelector("#calendarAssignmentCalendar").innerHTML = optionList(account?.calendars || [], "", calendar => calendar.name);
+}
+
+function renderBroadcastHistory() {
+  const panel = document.querySelector("#broadcastHistoryPanel");
+  panel.hidden = !state.viewer.isSystemAdmin;
+  if (!state.viewer.isSystemAdmin) return;
+  document.querySelector("#broadcastHistoryRows").innerHTML = state.broadcastHistory.map(item => `
+    <tr>
+      <td>${new Date(item.startedAt || item.createdAt).toLocaleString()}</td>
+      <td>${escapeHtml(item.title)}</td>
+      <td>${escapeHtml(item.severity)}</td>
+      <td>${item.targetRoomCodes.length}</td>
+      <td>${escapeHtml(item.status || (item.endedAt ? "ended" : "active"))}</td>
+      <td>${item.endedAt ? new Date(item.endedAt).toLocaleString() : "-"}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="6" class="empty-state">No broadcasts recorded.</td></tr>`;
 }
 
 function renderAudit() {
@@ -281,6 +341,46 @@ function renderAudit() {
 
 function fieldsFor(type, entity = {}) {
   const active = entity.active !== false;
+  if (type === "role") {
+    return `
+      <label>Role Name <input name="name" required maxlength="160" value="${escapeHtml(entity.name)}" /></label>
+      <fieldset class="feature-fieldset"><legend>Permissions</legend>
+        ${state.permissionCatalog.map(permission => `<label class="check-label"><input type="checkbox" name="permissions" value="${escapeHtml(permission)}" ${entity.permissions?.includes(permission) ? "checked" : ""} /> ${escapeHtml(permission)}</label>`).join("")}
+      </fieldset>
+      <label class="check-label"><input name="active" type="checkbox" ${active ? "checked" : ""} /> Active</label>
+    `;
+  }
+  if (type === "calendarAccount") {
+    const provider = entity.provider || "public-url";
+    const calendarLines = (entity.calendars || []).map(calendar =>
+      provider === "microsoft365"
+        ? `${calendar.name}|${calendar.externalId}|${calendar.mailbox || ""}`
+        : `${calendar.name}|${calendar.externalId}`
+    ).join("\n");
+    return `
+      <div class="form-grid">
+        <label>Account Name <input name="accountName" required maxlength="160" value="${escapeHtml(entity.accountName)}" /></label>
+        <label>Provider <select name="provider" required>
+          <option value="public-url" ${provider === "public-url" ? "selected" : ""}>Public Calendar URL</option>
+          <option value="google" ${provider === "google" ? "selected" : ""}>Google Calendar</option>
+          <option value="microsoft365" ${provider === "microsoft365" ? "selected" : ""}>Microsoft 365</option>
+        </select></label>
+        <label>Access Level <select name="accessLevel">
+          <option value="read-only" ${entity.accessLevel !== "writable" ? "selected" : ""}>Read-only</option>
+          <option value="writable" ${entity.accessLevel === "writable" ? "selected" : ""}>Writable</option>
+        </select></label>
+        <label>Sync Interval (minutes) <input name="syncIntervalMinutes" type="number" min="5" value="${escapeHtml(entity.syncIntervalMinutes || 15)}" /></label>
+        <label>Microsoft Tenant ID <input name="tenantId" value="${escapeHtml(entity.tenantId)}" /></label>
+        <label>Microsoft Client ID <input name="clientId" value="${escapeHtml(entity.clientId)}" /></label>
+        <label>Default Microsoft Mailbox <input name="mailbox" value="${escapeHtml(entity.mailbox)}" placeholder="room@example.org" /></label>
+      </div>
+      <label>Credential ${entity.hasCredential ? "(stored; leave blank to keep)" : ""}
+        <textarea name="credential" autocomplete="off" placeholder="Google service-account JSON or Microsoft client secret"></textarea>
+      </label>
+      <label>Calendars <textarea name="calendarLines" required placeholder="Name|Calendar ID or public URL&#10;Microsoft: Name|Calendar ID|Mailbox">${escapeHtml(calendarLines)}</textarea></label>
+      <label class="check-label"><input name="active" type="checkbox" ${active ? "checked" : ""} /> Active</label>
+    `;
+  }
   if (type === "user") {
     const status = entity.status || "invited";
     return `
@@ -373,7 +473,9 @@ function findEntity(type, id) {
     building: state.buildings,
     room: state.rooms,
     user: state.users,
-    broadcastTemplate: state.broadcastTemplates
+    broadcastTemplate: state.broadcastTemplates,
+    role: state.roles,
+    calendarAccount: state.calendarAccounts
   }[type];
   return collection?.find(item => item.id === id);
 }
@@ -429,6 +531,18 @@ async function saveEntity(event) {
   } else if (type === "broadcastTemplate") {
     data.audibleAlert = entityForm.elements.audibleAlert.checked;
     data.active = entityForm.elements.active.checked;
+  } else if (type === "role") {
+    data.permissions = Array.from(entityForm.querySelectorAll('input[name="permissions"]:checked')).map(input => input.value);
+    data.active = entityForm.elements.active.checked;
+  } else if (type === "calendarAccount") {
+    data.active = entityForm.elements.active.checked;
+    data.syncIntervalMinutes = Number(data.syncIntervalMinutes);
+    data.calendars = String(data.calendarLines || "").split("\n").map(line => {
+      const [name, externalId, mailbox] = line.split("|").map(value => value.trim());
+      const existing = findEntity("calendarAccount", id)?.calendars.find(item => item.externalId === externalId);
+      return { id: existing?.id, name, externalId, mailbox };
+    }).filter(item => item.name && item.externalId);
+    delete data.calendarLines;
   } else {
     data.active = entityForm.elements.active.checked;
   }
@@ -437,6 +551,8 @@ async function saveEntity(event) {
       ? "campuses"
       : type === "broadcastTemplate"
         ? "broadcast-templates"
+        : type === "calendarAccount"
+          ? "calendar-accounts"
         : `${type}s`;
     const result = await api(`/api/${endpoint}${id ? `/${id}` : ""}`, {
       method: id ? "PUT" : "POST",
@@ -528,6 +644,8 @@ async function deleteEntity(type, id) {
     ? "campuses"
     : type === "broadcastTemplate"
       ? "broadcast-templates"
+      : type === "calendarAccount"
+        ? "calendar-accounts"
       : `${type}s`;
   try {
     await api(`/api/${plural}/${id}`, { method: "DELETE" });
@@ -582,11 +700,105 @@ async function endBroadcast() {
 }
 
 async function cloneTheme(themeId) {
-  const source = state.themes.find(theme => theme.id === themeId);
-  const name = prompt("Name for the cloned theme:", `${source?.name || "Theme"} Copy`);
-  if (!name) return;
-  await api(`/api/themes/${themeId}/clone`, { method: "POST", body: JSON.stringify({ name }) });
+  const theme = await api(`/api/themes/${themeId}/clone`, { method: "POST", body: "{}" });
   await load();
+  editTheme(theme.id);
+}
+
+async function cloneRole(roleId) {
+  const role = await api(`/api/roles/${roleId}/clone`, { method: "POST", body: "{}" });
+  await load();
+  openEntityDialog("role", role.id);
+}
+
+async function saveCalendarAssignment(event) {
+  event.preventDefault();
+  const values = Object.fromEntries(new FormData(event.currentTarget));
+  await api("/api/calendar-assignments", { method: "POST", body: JSON.stringify(values) });
+  await load();
+}
+
+async function syncCalendarAssignment(assignmentId) {
+  try {
+    const result = await api(`/api/calendar-assignments/${assignmentId}/sync`, { method: "POST", body: "{}" });
+    await load();
+    alert(`Calendar synchronized. ${result.eventCount} events loaded.`);
+  } catch (error) {
+    await load();
+    alert(error.message);
+  }
+}
+
+async function deleteCalendarAssignment(assignmentId) {
+  if (!confirm("Remove this room calendar assignment?")) return;
+  await api(`/api/calendar-assignments/${assignmentId}`, { method: "DELETE" });
+  await load();
+}
+
+const themeTokenLabels = {
+  availableBg: "Available Background",
+  availableText: "Available Text",
+  busyBg: "Busy Background",
+  busyText: "Busy Text",
+  warningBg: "Warning Background",
+  warningText: "Warning Text",
+  footerText: "Footer Text",
+  ink: "General Text",
+  panel: "Event Panel",
+  headerFont: "Header Font",
+  footerFont: "Footer Font",
+  eventDetailFont: "Event Detail Font",
+  upcomingFont: "Upcoming Events Font"
+};
+const themeTokenProperties = {
+  availableBg: "--available-bg",
+  availableText: "--available-text",
+  busyBg: "--busy-bg",
+  busyText: "--busy-text",
+  warningBg: "--warning-bg",
+  warningText: "--warning-text",
+  footerText: "--footer-text",
+  ink: "--ink",
+  panel: "--panel",
+  headerFont: "--theme-header-font",
+  footerFont: "--theme-footer-font",
+  eventDetailFont: "--theme-event-detail-font",
+  upcomingFont: "--theme-upcoming-font"
+};
+
+function editTheme(themeId) {
+  const theme = state.themes.find(item => item.id === themeId);
+  if (!theme || theme.builtIn) return;
+  const form = document.querySelector("#themeEditorForm");
+  form.hidden = false;
+  form.elements.themeId.value = theme.id;
+  form.elements.name.value = theme.name;
+  form.elements.published.checked = theme.published;
+  form.elements.archived.checked = theme.archived;
+  document.querySelector("#themeTokenFields").innerHTML = Object.entries(themeTokenLabels).map(([key, label]) => `
+    <label>${escapeHtml(label)} <input name="${escapeHtml(key)}" value="${escapeHtml(theme.cssTokens[key] || "")}" /></label>
+  `).join("");
+  document.querySelector("#themePreviewTitle").textContent = `${theme.name} using Room 108`;
+  document.querySelector("#themePreviewFrame").src = `/preview/room-108-shishu?theme=${encodeURIComponent(theme.id)}`;
+}
+
+async function saveTheme(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = Object.fromEntries(new FormData(form));
+  const cssTokens = {};
+  for (const key of Object.keys(themeTokenLabels)) cssTokens[key] = values[key];
+  await api(`/api/themes/${values.themeId}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      name: values.name,
+      cssTokens,
+      published: form.elements.published.checked,
+      archived: form.elements.archived.checked
+    })
+  });
+  await load();
+  editTheme(values.themeId);
 }
 
 function render() {
@@ -603,6 +815,7 @@ function render() {
   renderEmailHistory();
   renderUsersRoles();
   renderCalendars();
+  renderBroadcastHistory();
   renderAudit();
 }
 
@@ -627,6 +840,14 @@ document.querySelector("#userStatusFilter").addEventListener("change", renderUse
 document.querySelector("#smtpForm").addEventListener("submit", saveSmtpSettings);
 document.querySelector("#smtpTestForm").addEventListener("submit", testSmtp);
 document.querySelector("#emailForm").addEventListener("submit", sendAdministrativeEmail);
+document.querySelector("#calendarAssignmentForm").addEventListener("submit", saveCalendarAssignment);
+document.querySelector("#calendarAssignmentAccount").addEventListener("change", renderCalendarChoices);
+document.querySelector("#themeEditorForm").addEventListener("submit", saveTheme);
+document.querySelector("#themeEditorForm").addEventListener("input", event => {
+  const property = themeTokenProperties[event.target.name];
+  const kiosk = document.querySelector("#themePreviewFrame").contentDocument?.querySelector("#kiosk");
+  if (property && kiosk) kiosk.style.setProperty(property, event.target.value);
+});
 document.querySelector("#broadcastForm").addEventListener("submit", publishBroadcast);
 document.querySelector("#broadcastTemplateSelect").addEventListener("change", event => {
   const template = state.broadcastTemplates.find(item => item.id === event.target.value);
@@ -657,6 +878,14 @@ document.addEventListener("click", event => {
   if (cloneButton) return cloneTheme(cloneButton.dataset.cloneTheme);
   const inviteButton = event.target.closest("[data-invite-user]");
   if (inviteButton) return inviteUser(inviteButton.dataset.inviteUser);
+  const cloneRoleButton = event.target.closest("[data-clone-role]");
+  if (cloneRoleButton) return cloneRole(cloneRoleButton.dataset.cloneRole);
+  const syncButton = event.target.closest("[data-sync-calendar]");
+  if (syncButton) return syncCalendarAssignment(syncButton.dataset.syncCalendar);
+  const deleteAssignmentButton = event.target.closest("[data-delete-assignment]");
+  if (deleteAssignmentButton) return deleteCalendarAssignment(deleteAssignmentButton.dataset.deleteAssignment);
+  const editThemeButton = event.target.closest("[data-edit-theme]");
+  if (editThemeButton) return editTheme(editThemeButton.dataset.editTheme);
 });
 
 document.addEventListener("change", event => {

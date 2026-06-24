@@ -1,5 +1,6 @@
 const root = document.querySelector("#kiosk");
 const roomCode = root.dataset.roomCode;
+const themeOverride = root.dataset.themeOverride;
 const isPreview = root.dataset.preview === "true";
 const alertSound = document.querySelector("#alertSound");
 const soundGate = document.querySelector("#soundGate");
@@ -10,7 +11,8 @@ let alertTimer = null;
 let latestRoom = null;
 
 async function fetchRoom() {
-  const response = await fetch(`/api/rooms/${roomCode}`, { cache: "no-store" });
+  const suffix = themeOverride ? `?theme=${encodeURIComponent(themeOverride)}` : "";
+  const response = await fetch(`/api/rooms/${roomCode}${suffix}`, { cache: "no-store" });
   if (!response.ok) throw new Error("Unable to load room");
   return response.json();
 }
@@ -21,6 +23,27 @@ function themeClass(themeId) {
     "event-formal": "theme-formal",
     "custom-background": "theme-custom"
   }[themeId] || "theme-classic";
+}
+
+function applyThemeTokens(tokens = {}) {
+  const properties = {
+    availableBg: "--available-bg",
+    availableText: "--available-text",
+    busyBg: "--busy-bg",
+    busyText: "--busy-text",
+    warningBg: "--warning-bg",
+    warningText: "--warning-text",
+    footerText: "--footer-text",
+    ink: "--ink",
+    panel: "--panel",
+    headerFont: "--theme-header-font",
+    footerFont: "--theme-footer-font",
+    eventDetailFont: "--theme-event-detail-font",
+    upcomingFont: "--theme-upcoming-font"
+  };
+  for (const [key, property] of Object.entries(properties)) {
+    if (tokens[key]) root.style.setProperty(property, tokens[key]);
+  }
 }
 
 function statusTitle(room) {
@@ -203,11 +226,12 @@ function startAlert(room) {
 async function render() {
   const room = await fetchRoom();
   latestRoom = room;
-  root.className = `kiosk-frame ${themeClass(room.themeId)}`;
+  root.className = `kiosk-frame ${themeClass(room.themeBaseId || room.themeId)}`;
+  applyThemeTokens(room.themeCssTokens);
   root.dataset.roomState = room.activeBroadcast ? "broadcast" : room.status;
-  root.innerHTML = room.themeId === "event-formal"
+  root.innerHTML = (room.themeBaseId || room.themeId) === "event-formal"
     ? renderFormal(room)
-    : room.themeId === "custom-background"
+    : (room.themeBaseId || room.themeId) === "custom-background"
       ? renderCustom(room)
       : renderClassic(room);
   startAlert(room);

@@ -42,7 +42,11 @@ CREATE TABLE IF NOT EXISTS kiosk_themes (
   slug text UNIQUE NOT NULL,
   built_in boolean NOT NULL DEFAULT false,
   cloneable boolean NOT NULL DEFAULT true,
+  base_theme_id uuid REFERENCES kiosk_themes(id),
   css_tokens jsonb NOT NULL DEFAULT '{}'::jsonb,
+  published boolean NOT NULL DEFAULT false,
+  archived boolean NOT NULL DEFAULT false,
+  last_published_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -170,6 +174,16 @@ CREATE TABLE IF NOT EXISTS calendar_events (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS calendar_sync_history (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  room_id uuid REFERENCES rooms(id) ON DELETE SET NULL,
+  calendar_account_id uuid REFERENCES calendar_accounts(id) ON DELETE SET NULL,
+  status text NOT NULL CHECK (status IN ('success', 'failed')),
+  event_count integer,
+  error text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS event_conflicts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   room_id uuid NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
@@ -206,6 +220,8 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   created_by uuid REFERENCES users(id),
   started_at timestamptz,
   ended_at timestamptz,
+  ended_by uuid REFERENCES users(id),
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'ended')),
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -277,6 +293,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE INDEX IF NOT EXISTS idx_rooms_code ON rooms(code);
 CREATE INDEX IF NOT EXISTS idx_calendar_events_room_time ON calendar_events(room_id, starts_at, ends_at);
+CREATE INDEX IF NOT EXISTS idx_calendar_sync_history_created_at ON calendar_sync_history(created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
 CREATE INDEX IF NOT EXISTS idx_email_delivery_history_created_at ON email_delivery_history(created_at);

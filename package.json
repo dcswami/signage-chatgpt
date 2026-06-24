@@ -7,13 +7,15 @@
   "scripts": {
     "start": "node src/server.mjs",
     "dev": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/storage.mjs && node --check src/email.mjs && node --check public/admin.js && node --check public/kiosk.js",
+    "check": "node --check src/server.mjs && node --check src/storage.mjs && node --check src/email.mjs && node --check src/calendar.mjs && node --check public/admin.js && node --check public/kiosk.js",
     "test": "node tests/integration.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
+    "google-auth-library": "^10.7.0",
+    "node-ical": "^0.24.2",
     "nodemailer": "^7.0.13",
     "pg": "^8.22.0"
   }

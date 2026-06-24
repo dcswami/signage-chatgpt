@@ -421,6 +421,25 @@ th {
   align-items: start;
 }
 
+.theme-editor-grid {
+  grid-template-columns: minmax(320px, 0.8fr) minmax(620px, 1.5fr);
+}
+
+.theme-preview-frame {
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--line);
+  display: block;
+  height: auto;
+  margin-top: 18px;
+  width: 100%;
+}
+
+.assignment-list {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 8px;
+}
+
 .email-grid .panel {
   margin-bottom: 0;
 }
@@ -554,6 +573,10 @@ dialog form {
   .management-grid,
   .admin-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .theme-editor-grid {
+    grid-template-columns: 1fr;
   }
 
   .filters {

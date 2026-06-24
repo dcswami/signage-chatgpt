@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -9,7 +10,29 @@ const rootDir = path.resolve(import.meta.dirname, "..");
 const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "signage-test-"));
 const port = 3187;
 const smtpPort = 3188;
+const calendarPort = 3189;
 const baseUrl = `http://127.0.0.1:${port}`;
+const icalDate = date => date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+const calendarStart = new Date(Date.now() + 60 * 60 * 1000);
+const calendarEnd = new Date(calendarStart.getTime() + 60 * 60 * 1000);
+const calendarServer = http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "text/calendar" });
+  res.end([
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Signage Test//EN",
+    "BEGIN:VEVENT",
+    "UID:private-calendar-event",
+    `DTSTART:${icalDate(calendarStart)}`,
+    `DTEND:${icalDate(calendarEnd)}`,
+    "SUMMARY:Rental Planning Meeting",
+    "DESCRIPTION:Rental Event",
+    "CLASS:PRIVATE",
+    "END:VEVENT",
+    "END:VCALENDAR"
+  ].join("\r\n"));
+});
+await new Promise(resolve => calendarServer.listen(calendarPort, "127.0.0.1", resolve));
 const smtpMessages = [];
 const smtpServer = net.createServer(socket => {
   let dataMode = false;
@@ -82,6 +105,18 @@ try {
   assert.equal(initialState.roles.some(role => role.id === "campus-manager"), true);
   assert.equal(initialState.roles.some(role => role.id === "building-manager"), true);
   assert.equal(initialState.broadcastTemplates.length >= 4, true);
+  assert.equal(initialState.permissionCatalog.includes("calendar.manage"), true);
+
+  const customRole = await request("/api/roles", {
+    method: "POST",
+    body: JSON.stringify({ name: "Integration Calendar Viewer", permissions: ["dashboard.view", "calendar.sync"], active: true })
+  }, 201);
+  const clonedRole = await request(`/api/roles/${customRole.id}/clone`, {
+    method: "POST",
+    body: JSON.stringify({ name: "Integration Calendar Viewer Copy" })
+  }, 201);
+  assert.deepEqual(customRole.permissions, ["dashboard.view", "calendar.sync"]);
+  assert.equal(clonedRole.builtIn, false);
 
   const emailSettings = await request("/api/settings/email", {
     method: "PUT",
@@ -141,6 +176,26 @@ try {
   assert.equal(room.buildingName, "Integration Building");
   await request(`/api/centers/${center.id}`, { method: "DELETE" }, 409);
 
+  const calendarAccount = await request("/api/calendar-accounts", {
+    method: "POST",
+    body: JSON.stringify({
+      accountName: "Integration Public Calendar",
+      provider: "public-url",
+      accessLevel: "read-only",
+      syncIntervalMinutes: 15,
+      active: true,
+      calendars: [{ name: "Integration Events", externalId: `http://127.0.0.1:${calendarPort}/calendar.ics` }]
+    })
+  }, 201);
+  const calendarAssignment = await request("/api/calendar-assignments", {
+    method: "POST",
+    body: JSON.stringify({ roomId: room.id, accountId: calendarAccount.id, calendarId: calendarAccount.calendars[0].id })
+  }, 201);
+  const syncResult = await request(`/api/calendar-assignments/${calendarAssignment.id}/sync`, { method: "POST", body: "{}" });
+  assert.equal(syncResult.eventCount, 1);
+  const syncedRoom = await request("/api/rooms/integration-room");
+  assert.equal(syncedRoom.upcomingEvents[0].title, "Private Event");
+
   const user = await request("/api/users", {
     method: "POST",
     body: JSON.stringify({
@@ -161,6 +216,9 @@ try {
   assert.deepEqual(user.buildingIds, [building.id]);
   assert.deepEqual(user.features, ["Notifications"]);
   assert.equal(user.invitedAt !== null, true);
+  await request("/api/broadcasts/history", {
+    headers: { "Content-Type": "application/json", "X-User-Id": user.id }
+  }, 403);
 
   const updatedUser = await request(`/api/users/${user.id}`, {
     method: "PUT",
@@ -178,6 +236,21 @@ try {
   assert.equal(updatedUser.status, "suspended");
   assert.deepEqual(updatedUser.roleIds, ["building-manager"]);
   assert.deepEqual(updatedUser.buildingIds, [building.id]);
+  await request("/api/centers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-User-Id": user.id },
+    body: JSON.stringify({ name: "Unauthorized Center", timezone: "America/Chicago" })
+  }, 403);
+  await request("/api/broadcasts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-User-Id": user.id },
+    body: JSON.stringify({
+      title: "OUTSIDE SCOPE",
+      message: "This must be rejected.",
+      targetRoomCodes: ["room-108-shishu"],
+      confirm: true
+    })
+  }, 403);
 
   const manualEmail = await request("/api/email/send", {
     method: "POST",
@@ -237,8 +310,25 @@ try {
     body: JSON.stringify({ name: "Integration Theme" })
   }, 201);
   assert.equal(clone.builtIn, false);
+  const updatedTheme = await request(`/api/themes/${clone.id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      name: "Updated Integration Theme",
+      published: true,
+      cssTokens: {
+        ...clone.cssTokens,
+        availableBg: "#d8f3dc",
+        headerFont: "Georgia, serif"
+      }
+    })
+  });
+  assert.equal(updatedTheme.published, true);
+  assert.equal(updatedTheme.cssTokens.availableBg, "#d8f3dc");
+  const themedRoom = await request(`/api/rooms/room-108-shishu?theme=${clone.id}`);
+  assert.equal(themedRoom.themeName, "Updated Integration Theme");
+  assert.equal(themedRoom.themeCssTokens.headerFont, "Georgia, serif");
 
-  await request("/api/broadcasts", {
+  const broadcast = await request("/api/broadcasts", {
     method: "POST",
     body: JSON.stringify({
       title: "SCOPED TEST",
@@ -255,13 +345,21 @@ try {
   assert.equal(otherRoom.activeBroadcast, null);
 
   await request("/api/broadcasts/end", { method: "POST", body: "{}" });
+  const broadcastHistory = await request("/api/broadcasts/history");
+  const completedBroadcast = broadcastHistory.find(item => item.id === broadcast.id);
+  assert.equal(completedBroadcast.status, "ended");
+  assert.equal(Boolean(completedBroadcast.endedAt), true);
   await request(`/api/broadcast-templates/${broadcastTemplate.id}`, { method: "DELETE" });
   const stateAfterTemplateDelete = await request("/api/state");
   assert.equal(stateAfterTemplateDelete.broadcastTemplates.some(item => item.id === broadcastTemplate.id), false);
+  await request(`/api/calendar-assignments/${calendarAssignment.id}`, { method: "DELETE" });
+  await request(`/api/calendar-accounts/${calendarAccount.id}`, { method: "DELETE" });
   await request(`/api/rooms/${room.id}`, { method: "DELETE" });
   await request(`/api/buildings/${building.id}`, { method: "DELETE" });
   await request(`/api/campuses/${campus.id}`, { method: "DELETE" });
   await request(`/api/centers/${center.id}`, { method: "DELETE" });
+  await request(`/api/roles/${clonedRole.id}`, { method: "DELETE" });
+  await request(`/api/roles/${customRole.id}`, { method: "DELETE" });
 
   const adminResponse = await fetch(`${baseUrl}/admin`);
   const adminHtml = await adminResponse.text();
@@ -269,6 +367,10 @@ try {
   assert.match(adminHtml, /User Management/);
   assert.match(adminHtml, /SMTP Settings/);
   assert.match(adminHtml, /Emergency Broadcast/);
+  assert.match(adminHtml, /Permission & Role Editor/);
+  assert.match(adminHtml, /Calendar Accounts/);
+  assert.match(adminHtml, /Live Theme Preview/);
+  assert.match(adminHtml, /Broadcast History/);
   assert.equal(smtpMessages.length >= 3, true);
 
   const finalState = await request("/api/state");
@@ -280,5 +382,6 @@ try {
 } finally {
   child.kill("SIGTERM");
   await new Promise(resolve => smtpServer.close(resolve));
+  await new Promise(resolve => calendarServer.close(resolve));
   await fs.rm(dataDir, { recursive: true, force: true });
 }
