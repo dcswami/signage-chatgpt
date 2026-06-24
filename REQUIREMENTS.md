@@ -590,6 +590,7 @@ Recommended software stack:
 - Operating system: Debian 12.
 - Reverse proxy: Nginx.
 - Application runtime: Node.js application deployed through Docker containers.
+- Server administration utilities: Git and npm installed on the Debian host for repository management, deployment diagnostics, and optional host-side checks.
 - Deployment: Docker and Docker Compose.
 - Database: PostgreSQL.
 - Queue/cache/live-message support: Redis.

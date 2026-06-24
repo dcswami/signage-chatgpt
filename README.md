@@ -44,6 +44,15 @@ Test site:
 https://signage-test.bapswest.org
 ```
 
+Install the host deployment utilities on Debian:
+
+```bash
+sudo apt update
+sudo apt install -y git npm
+```
+
+The application runs in Docker. Host npm is available for diagnostics, while the Docker image installs application dependencies during the build.
+
 Use:
 
 ```bash

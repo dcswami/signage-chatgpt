@@ -133,7 +133,16 @@ sudo apt upgrade -y
 
 ```bash
 sudo apt update
-sudo apt install -y ca-certificates curl gnupg ufw nginx git unzip nano
+sudo apt install -y ca-certificates curl gnupg ufw nginx git unzip nano npm
+```
+
+The Debian `npm` package is installed for deployment diagnostics, package inspection, and optional host-side application checks. The deployed application still runs inside Docker, and the Docker image installs its own Node.js dependencies.
+
+Verify Node.js and npm:
+
+```bash
+node --version
+npm --version
 ```
 
 Enable firewall rules:
@@ -167,7 +176,7 @@ sudo ufw status verbose
 If the package install output ends with `bash: E: command not found`, the install usually completed and an error line was accidentally pasted into the shell. Confirm the packages are installed:
 
 ```bash
-dpkg -l ca-certificates curl gnupg ufw nginx git unzip nano
+dpkg -l ca-certificates curl gnupg ufw nginx git unzip nano npm
 ```
 
 Each package should show `ii` in the first column.
@@ -217,6 +226,22 @@ Clone the project:
 git clone https://github.com/dcswami/signage-chatgpt.git source
 cd /opt/signage/source
 ```
+
+Before building, verify the checked-out revision and Dockerfile:
+
+```bash
+git log --oneline -1
+sed -n '1,10p' Dockerfile
+```
+
+The current Dockerfile must contain:
+
+```dockerfile
+COPY package.json ./
+RUN npm install --omit=dev --no-audit --no-fund
+```
+
+`RUN` is Dockerfile syntax. Do not enter the `RUN npm install ...` line directly at the Debian Bash prompt.
 
 If the folder already exists, update it instead:
 

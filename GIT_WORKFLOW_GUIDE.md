@@ -148,12 +148,17 @@ Recommended server project location:
 /opt/signage/source
 ```
 
-### 2.1 Install Git on the Server
+### 2.1 Install Git and npm on the Server
 
 ```bash
 sudo apt update
-sudo apt install -y git
+sudo apt install -y git npm
+git --version
+node --version
+npm --version
 ```
+
+Host npm supports deployment diagnostics and optional application checks. Docker uses the npm included in its Node.js base image when building the application container.
 
 ### 2.2 First-Time Clone on the Server
 

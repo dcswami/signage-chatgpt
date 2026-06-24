@@ -25,6 +25,17 @@ https://signage-test.bapswest.org/api/health
 
 SSH into the Debian 12 VM.
 
+Install the required host utilities:
+
+```bash
+sudo apt update
+sudo apt install -y git npm
+node --version
+npm --version
+```
+
+Host npm is used for diagnostics and optional checks. The deployed application runs in Docker, where the image installs dependencies separately.
+
 ```bash
 sudo mkdir -p /opt/signage
 sudo chown -R $USER:$USER /opt/signage
@@ -47,6 +58,22 @@ git pull origin main
 ```
 
 The backup command preserves the current test rooms and broadcast history before the first PostgreSQL migration. If the file does not exist, skip that command.
+
+Before rebuilding, verify the checked-out revision and Dockerfile:
+
+```bash
+git log --oneline -1
+sed -n '1,10p' Dockerfile
+```
+
+The Dockerfile must show:
+
+```dockerfile
+COPY package.json ./
+RUN npm install --omit=dev --no-audit --no-fund
+```
+
+Do not run the Dockerfile `RUN` line directly in Bash. The `docker compose build` command executes it inside the image.
 
 ## 4. Create Test Environment File
 
