@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import { createStore } from "./storage.mjs";
 import { encryptCredential, publicEmailSettings, sendEmail, verifySmtp } from "./email.mjs";
-import { syncCalendar } from "./calendar.mjs";
+import { inspectCalendarAccount, syncCalendar } from "./calendar.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -298,10 +298,12 @@ function normalizeData(data) {
       accessLevel: "read-only",
       active: true,
       encryptedCredential: "",
+      principalEmail: "",
       calendars: [],
       syncIntervalMinutes: 15,
       lastSuccessfulSyncAt: null,
       lastSyncError: "",
+      lastVerifiedAt: null,
       ...account
     }));
   normalized.calendarAssignments = normalized.calendarAssignments.map(assignment => ({
@@ -341,7 +343,12 @@ async function saveData(nextDb = db) {
 }
 
 function send(res, status, body, type = "text/html; charset=utf-8") {
-  res.writeHead(status, { "Content-Type": type, "Cache-Control": "no-store" });
+  res.writeHead(status, {
+    "Content-Type": type,
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    Pragma: "no-cache",
+    Expires: "0"
+  });
   res.end(body);
 }
 
@@ -395,6 +402,7 @@ function publicRoom(room, themeOverrideId = "") {
     themeName: theme?.name || "Theme",
     themeBaseId: theme?.baseThemeId || theme?.sourceThemeId || theme?.id || "classic-institutional",
     themeCssTokens: theme?.cssTokens || defaultThemeTokens,
+    buildVersion: assetVersion,
     upcomingEvents: events,
     activeBroadcast: db.activeBroadcast?.targetRoomCodes?.includes(room.code) ? db.activeBroadcast : null
   };
@@ -410,11 +418,23 @@ function publicCalendarAccount(account) {
     tenantId: account.tenantId || "",
     clientId: account.clientId || "",
     mailbox: account.mailbox || "",
+    principalEmail: account.principalEmail || "",
     hasCredential: Boolean(account.encryptedCredential),
     calendars: account.calendars || [],
     syncIntervalMinutes: account.syncIntervalMinutes || 15,
     lastSuccessfulSyncAt: account.lastSuccessfulSyncAt || null,
-    lastSyncError: account.lastSyncError || ""
+    lastSyncError: account.lastSyncError || "",
+    lastVerifiedAt: account.lastVerifiedAt || null
+  };
+}
+
+function publicBroadcast(broadcast) {
+  const createdBy = db.users.find(user => user.id === broadcast.createdBy);
+  const endedBy = db.users.find(user => user.id === broadcast.endedBy);
+  return {
+    ...broadcast,
+    createdByName: createdBy?.name || "System",
+    endedByName: broadcast.endedAt ? endedBy?.name || "System" : ""
   };
 }
 
@@ -809,7 +829,7 @@ function adminPage() {
               <label>Room <select name="roomId" id="calendarAssignmentRoom" required></select></label>
               <label>Account <select name="accountId" id="calendarAssignmentAccount" required></select></label>
               <label>Calendar <select name="calendarId" id="calendarAssignmentCalendar" required></select></label>
-              <button type="submit">Assign Calendar</button>
+              <button type="submit">Assign & Sync</button>
             </form>
             <div id="calendarAssignmentList" class="entity-list assignment-list"></div>
           </section>
@@ -831,6 +851,7 @@ function adminPage() {
           </section>
           <section class="panel">
             <div class="panel-heading"><div><h2>Live Theme Preview</h2><p id="themePreviewTitle">Select a cloned theme to edit.</p></div></div>
+            <label>Preview Room <select id="themePreviewRoom"></select></label>
             <form id="themeEditorForm" hidden>
               <input type="hidden" name="themeId" />
               <label>Theme Name <input name="name" required /></label>
@@ -924,7 +945,7 @@ function adminPage() {
         <section class="panel" id="broadcastHistoryPanel" hidden>
           <div class="panel-heading"><div><h2>Broadcast History</h2><p>System Administrator view of broadcast lifecycle and targets.</p></div></div>
           <div class="table-wrap"><table>
-            <thead><tr><th>Started</th><th>Title</th><th>Severity</th><th>Targets</th><th>Status</th><th>Ended</th></tr></thead>
+            <thead><tr><th>Started</th><th>Published By</th><th>Title</th><th>Severity</th><th>Targets</th><th>Status</th><th>Ended</th></tr></thead>
             <tbody id="broadcastHistoryRows"></tbody>
           </table></div>
         </section>
@@ -969,7 +990,7 @@ function kioskPage(roomCode, preview = false, themeOverrideId = "") {
     <link rel="stylesheet" href="/static/kiosk.css?v=${assetVersion}" />
   </head>
   <body>
-    <main id="kiosk" class="kiosk-frame" data-room-code="${escapeHtml(room.code)}" data-preview="${preview ? "true" : "false"}" data-theme-override="${escapeHtml(themeOverrideId)}">
+    <main id="kiosk" class="kiosk-frame" data-room-code="${escapeHtml(room.code)}" data-preview="${preview ? "true" : "false"}" data-theme-override="${escapeHtml(themeOverrideId)}" data-build-version="${escapeHtml(assetVersion)}">
       <section class="loading">Loading room signage...</section>
     </main>
     <section id="soundGate" class="sound-gate" ${preview ? "hidden" : ""}>
@@ -1048,7 +1069,7 @@ async function handleApi(req, res, url) {
       calendarAssignments: db.calendarAssignments,
       calendarSyncHistory: db.calendarSyncHistory.slice(0, 50),
       activeBroadcast: db.activeBroadcast,
-      broadcastHistory: viewerIsSystemAdmin(viewer) ? db.broadcasts.slice(0, 100) : [],
+      broadcastHistory: viewerIsSystemAdmin(viewer) ? db.broadcasts.slice(0, 100).map(publicBroadcast) : [],
       emailNotifications: db.emailNotifications.slice(0, 50),
       auditLogs: viewerIsSystemAdmin(viewer) ? db.auditLogs.slice(0, 20) : [],
       viewer: publicViewer(viewer)
@@ -1057,7 +1078,7 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/broadcasts/history") {
     const viewer = currentViewer(req);
     if (!viewerIsSystemAdmin(viewer)) return json(res, 403, { error: "System Administrator access is required." });
-    return json(res, 200, db.broadcasts.slice(0, 500));
+    return json(res, 200, db.broadcasts.slice(0, 500).map(publicBroadcast));
   }
   if (req.method === "POST" && url.pathname === "/api/roles") {
     if (!requirePermission(req, res, "role.manage")) return;
@@ -1125,10 +1146,12 @@ async function handleApi(req, res, url) {
     if (!["google", "microsoft365", "public-url"].includes(provider)) return validationError(res, "Select a valid calendar provider.");
     if (!accountName) return validationError(res, "Calendar account name is required.");
     let encryptedCredential = "";
+    let principalEmail = "";
     if (provider === "google") {
       try {
         const credential = JSON.parse(String(body.credential || ""));
         if (!credential.client_email || !credential.private_key) throw new Error("Missing service-account fields");
+        principalEmail = cleanText(credential.client_email, 255);
         encryptedCredential = encryptCredential(String(body.credential));
       } catch {
         return validationError(res, "Enter Google service-account JSON containing client_email and private_key.");
@@ -1146,7 +1169,7 @@ async function handleApi(req, res, url) {
       externalId: cleanText(item.externalId, 1000),
       mailbox: cleanText(item.mailbox, 255)
     })).filter(item => item.name && item.externalId) : [];
-    if (!calendars.length) return validationError(res, "Add at least one calendar.");
+    if (provider === "public-url" && !calendars.length) return validationError(res, "Add at least one public calendar URL.");
     if (provider === "public-url" && calendars.some(item => {
       try {
         return !["http:", "https:"].includes(new URL(item.externalId).protocol);
@@ -1162,12 +1185,14 @@ async function handleApi(req, res, url) {
       tenantId: cleanText(body.tenantId, 255),
       clientId: cleanText(body.clientId, 255),
       mailbox: cleanText(body.mailbox, 255),
+      principalEmail,
       encryptedCredential,
       calendars,
       syncIntervalMinutes: Math.max(5, Number(body.syncIntervalMinutes || 15)),
       active: body.active !== false,
       lastSuccessfulSyncAt: null,
-      lastSyncError: ""
+      lastSyncError: "",
+      lastVerifiedAt: null
     };
     db.calendarAccounts.push(account);
     addAudit("calendar.account.create", { accountId: account.id, provider, accountName });
@@ -1181,6 +1206,7 @@ async function handleApi(req, res, url) {
     if (!account) return json(res, 404, { error: "Calendar account not found" });
     const body = await readBody(req);
     const provider = cleanText(body.provider, 30);
+    const providerChanged = provider !== account.provider;
     if (!["google", "microsoft365", "public-url"].includes(provider)) return validationError(res, "Select a valid calendar provider.");
     const accountName = cleanText(body.accountName);
     if (!accountName) return validationError(res, "Calendar account name is required.");
@@ -1190,7 +1216,7 @@ async function handleApi(req, res, url) {
       externalId: cleanText(item.externalId, 1000),
       mailbox: cleanText(item.mailbox, 255)
     })).filter(item => item.name && item.externalId) : [];
-    if (!calendars.length) return validationError(res, "Add at least one calendar.");
+    if (provider === "public-url" && !calendars.length) return validationError(res, "Add at least one public calendar URL.");
     if (provider === "public-url" && calendars.some(item => {
       try {
         return !["http:", "https:"].includes(new URL(item.externalId).protocol);
@@ -1202,18 +1228,22 @@ async function handleApi(req, res, url) {
       return validationError(res, "Microsoft Tenant ID and Client ID are required.");
     }
     let encryptedCredential = account.encryptedCredential;
+    let principalEmail = account.principalEmail || "";
     if (body.credential) {
       if (provider === "google") {
         try {
           const credential = JSON.parse(String(body.credential));
           if (!credential.client_email || !credential.private_key) throw new Error("Missing service-account fields");
+          principalEmail = cleanText(credential.client_email, 255);
         } catch {
           return validationError(res, "Enter Google service-account JSON containing client_email and private_key.");
         }
       }
       encryptedCredential = encryptCredential(String(body.credential));
     }
-    if (provider !== "public-url" && !encryptedCredential) return validationError(res, "A provider credential is required.");
+    if (provider !== "public-url" && (!encryptedCredential || (providerChanged && !body.credential))) {
+      return validationError(res, "Enter a new credential when changing calendar providers.");
+    }
     Object.assign(account, {
       provider,
       accountName,
@@ -1221,6 +1251,7 @@ async function handleApi(req, res, url) {
       tenantId: cleanText(body.tenantId, 255),
       clientId: cleanText(body.clientId, 255),
       mailbox: cleanText(body.mailbox, 255),
+      principalEmail: provider === "google" ? principalEmail : "",
       encryptedCredential,
       calendars,
       syncIntervalMinutes: Math.max(5, Number(body.syncIntervalMinutes || 15)),
@@ -1229,6 +1260,50 @@ async function handleApi(req, res, url) {
     addAudit("calendar.account.update", { accountId: account.id, provider });
     await saveData();
     return json(res, 200, publicCalendarAccount(account));
+  }
+  const calendarDiscoverMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)\/discover$/);
+  if (req.method === "POST" && calendarDiscoverMatch) {
+    if (!requirePermission(req, res, "calendar.manage")) return;
+    const account = db.calendarAccounts.find(item => item.id === calendarDiscoverMatch[1]);
+    if (!account) return json(res, 404, { error: "Calendar account not found" });
+    try {
+      const result = await inspectCalendarAccount(account);
+      account.principalEmail = result.principalEmail || account.principalEmail || "";
+      for (const discovered of result.discovered || []) {
+        const existing = account.calendars.find(calendar => calendar.externalId === discovered.externalId);
+        if (existing) {
+          existing.name = discovered.name || existing.name;
+          existing.mailbox = discovered.mailbox || existing.mailbox || "";
+          existing.accessRole = discovered.accessRole || existing.accessRole || "";
+        } else {
+          account.calendars.push({
+            id: entityId("calendar"),
+            name: cleanText(discovered.name),
+            externalId: cleanText(discovered.externalId, 1000),
+            mailbox: cleanText(discovered.mailbox, 255),
+            accessRole: cleanText(discovered.accessRole, 40)
+          });
+        }
+      }
+      account.lastVerifiedAt = new Date().toISOString();
+      account.lastSyncError = "";
+      addAudit("calendar.account.verify", {
+        accountId: account.id,
+        discoveredCount: result.discovered?.length || 0,
+        errorCount: result.configured?.filter(item => item.status === "error").length || 0
+      });
+      await saveData();
+      return json(res, 200, {
+        account: publicCalendarAccount(account),
+        discoveredCount: result.discovered?.length || 0,
+        configured: result.configured || []
+      });
+    } catch (error) {
+      account.lastSyncError = cleanText(error.message, 500);
+      addAudit("calendar.account.verify", { accountId: account.id, status: "failed", error: account.lastSyncError });
+      await saveData();
+      return json(res, 502, { error: error.message });
+    }
   }
   if (req.method === "DELETE" && calendarAccountMatch) {
     if (!requirePermission(req, res, "calendar.manage")) return;

@@ -267,14 +267,17 @@ In the admin portal:
 24. Launch a broadcast from a prepared template and confirm the final publish confirmation is still required.
 25. Open **Configuration**, create a temporary role, select permissions, edit it, clone it, and delete both copies.
 26. Confirm a non-System Admin user cannot open Emergency/Safety Broadcast History.
-27. Open **Calendar Sync**, add a public iCalendar URL account, assign one calendar to a temporary room, and select **Sync Now**.
+27. Open **Calendar Sync**, add a public iCalendar URL account, select **Verify**, assign one calendar to a temporary room, and select **Assign & Sync**.
 28. Confirm the room kiosk shows the synchronized events and that private or rental events display as **Private Event**.
 29. Confirm Calendar Sync History records the result, then remove the room assignment before deleting the account.
-30. For Google, enter service-account JSON and the calendar ID shared with that service account.
+30. For Google, enter service-account JSON, save the account, and select **Discover / Verify**. Confirm the displayed service-account email has been granted access to each required Google calendar.
 31. For Microsoft 365, enter the tenant ID, application client ID, client secret, calendar ID, and mailbox.
 32. Open **Theme Editor**, clone a built-in theme, modify colors and the four font groups, and confirm the live preview updates.
 33. Publish the cloned theme, assign it to a room, and confirm the kiosk updates without rebuilding the container.
 34. Publish and end a test safety broadcast, then confirm the System Admin-only history records its start, targets, status, and end time.
+35. In **Theme Editor**, switch the Preview Room dropdown and confirm the iframe changes rooms without closing the editor.
+36. Change each status color with its color picker and adjust Event Panel transparency; confirm the preview updates before saving.
+37. Leave a tablet kiosk asleep or backgrounded, change its assigned theme, then wake the device and confirm it refreshes within 10 seconds without manually reloading.
 
 ## 9. Configure SMTP Email
 

@@ -9,10 +9,15 @@ const soundEnabledKey = `signageAlertSoundEnabled:${roomCode}`;
 
 let alertTimer = null;
 let latestRoom = null;
+let renderPromise = null;
 
 async function fetchRoom() {
-  const suffix = themeOverride ? `?theme=${encodeURIComponent(themeOverride)}` : "";
-  const response = await fetch(`/api/rooms/${roomCode}${suffix}`, { cache: "no-store" });
+  const query = new URLSearchParams({ refresh: Date.now().toString() });
+  if (themeOverride) query.set("theme", themeOverride);
+  const response = await fetch(`/api/rooms/${roomCode}?${query}`, {
+    cache: "no-store",
+    headers: { "Cache-Control": "no-cache" }
+  });
   if (!response.ok) throw new Error("Unable to load room");
   return response.json();
 }
@@ -225,6 +230,10 @@ function startAlert(room) {
 
 async function render() {
   const room = await fetchRoom();
+  if (room.buildVersion && root.dataset.buildVersion && room.buildVersion !== root.dataset.buildVersion) {
+    window.location.reload();
+    return;
+  }
   latestRoom = room;
   root.className = `kiosk-frame ${themeClass(room.themeBaseId || room.themeId)}`;
   applyThemeTokens(room.themeCssTokens);
@@ -235,6 +244,16 @@ async function render() {
       ? renderCustom(room)
       : renderClassic(room);
   startAlert(room);
+}
+
+function refresh() {
+  if (renderPromise) return renderPromise;
+  renderPromise = render().catch(error => {
+    if (!latestRoom) root.innerHTML = `<section class="loading">${escapeHtml(error.message)}</section>`;
+  }).finally(() => {
+    renderPromise = null;
+  });
+  return renderPromise;
 }
 
 function escapeHtml(value) {
@@ -255,10 +274,14 @@ if (isPreview || soundEnabled()) {
   showSoundGate("setup");
 }
 
-render().catch(error => {
-  root.innerHTML = `<section class="loading">${escapeHtml(error.message)}</section>`;
-});
+refresh();
 
-const events = new EventSource(`/api/rooms/${roomCode}/events`);
-events.addEventListener("refresh", () => render());
-setInterval(() => render().catch(() => {}), 10000);
+const events = new EventSource(`/api/rooms/${roomCode}/events?build=${encodeURIComponent(root.dataset.buildVersion || "")}`);
+events.addEventListener("refresh", refresh);
+window.addEventListener("focus", refresh);
+window.addEventListener("online", refresh);
+window.addEventListener("pageshow", refresh);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refresh();
+});
+setInterval(refresh, 10000);

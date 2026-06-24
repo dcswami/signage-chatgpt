@@ -187,6 +187,11 @@ try {
       calendars: [{ name: "Integration Events", externalId: `http://127.0.0.1:${calendarPort}/calendar.ics` }]
     })
   }, 201);
+  const calendarInspection = await request(`/api/calendar-accounts/${calendarAccount.id}/discover`, {
+    method: "POST",
+    body: "{}"
+  });
+  assert.equal(calendarInspection.configured[0].status, "available");
   const calendarAssignment = await request("/api/calendar-assignments", {
     method: "POST",
     body: JSON.stringify({ roomId: room.id, accountId: calendarAccount.id, calendarId: calendarAccount.calendars[0].id })
@@ -195,6 +200,7 @@ try {
   assert.equal(syncResult.eventCount, 1);
   const syncedRoom = await request("/api/rooms/integration-room");
   assert.equal(syncedRoom.upcomingEvents[0].title, "Private Event");
+  assert.equal(Boolean(syncedRoom.buildVersion), true);
 
   const user = await request("/api/users", {
     method: "POST",
@@ -349,6 +355,7 @@ try {
   const completedBroadcast = broadcastHistory.find(item => item.id === broadcast.id);
   assert.equal(completedBroadcast.status, "ended");
   assert.equal(Boolean(completedBroadcast.endedAt), true);
+  assert.equal(completedBroadcast.createdByName, "System Administrator");
   await request(`/api/broadcast-templates/${broadcastTemplate.id}`, { method: "DELETE" });
   const stateAfterTemplateDelete = await request("/api/state");
   assert.equal(stateAfterTemplateDelete.broadcastTemplates.some(item => item.id === broadcastTemplate.id), false);
@@ -370,7 +377,9 @@ try {
   assert.match(adminHtml, /Permission & Role Editor/);
   assert.match(adminHtml, /Calendar Accounts/);
   assert.match(adminHtml, /Live Theme Preview/);
+  assert.match(adminHtml, /themePreviewRoom/);
   assert.match(adminHtml, /Broadcast History/);
+  assert.match(adminHtml, /Published By/);
   assert.equal(smtpMessages.length >= 3, true);
 
   const finalState = await request("/api/state");

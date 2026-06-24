@@ -22,11 +22,12 @@ The scaffold includes:
 - Campus Manager and Building Manager roles with campus/building access scopes.
 - Permission and role editor with cloneable roles and server-side permission checks.
 - Calendar account management for Google service accounts, Microsoft 365 applications, and public iCalendar URLs.
-- Per-room calendar assignment, manual sync, scheduled sync, recurring-event loading, private-event masking, and sync history.
-- Editable cloned-theme design tokens with live kiosk preview, draft, publish, and archive states.
+- Per-room calendar assignment, calendar discovery/verification, paginated manual and scheduled sync, recurring-event loading, private-event masking, and sync history.
+- Editable cloned-theme design tokens with selectable-room live preview, color pickers, panel opacity, draft, publish, and archive states.
 - Encrypted SMTP settings, connection testing, invitation emails, manual notifications, and delivery history.
 - Emergency and safety broadcast template creation, editing, deletion, and launch selection.
 - System Administrator-only emergency and safety broadcast lifecycle history.
+- Kiosk refresh recovery after tablet sleep, browser resume, reconnect, or application rebuild.
 - Built-in themes: Classic Institutional, Event Formal, and Custom Background.
 - Sample HTML/CSS theme gallery in `samples/kiosk-layout-options.html`.
 - PostgreSQL schema in `database/schema.sql`.

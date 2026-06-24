@@ -38,18 +38,61 @@ async function googleAccessToken(account) {
   return token.token;
 }
 
-async function fetchGoogle(account, calendar, start, end) {
+function googlePrincipal(account) {
+  if (account.principalEmail) return account.principalEmail;
+  try {
+    return JSON.parse(decryptCredential(account.encryptedCredential)).client_email || "the service account";
+  } catch {
+    return "the service account";
+  }
+}
+
+async function responseError(response) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text)?.error?.message || text;
+  } catch {
+    return text;
+  }
+}
+
+async function googleError(response, account, calendarId = "") {
+  const message = await responseError(response);
+  if (response.status === 404 && calendarId) {
+    return new Error(
+      `Google calendar "${calendarId}" was not found or is not shared with ${googlePrincipal(account)}. `
+      + "Copy the Calendar ID from Google Calendar Settings > Integrate calendar, then share that calendar with the service-account email."
+    );
+  }
+  if (response.status === 403) {
+    return new Error(`Google Calendar denied access for ${googlePrincipal(account)}: ${message}`);
+  }
+  return new Error(`Google Calendar returned ${response.status}: ${message}`);
+}
+
+async function googleRequest(account, url, calendarId = "") {
   const token = await googleAccessToken(account);
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) throw await googleError(response, account, calendarId);
+  return response.json();
+}
+
+async function fetchGoogle(account, calendar, start, end) {
   const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.externalId)}/events`);
   url.searchParams.set("timeMin", start.toISOString());
   url.searchParams.set("timeMax", end.toISOString());
   url.searchParams.set("singleEvents", "true");
   url.searchParams.set("orderBy", "startTime");
   url.searchParams.set("maxResults", "2500");
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) throw new Error(`Google Calendar returned ${response.status}: ${await response.text()}`);
-  const body = await response.json();
-  return (body.items || [])
+  const items = [];
+  do {
+    const body = await googleRequest(account, url, calendar.externalId);
+    items.push(...(body.items || []));
+    if (body.nextPageToken) url.searchParams.set("pageToken", body.nextPageToken);
+    else url.searchParams.delete("pageToken");
+    if (!body.nextPageToken) break;
+  } while (true);
+  return items
     .filter(item => item.status !== "cancelled")
     .map(item => normalizedEvent({
       externalEventId: item.id,
@@ -63,6 +106,36 @@ async function fetchGoogle(account, calendar, start, end) {
       sourceUpdatedAt: item.updated,
       recurring: Boolean(item.recurringEventId)
     }));
+}
+
+async function inspectGoogle(account) {
+  const configured = [];
+  for (const calendar of account.calendars || []) {
+    const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.externalId)}`;
+    try {
+      const body = await googleRequest(account, url, calendar.externalId);
+      configured.push({ calendarId: calendar.id, externalId: calendar.externalId, name: body.summary || calendar.name, status: "available" });
+    } catch (error) {
+      configured.push({ calendarId: calendar.id, externalId: calendar.externalId, name: calendar.name, status: "error", error: error.message });
+    }
+  }
+
+  const discovered = [];
+  const url = new URL("https://www.googleapis.com/calendar/v3/users/me/calendarList");
+  url.searchParams.set("maxResults", "250");
+  url.searchParams.set("showHidden", "true");
+  do {
+    const body = await googleRequest(account, url);
+    discovered.push(...(body.items || []).map(item => ({
+      name: item.summaryOverride || item.summary || item.id,
+      externalId: item.id,
+      accessRole: item.accessRole || ""
+    })));
+    if (body.nextPageToken) url.searchParams.set("pageToken", body.nextPageToken);
+    else url.searchParams.delete("pageToken");
+    if (!body.nextPageToken) break;
+  } while (true);
+  return { principalEmail: googlePrincipal(account), discovered, configured };
 }
 
 async function microsoftAccessToken(account) {
@@ -92,15 +165,21 @@ async function fetchMicrosoft(account, calendar, start, end) {
   url.searchParams.set("endDateTime", end.toISOString());
   url.searchParams.set("$top", "1000");
   url.searchParams.set("$orderby", "start/dateTime");
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Prefer: 'outlook.timezone="UTC"'
-    }
-  });
-  if (!response.ok) throw new Error(`Microsoft Graph returned ${response.status}: ${await response.text()}`);
-  const body = await response.json();
-  return (body.value || []).filter(item => !item.isCancelled).map(item => normalizedEvent({
+  const items = [];
+  let nextUrl = url.toString();
+  while (nextUrl) {
+    const response = await fetch(nextUrl, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Prefer: 'outlook.timezone="UTC"'
+      }
+    });
+    if (!response.ok) throw new Error(`Microsoft Graph returned ${response.status}: ${await responseError(response)}`);
+    const body = await response.json();
+    items.push(...(body.value || []));
+    nextUrl = body["@odata.nextLink"] || "";
+  }
+  return items.filter(item => !item.isCancelled).map(item => normalizedEvent({
     externalEventId: item.id,
     title: item.subject,
     organizer: item.organizer?.emailAddress?.name || item.organizer?.emailAddress?.address,
@@ -112,6 +191,25 @@ async function fetchMicrosoft(account, calendar, start, end) {
     sourceUpdatedAt: item.lastModifiedDateTime,
     recurring: item.type && item.type !== "singleInstance"
   }));
+}
+
+async function inspectMicrosoft(account) {
+  const token = await microsoftAccessToken(account);
+  if (!account.mailbox) throw new Error("Enter a default Microsoft mailbox before discovering calendars.");
+  const discovered = [];
+  let nextUrl = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(account.mailbox)}/calendars?$top=100`;
+  while (nextUrl) {
+    const response = await fetch(nextUrl, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) throw new Error(`Microsoft Graph returned ${response.status}: ${await responseError(response)}`);
+    const body = await response.json();
+    discovered.push(...(body.value || []).map(item => ({
+      name: item.name || item.id,
+      externalId: item.id,
+      mailbox: account.mailbox
+    })));
+    nextUrl = body["@odata.nextLink"] || "";
+  }
+  return { principalEmail: account.mailbox, discovered, configured: [] };
 }
 
 function icsOccurrences(item, start, end) {
@@ -150,5 +248,24 @@ export async function syncCalendar(account, calendar, start, end) {
   if (account.provider === "google") return fetchGoogle(account, calendar, start, end);
   if (account.provider === "microsoft365") return fetchMicrosoft(account, calendar, start, end);
   if (account.provider === "public-url") return fetchPublicUrl(calendar, start, end);
+  throw new Error(`Unsupported calendar provider: ${account.provider}`);
+}
+
+export async function inspectCalendarAccount(account) {
+  if (account.provider === "google") return inspectGoogle(account);
+  if (account.provider === "microsoft365") return inspectMicrosoft(account);
+  if (account.provider === "public-url") {
+    const now = new Date();
+    const configured = [];
+    for (const calendar of account.calendars || []) {
+      try {
+        await fetchPublicUrl(calendar, now, new Date(now.getTime() + 24 * 60 * 60 * 1000));
+        configured.push({ calendarId: calendar.id, externalId: calendar.externalId, name: calendar.name, status: "available" });
+      } catch (error) {
+        configured.push({ calendarId: calendar.id, externalId: calendar.externalId, name: calendar.name, status: "error", error: error.message });
+      }
+    }
+    return { principalEmail: "", discovered: [], configured };
+  }
   throw new Error(`Unsupported calendar provider: ${account.provider}`);
 }

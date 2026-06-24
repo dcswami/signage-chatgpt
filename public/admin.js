@@ -178,6 +178,9 @@ function renderThemes() {
       </div>
     </article>
   `).join("");
+  const roomSelect = document.querySelector("#themePreviewRoom");
+  const selectedRoomId = roomSelect.value || state.rooms[0]?.id || "";
+  roomSelect.innerHTML = optionList(state.rooms, selectedRoomId, room => `${room.name} - ${room.buildingName}`);
 }
 
 function renderUsersRoles() {
@@ -278,8 +281,9 @@ function providerLabel(provider) {
 function renderCalendars() {
   document.querySelector("#calendarAccountList").innerHTML = state.calendarAccounts.map(account => `
     <article class="entity-item">
-      <div><strong>${escapeHtml(account.accountName)}</strong><span>${escapeHtml(providerLabel(account.provider))} / ${escapeHtml(account.accessLevel)} / ${account.calendars.length} calendars${account.lastSyncError ? ` / Error: ${escapeHtml(account.lastSyncError)}` : ""}</span></div>
+      <div><strong>${escapeHtml(account.accountName)}</strong><span>${escapeHtml(providerLabel(account.provider))} / ${escapeHtml(account.accessLevel)} / ${account.calendars.length} calendars${account.principalEmail ? ` / ${escapeHtml(account.principalEmail)}` : ""}${account.lastSyncError ? ` / Error: ${escapeHtml(account.lastSyncError)}` : ""}</span></div>
       <div class="entity-actions">
+        <button type="button" class="secondary" data-discover-calendar="${escapeHtml(account.id)}">${account.provider === "public-url" ? "Verify" : "Discover / Verify"}</button>
         <button type="button" class="secondary" data-edit="calendarAccount" data-id="${escapeHtml(account.id)}">Edit</button>
         <button type="button" class="danger-text" data-delete="calendarAccount" data-id="${escapeHtml(account.id)}">Delete</button>
       </div>
@@ -324,13 +328,14 @@ function renderBroadcastHistory() {
   document.querySelector("#broadcastHistoryRows").innerHTML = state.broadcastHistory.map(item => `
     <tr>
       <td>${new Date(item.startedAt || item.createdAt).toLocaleString()}</td>
+      <td>${escapeHtml(item.createdByName || "System")}</td>
       <td>${escapeHtml(item.title)}</td>
       <td>${escapeHtml(item.severity)}</td>
       <td>${item.targetRoomCodes.length}</td>
       <td>${escapeHtml(item.status || (item.endedAt ? "ended" : "active"))}</td>
-      <td>${item.endedAt ? new Date(item.endedAt).toLocaleString() : "-"}</td>
+      <td>${item.endedAt ? `${new Date(item.endedAt).toLocaleString()}<span class="subtle">by ${escapeHtml(item.endedByName || "System")}</span>` : "-"}</td>
     </tr>
-  `).join("") || `<tr><td colspan="6" class="empty-state">No broadcasts recorded.</td></tr>`;
+  `).join("") || `<tr><td colspan="7" class="empty-state">No broadcasts recorded.</td></tr>`;
 }
 
 function renderAudit() {
@@ -377,7 +382,8 @@ function fieldsFor(type, entity = {}) {
       <label>Credential ${entity.hasCredential ? "(stored; leave blank to keep)" : ""}
         <textarea name="credential" autocomplete="off" placeholder="Google service-account JSON or Microsoft client secret"></textarea>
       </label>
-      <label>Calendars <textarea name="calendarLines" required placeholder="Name|Calendar ID or public URL&#10;Microsoft: Name|Calendar ID|Mailbox">${escapeHtml(calendarLines)}</textarea></label>
+      <label>Calendars <textarea name="calendarLines" placeholder="Name|Calendar ID or public URL&#10;Microsoft: Name|Calendar ID|Mailbox">${escapeHtml(calendarLines)}</textarea></label>
+      <p class="help-text">Google and Microsoft accounts may be saved first, then use Discover / Verify to load accessible calendars. Google calendars must be shared with the service-account email.</p>
       <label class="check-label"><input name="active" type="checkbox" ${active ? "checked" : ""} /> Active</label>
     `;
   }
@@ -714,8 +720,15 @@ async function cloneRole(roleId) {
 async function saveCalendarAssignment(event) {
   event.preventDefault();
   const values = Object.fromEntries(new FormData(event.currentTarget));
-  await api("/api/calendar-assignments", { method: "POST", body: JSON.stringify(values) });
-  await load();
+  const assignment = await api("/api/calendar-assignments", { method: "POST", body: JSON.stringify(values) });
+  try {
+    const result = await api(`/api/calendar-assignments/${assignment.id}/sync`, { method: "POST", body: "{}" });
+    await load();
+    alert(`Calendar assigned and synchronized. ${result.eventCount} events loaded.`);
+  } catch (error) {
+    await load();
+    alert(`Calendar was assigned, but the first sync failed.\n\n${error.message}`);
+  }
 }
 
 async function syncCalendarAssignment(assignmentId) {
@@ -723,6 +736,21 @@ async function syncCalendarAssignment(assignmentId) {
     const result = await api(`/api/calendar-assignments/${assignmentId}/sync`, { method: "POST", body: "{}" });
     await load();
     alert(`Calendar synchronized. ${result.eventCount} events loaded.`);
+  } catch (error) {
+    await load();
+    alert(error.message);
+  }
+}
+
+async function discoverCalendars(accountId) {
+  try {
+    const result = await api(`/api/calendar-accounts/${accountId}/discover`, { method: "POST", body: "{}" });
+    await load();
+    const failed = result.configured.filter(item => item.status === "error");
+    const message = failed.length
+      ? `${result.discoveredCount} calendars discovered. ${failed.length} configured calendar(s) could not be accessed:\n\n${failed.map(item => `${item.name}: ${item.error}`).join("\n")}`
+      : `${result.discoveredCount} calendars discovered and configured calendars verified.`;
+    alert(message);
   } catch (error) {
     await load();
     alert(error.message);
@@ -765,6 +793,69 @@ const themeTokenProperties = {
   eventDetailFont: "--theme-event-detail-font",
   upcomingFont: "--theme-upcoming-font"
 };
+const themeColorTokens = new Set([
+  "availableBg",
+  "availableText",
+  "busyBg",
+  "busyText",
+  "warningBg",
+  "warningText",
+  "footerText",
+  "ink"
+]);
+
+function colorParts(value) {
+  const text = String(value || "").trim();
+  const shortHex = text.match(/^#([0-9a-f]{3})$/i);
+  if (shortHex) {
+    const [r, g, b] = shortHex[1].split("").map(part => `${part}${part}`);
+    return { hex: `#${r}${g}${b}`.toLowerCase(), opacity: 1 };
+  }
+  const hex = text.match(/^#([0-9a-f]{6})$/i);
+  if (hex) return { hex: `#${hex[1]}`.toLowerCase(), opacity: 1 };
+  const rgba = text.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([.\d]+))?\s*\)$/i);
+  if (rgba) {
+    const hexPart = value => Math.max(0, Math.min(255, Number(value))).toString(16).padStart(2, "0");
+    return {
+      hex: `#${hexPart(rgba[1])}${hexPart(rgba[2])}${hexPart(rgba[3])}`,
+      opacity: Math.max(0, Math.min(1, Number(rgba[4] ?? 1)))
+    };
+  }
+  return { hex: "#ffffff", opacity: 1 };
+}
+
+function rgbaValue(hex, opacity) {
+  const normalized = colorParts(hex).hex.slice(1);
+  const channels = [0, 2, 4].map(index => parseInt(normalized.slice(index, index + 2), 16));
+  return `rgba(${channels.join(", ")}, ${Math.max(0, Math.min(1, Number(opacity))).toFixed(2)})`;
+}
+
+function themeTokenField(key, label, value) {
+  if (themeColorTokens.has(key)) {
+    return `<label>${escapeHtml(label)} <input name="${escapeHtml(key)}" type="color" value="${escapeHtml(colorParts(value).hex)}" /></label>`;
+  }
+  if (key === "panel") {
+    const parts = colorParts(value);
+    const transparency = Math.round((1 - parts.opacity) * 100);
+    return `<fieldset class="color-opacity-field">
+      <legend>${escapeHtml(label)}</legend>
+      <label>Color <input name="panelColor" type="color" value="${escapeHtml(parts.hex)}" /></label>
+      <label>Transparency <input name="panelTransparency" type="range" min="0" max="100" step="5" value="${transparency}" /><output id="panelTransparencyValue">${transparency}%</output></label>
+    </fieldset>`;
+  }
+  return `<label>${escapeHtml(label)} <input name="${escapeHtml(key)}" value="${escapeHtml(value || "")}" /></label>`;
+}
+
+function selectedThemePreviewRoom() {
+  return state.rooms.find(room => room.id === document.querySelector("#themePreviewRoom").value) || state.rooms[0];
+}
+
+function refreshThemePreview(theme) {
+  const room = selectedThemePreviewRoom();
+  if (!theme || !room) return;
+  document.querySelector("#themePreviewTitle").textContent = `${theme.name} using ${room.name}`;
+  document.querySelector("#themePreviewFrame").src = `/preview/${encodeURIComponent(room.code)}?theme=${encodeURIComponent(theme.id)}`;
+}
 
 function editTheme(themeId) {
   const theme = state.themes.find(item => item.id === themeId);
@@ -775,11 +866,10 @@ function editTheme(themeId) {
   form.elements.name.value = theme.name;
   form.elements.published.checked = theme.published;
   form.elements.archived.checked = theme.archived;
-  document.querySelector("#themeTokenFields").innerHTML = Object.entries(themeTokenLabels).map(([key, label]) => `
-    <label>${escapeHtml(label)} <input name="${escapeHtml(key)}" value="${escapeHtml(theme.cssTokens[key] || "")}" /></label>
-  `).join("");
-  document.querySelector("#themePreviewTitle").textContent = `${theme.name} using Room 108`;
-  document.querySelector("#themePreviewFrame").src = `/preview/room-108-shishu?theme=${encodeURIComponent(theme.id)}`;
+  document.querySelector("#themeTokenFields").innerHTML = Object.entries(themeTokenLabels)
+    .map(([key, label]) => themeTokenField(key, label, theme.cssTokens[key]))
+    .join("");
+  refreshThemePreview(theme);
 }
 
 async function saveTheme(event) {
@@ -787,7 +877,10 @@ async function saveTheme(event) {
   const form = event.currentTarget;
   const values = Object.fromEntries(new FormData(form));
   const cssTokens = {};
-  for (const key of Object.keys(themeTokenLabels)) cssTokens[key] = values[key];
+  for (const key of Object.keys(themeTokenLabels)) {
+    if (key === "panel") cssTokens.panel = rgbaValue(values.panelColor, 1 - Number(values.panelTransparency) / 100);
+    else cssTokens[key] = values[key];
+  }
   await api(`/api/themes/${values.themeId}`, {
     method: "PUT",
     body: JSON.stringify({
@@ -842,11 +935,23 @@ document.querySelector("#smtpTestForm").addEventListener("submit", testSmtp);
 document.querySelector("#emailForm").addEventListener("submit", sendAdministrativeEmail);
 document.querySelector("#calendarAssignmentForm").addEventListener("submit", saveCalendarAssignment);
 document.querySelector("#calendarAssignmentAccount").addEventListener("change", renderCalendarChoices);
+document.querySelector("#themePreviewRoom").addEventListener("change", () => {
+  const themeId = document.querySelector("#themeEditorForm").elements.themeId.value;
+  refreshThemePreview(state.themes.find(theme => theme.id === themeId));
+});
 document.querySelector("#themeEditorForm").addEventListener("submit", saveTheme);
 document.querySelector("#themeEditorForm").addEventListener("input", event => {
-  const property = themeTokenProperties[event.target.name];
+  let tokenName = event.target.name;
+  let value = event.target.value;
+  if (tokenName === "panelColor" || tokenName === "panelTransparency") {
+    tokenName = "panel";
+    const form = event.currentTarget;
+    value = rgbaValue(form.elements.panelColor.value, 1 - Number(form.elements.panelTransparency.value) / 100);
+    document.querySelector("#panelTransparencyValue").textContent = `${Math.round(Number(form.elements.panelTransparency.value))}%`;
+  }
+  const property = themeTokenProperties[tokenName];
   const kiosk = document.querySelector("#themePreviewFrame").contentDocument?.querySelector("#kiosk");
-  if (property && kiosk) kiosk.style.setProperty(property, event.target.value);
+  if (property && kiosk) kiosk.style.setProperty(property, value);
 });
 document.querySelector("#broadcastForm").addEventListener("submit", publishBroadcast);
 document.querySelector("#broadcastTemplateSelect").addEventListener("change", event => {
@@ -882,6 +987,8 @@ document.addEventListener("click", event => {
   if (cloneRoleButton) return cloneRole(cloneRoleButton.dataset.cloneRole);
   const syncButton = event.target.closest("[data-sync-calendar]");
   if (syncButton) return syncCalendarAssignment(syncButton.dataset.syncCalendar);
+  const discoverButton = event.target.closest("[data-discover-calendar]");
+  if (discoverButton) return discoverCalendars(discoverButton.dataset.discoverCalendar);
   const deleteAssignmentButton = event.target.closest("[data-delete-assignment]");
   if (deleteAssignmentButton) return deleteCalendarAssignment(deleteAssignmentButton.dataset.deleteAssignment);
   const editThemeButton = event.target.closest("[data-edit-theme]");
