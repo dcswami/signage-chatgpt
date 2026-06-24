@@ -89,16 +89,27 @@ APP_ENV=test
 APP_BASE_URL=https://signage-test.bapswest.org
 HOST=0.0.0.0
 PORT=3000
-POSTGRES_DB=signage_test
+POSTGRES_DB=signage
 POSTGRES_USER=signage_app
 POSTGRES_PASSWORD=CHANGE_ME_TEST_PASSWORD
 POSTGRES_HOST=postgres
 REDIS_URL=redis://redis:6379
 SESSION_SECRET=CHANGE_ME_LONG_RANDOM_TEST_SECRET
+CREDENTIAL_ENCRYPTION_KEY=CHANGE_ME_SEPARATE_LONG_RANDOM_CREDENTIAL_KEY
 TWO_FACTOR_ISSUER=BAPS Signage Test
 ```
 
 Use strong random values for passwords and secrets.
+
+If the PostgreSQL volume already exists, keep the database name that is already present. The current test server uses `signage`; changing only the `.env` value does not rename an initialized PostgreSQL database.
+
+Generate the credential encryption key with:
+
+```bash
+openssl rand -base64 48
+```
+
+Store this key in the server password manager or another protected backup. Do not change or lose it after SMTP credentials are saved, because existing encrypted credentials cannot be decrypted without the same key.
 
 ## 5. Start Test Containers
 
@@ -245,8 +256,63 @@ In the admin portal:
 13. Confirm only that room switches to broadcast mode and plays the alert sound.
 14. Confirm the admin portal preview stays silent.
 15. End the broadcast.
+16. Open **Users**, create a temporary invited user, and assign a role, center, and feature grants.
+17. Edit the user and confirm status, role, center, and feature changes persist.
+18. Open **Email Notifications**, save the SMTP settings, and send a test message.
+19. Send administrative emails using a specific user, role, and center target, and confirm delivery appears in Email History without duplicate recipients.
+20. Confirm the SMTP password is never displayed after saving.
+21. Confirm **Campus Manager** and **Building Manager** appear in the role list.
+22. Assign a test user to multiple campuses and buildings and confirm the access scope persists.
+23. Create, edit, and delete a Broadcast Template.
+24. Launch a broadcast from a prepared template and confirm the final publish confirmation is still required.
+25. Open **Configuration**, create a temporary role, select permissions, edit it, clone it, and delete both copies.
+26. Confirm a non-System Admin user cannot open Emergency/Safety Broadcast History.
+27. Open **Calendar Sync**, add a public iCalendar URL account, select **Verify**, assign one calendar to a temporary room, and select **Assign & Sync**.
+28. Confirm the room kiosk shows the synchronized events and that private or rental events display as **Private Event**.
+29. Confirm Calendar Sync History records the result, then remove the room assignment before deleting the account.
+30. For Google, enter service-account JSON, save the account, and select **Discover / Verify**. Confirm the displayed service-account email has been granted access to each required Google calendar.
+31. For Microsoft 365, enter the tenant ID, application client ID, client secret, calendar ID, and mailbox.
+32. Open **Theme Editor**, clone a built-in theme, modify colors and the four font groups, and confirm the live preview updates.
+33. Publish the cloned theme, assign it to a room, and confirm the kiosk updates without rebuilding the container.
+34. Publish and end a test safety broadcast, then confirm the System Admin-only history records its start, targets, status, and end time.
+35. In **Theme Editor**, switch the Preview Room dropdown and confirm the iframe changes rooms without closing the editor.
+36. Change each status color with its color picker and adjust Event Panel transparency; confirm the preview updates before saving.
+37. Leave a tablet kiosk asleep or backgrounded, change its assigned theme, then wake the device and confirm it refreshes within 10 seconds without manually reloading.
+38. Clone a theme, upload a PNG, JPEG, or WebP background image, save the theme, and confirm the image appears in all three preview states.
+39. Rebuild the application container and confirm the uploaded background still loads from the persistent `./data/theme-assets` volume.
+40. Change the upcoming-event tile background, title, and detail colors and confirm the preview updates.
+41. Open **Theme Scheduler**, schedule a published theme for one or more eligible targets, and confirm the owner name appears.
+42. Confirm the scheduled theme overrides Room Management during the active window and automatically returns to the room theme afterward.
+43. Confirm completed schedules appear under **Past Schedules** and records older than two years are not displayed.
 
-## 9. Pull Updates Later
+## 9. Configure SMTP Email
+
+Obtain these values from the email provider:
+
+```text
+SMTP host
+SMTP port
+TLS mode
+SMTP username
+SMTP password or app password
+From name
+From email
+Reply-To email, if required
+```
+
+In the management portal:
+
+1. Open **Email Notifications**.
+2. Enter the SMTP settings.
+3. Enable email delivery.
+4. Save the settings.
+5. Enter a test recipient.
+6. Select **Test Connection & Send**.
+7. Confirm the message arrives and Email History shows `sent`.
+
+Use port `465` with implicit TLS enabled when required by the provider. Port `587` normally uses STARTTLS and should leave implicit TLS disabled.
+
+## 10. Pull Updates Later
 
 ```bash
 cd /opt/signage/source
@@ -256,7 +322,7 @@ docker compose -f docker-compose.test.yml -p signage-test up -d --force-recreate
 docker compose -f docker-compose.test.yml -p signage-test ps
 ```
 
-## 10. Stop Test Environment
+## 11. Stop Test Environment
 
 ```bash
 cd /opt/signage/source
@@ -271,9 +337,10 @@ docker compose -f docker-compose.test.yml -p signage-test down -v
 
 Only use `down -v` when you intentionally want to delete the test database and Redis data.
 
-## 11. Notes
+## 12. Notes
 
 - PostgreSQL is the primary application data store.
 - `data/app-data.json` is retained as an automatically updated compatibility mirror and migration source.
+- Uploaded theme background images are retained in `data/theme-assets`; include this directory in backups.
 - Redis is included for future multi-instance broadcast fan-out and background jobs.
 - Authentication and production role enforcement remain future implementation layers.

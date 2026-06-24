@@ -19,6 +19,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   background: var(--bg);
   color: var(--ink);
@@ -244,6 +248,17 @@ textarea {
   width: 100%;
 }
 
+input[type="color"] {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 3px;
+}
+
+input[type="range"] {
+  cursor: pointer;
+  padding: 0;
+}
+
 input:focus,
 select:focus,
 textarea:focus {
@@ -312,6 +327,28 @@ th {
 .status-pill.warning {
   background: var(--warning-bg);
   color: var(--warning);
+}
+
+.status-pill.user-active,
+.status-pill.email-sent {
+  background: var(--available-bg);
+  color: var(--available);
+}
+
+.status-pill.user-invited {
+  background: #e4edf7;
+  color: #315f8a;
+}
+
+.status-pill.user-suspended,
+.status-pill.email-failed {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.status-pill.user-deactivated {
+  background: #e8ecee;
+  color: var(--muted);
 }
 
 .row-actions,
@@ -383,6 +420,130 @@ th {
 
 .broadcast-panel {
   max-width: 900px;
+}
+
+.user-filters {
+  grid-template-columns: minmax(240px, 2fr) minmax(180px, 1fr);
+}
+
+.feature-summary {
+  display: block;
+  font-size: 13px;
+  max-width: 280px;
+}
+
+.email-grid {
+  align-items: start;
+}
+
+.theme-editor-grid {
+  grid-template-columns: minmax(320px, 0.8fr) minmax(620px, 1.5fr);
+}
+
+.theme-preview-frame {
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--line);
+  display: block;
+  height: auto;
+  margin-top: 18px;
+  width: 100%;
+}
+
+.color-opacity-field {
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(130px, 0.7fr) minmax(220px, 1.3fr);
+  margin: 0;
+  padding: 12px;
+}
+
+.color-opacity-field legend {
+  color: var(--muted);
+  font-size: 14px;
+  padding: 0 6px;
+}
+
+.color-opacity-field output {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.theme-background-field {
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  margin: 14px 0;
+  padding: 12px;
+}
+
+.theme-background-field legend {
+  color: var(--muted);
+  font-size: 14px;
+  padding: 0 6px;
+}
+
+.theme-background-field img {
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--line);
+  max-height: 180px;
+  object-fit: cover;
+  width: 100%;
+}
+
+.scheduler-target-grid {
+  display: grid;
+  gap: 13px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 14px 0;
+}
+
+.scheduler-target-grid select {
+  min-height: 180px;
+}
+
+.assignment-list {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 8px;
+}
+
+.email-grid .panel {
+  margin-bottom: 0;
+}
+
+.subform {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 18px;
+}
+
+.help-text,
+.form-status {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+.form-status:not(:empty) {
+  background: #f2f7f8;
+  border-left: 4px solid #52869b;
+  padding: 10px;
+}
+
+.feature-fieldset {
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 14px;
+}
+
+.feature-fieldset legend {
+  color: var(--muted);
+  font-size: 14px;
+  padding: 0 5px;
 }
 
 form {
@@ -483,6 +644,14 @@ dialog form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .theme-editor-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .scheduler-target-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .filters {
     grid-template-columns: 1fr;
   }
@@ -503,7 +672,12 @@ dialog form {
   .summary-grid,
   .management-grid,
   .admin-grid,
-  .form-grid {
+  .form-grid,
+  .scheduler-target-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .color-opacity-field {
     grid-template-columns: 1fr;
   }
 

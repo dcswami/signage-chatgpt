@@ -42,7 +42,11 @@ CREATE TABLE IF NOT EXISTS kiosk_themes (
   slug text UNIQUE NOT NULL,
   built_in boolean NOT NULL DEFAULT false,
   cloneable boolean NOT NULL DEFAULT true,
+  base_theme_id uuid REFERENCES kiosk_themes(id),
   css_tokens jsonb NOT NULL DEFAULT '{}'::jsonb,
+  published boolean NOT NULL DEFAULT false,
+  archived boolean NOT NULL DEFAULT false,
+  last_published_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -78,6 +82,22 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS theme_schedules (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  theme_id uuid NOT NULL REFERENCES kiosk_themes(id),
+  starts_at timestamptz NOT NULL,
+  ends_at timestamptz NOT NULL,
+  center_ids uuid[] NOT NULL DEFAULT '{}',
+  campus_ids uuid[] NOT NULL DEFAULT '{}',
+  building_ids uuid[] NOT NULL DEFAULT '{}',
+  room_ids uuid[] NOT NULL DEFAULT '{}',
+  created_by uuid REFERENCES users(id),
+  updated_by uuid REFERENCES users(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz,
+  CHECK (ends_at > starts_at)
+);
+
 CREATE TABLE IF NOT EXISTS roles (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name text NOT NULL,
@@ -97,6 +117,18 @@ CREATE TABLE IF NOT EXISTS user_center_access (
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   center_id uuid NOT NULL REFERENCES centers(id) ON DELETE CASCADE,
   PRIMARY KEY (user_id, center_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_campus_access (
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  campus_id uuid NOT NULL REFERENCES campuses(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, campus_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_building_access (
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  building_id uuid NOT NULL REFERENCES buildings(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, building_id)
 );
 
 CREATE TABLE IF NOT EXISTS user_feature_grants (
@@ -158,6 +190,16 @@ CREATE TABLE IF NOT EXISTS calendar_events (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS calendar_sync_history (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  room_id uuid REFERENCES rooms(id) ON DELETE SET NULL,
+  calendar_account_id uuid REFERENCES calendar_accounts(id) ON DELETE SET NULL,
+  status text NOT NULL CHECK (status IN ('success', 'failed')),
+  event_count integer,
+  error text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS event_conflicts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   room_id uuid NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
@@ -194,7 +236,26 @@ CREATE TABLE IF NOT EXISTS broadcasts (
   created_by uuid REFERENCES users(id),
   started_at timestamptz,
   ended_at timestamptz,
+  ended_by uuid REFERENCES users(id),
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'ended')),
   created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS broadcast_templates (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  title text NOT NULL,
+  message text NOT NULL,
+  severity text NOT NULL,
+  visual_style text NOT NULL DEFAULT 'emergency',
+  audible_alert boolean NOT NULL DEFAULT true,
+  default_target_scope text NOT NULL DEFAULT 'rooms',
+  approval_required boolean NOT NULL DEFAULT true,
+  active boolean NOT NULL DEFAULT true,
+  created_by uuid REFERENCES users(id),
+  updated_by uuid REFERENCES users(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS notifications (
@@ -204,6 +265,35 @@ CREATE TABLE IF NOT EXISTS notifications (
   severity text NOT NULL DEFAULT 'info',
   recipient_scope jsonb NOT NULL DEFAULT '{}'::jsonb,
   read_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS email_settings (
+  id text PRIMARY KEY DEFAULT 'primary',
+  enabled boolean NOT NULL DEFAULT false,
+  host text NOT NULL,
+  port integer NOT NULL DEFAULT 587,
+  secure boolean NOT NULL DEFAULT false,
+  username text,
+  encrypted_password text,
+  from_name text NOT NULL,
+  from_email text NOT NULL,
+  reply_to text,
+  last_test_at timestamptz,
+  last_test_status text,
+  last_test_error text,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS email_delivery_history (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid REFERENCES users(id),
+  recipient_email text NOT NULL,
+  subject text NOT NULL,
+  notification_type text NOT NULL,
+  source text NOT NULL,
+  status text NOT NULL,
+  error text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -219,5 +309,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE INDEX IF NOT EXISTS idx_rooms_code ON rooms(code);
 CREATE INDEX IF NOT EXISTS idx_calendar_events_room_time ON calendar_events(room_id, starts_at, ends_at);
+CREATE INDEX IF NOT EXISTS idx_calendar_sync_history_created_at ON calendar_sync_history(created_at);
+CREATE INDEX IF NOT EXISTS idx_theme_schedules_time ON theme_schedules(starts_at, ends_at);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
+CREATE INDEX IF NOT EXISTS idx_email_delivery_history_created_at ON email_delivery_history(created_at);

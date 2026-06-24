@@ -1,5 +1,7 @@
 const root = document.querySelector("#kiosk");
 const roomCode = root.dataset.roomCode;
+const themeOverride = root.dataset.themeOverride;
+const stateOverride = root.dataset.stateOverride;
 const isPreview = root.dataset.preview === "true";
 const alertSound = document.querySelector("#alertSound");
 const soundGate = document.querySelector("#soundGate");
@@ -8,9 +10,16 @@ const soundEnabledKey = `signageAlertSoundEnabled:${roomCode}`;
 
 let alertTimer = null;
 let latestRoom = null;
+let renderPromise = null;
 
 async function fetchRoom() {
-  const response = await fetch(`/api/rooms/${roomCode}`, { cache: "no-store" });
+  const query = new URLSearchParams({ refresh: Date.now().toString() });
+  if (themeOverride) query.set("theme", themeOverride);
+  if (stateOverride) query.set("state", stateOverride);
+  const response = await fetch(`/api/rooms/${roomCode}?${query}`, {
+    cache: "no-store",
+    headers: { "Cache-Control": "no-cache" }
+  });
   if (!response.ok) throw new Error("Unable to load room");
   return response.json();
 }
@@ -21,6 +30,34 @@ function themeClass(themeId) {
     "event-formal": "theme-formal",
     "custom-background": "theme-custom"
   }[themeId] || "theme-classic";
+}
+
+function applyThemeTokens(tokens = {}) {
+  const properties = {
+    availableBg: "--available-bg",
+    availableText: "--available-text",
+    busyBg: "--busy-bg",
+    busyText: "--busy-text",
+    warningBg: "--warning-bg",
+    warningText: "--warning-text",
+    footerText: "--footer-text",
+    ink: "--ink",
+    panel: "--panel",
+    upcomingTileBg: "--upcoming-tile-bg",
+    upcomingTitleText: "--upcoming-title-text",
+    upcomingDetailText: "--upcoming-detail-text",
+    headerFont: "--theme-header-font",
+    footerFont: "--theme-footer-font",
+    eventDetailFont: "--theme-event-detail-font",
+    upcomingFont: "--theme-upcoming-font"
+  };
+  for (const [key, property] of Object.entries(properties)) {
+    if (tokens[key]) root.style.setProperty(property, tokens[key]);
+  }
+  root.style.setProperty(
+    "--theme-background-image",
+    tokens.backgroundImage ? `url("${String(tokens.backgroundImage).replaceAll('"', '\\"')}")` : "none"
+  );
 }
 
 function statusTitle(room) {
@@ -202,15 +239,30 @@ function startAlert(room) {
 
 async function render() {
   const room = await fetchRoom();
+  if (room.buildVersion && root.dataset.buildVersion && room.buildVersion !== root.dataset.buildVersion) {
+    window.location.reload();
+    return;
+  }
   latestRoom = room;
-  root.className = `kiosk-frame ${themeClass(room.themeId)}`;
+  root.className = `kiosk-frame ${themeClass(room.themeBaseId || room.themeId)}`;
+  applyThemeTokens(room.themeCssTokens);
   root.dataset.roomState = room.activeBroadcast ? "broadcast" : room.status;
-  root.innerHTML = room.themeId === "event-formal"
+  root.innerHTML = (room.themeBaseId || room.themeId) === "event-formal"
     ? renderFormal(room)
-    : room.themeId === "custom-background"
+    : (room.themeBaseId || room.themeId) === "custom-background"
       ? renderCustom(room)
       : renderClassic(room);
   startAlert(room);
+}
+
+function refresh() {
+  if (renderPromise) return renderPromise;
+  renderPromise = render().catch(error => {
+    if (!latestRoom) root.innerHTML = `<section class="loading">${escapeHtml(error.message)}</section>`;
+  }).finally(() => {
+    renderPromise = null;
+  });
+  return renderPromise;
 }
 
 function escapeHtml(value) {
@@ -231,10 +283,14 @@ if (isPreview || soundEnabled()) {
   showSoundGate("setup");
 }
 
-render().catch(error => {
-  root.innerHTML = `<section class="loading">${escapeHtml(error.message)}</section>`;
-});
+refresh();
 
-const events = new EventSource(`/api/rooms/${roomCode}/events`);
-events.addEventListener("refresh", () => render());
-setInterval(() => render().catch(() => {}), 10000);
+const events = new EventSource(`/api/rooms/${roomCode}/events?build=${encodeURIComponent(root.dataset.buildVersion || "")}`);
+events.addEventListener("refresh", refresh);
+window.addEventListener("focus", refresh);
+window.addEventListener("online", refresh);
+window.addEventListener("pageshow", refresh);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refresh();
+});
+setInterval(refresh, 10000);

@@ -21,6 +21,7 @@ The Signage Management System provides room-facing digital signage for classroom
 - Visitor: Views signage outside a room and scans a QR code to book or request a room.
 - Student or Employee: Checks current and upcoming room events and books available rooms if permitted.
 - Room Manager: Manages room details, schedules, conflicts, and signage settings for assigned rooms.
+- Campus Manager: Manages one or more assigned campuses, including buildings and rooms within those campuses.
 - Building Manager: Manages rooms, broadcasts, and notifications within assigned buildings.
 - Campus Administrator: Manages buildings, users, rooms, and settings for a campus.
 - Center Administrator: Manages centers, campuses, global settings, integrations, and feature access.
@@ -266,6 +267,9 @@ The management portal must provide secure administrative access to configure the
 
 - Administrators must be able to configure kiosk display branding.
 - Theme settings should include logo, colors, typography, background, layout style, and display density.
+- Cloned themes must support uploading, replacing, previewing, and removing a background image.
+- Uploaded theme backgrounds must be stored as persistent application assets and survive container rebuilds.
+- Theme settings must include configurable upcoming-event tile background, title, and detail colors.
 - Each center must have a standard default kiosk template.
 - Each center must have its own default theme.
 - The system must include three built-in kiosk themes: Classic Institutional, Event Formal, and Custom Background.
@@ -277,7 +281,13 @@ The management portal must provide secure administrative access to configure the
 - Lower-level themes should be able to inherit or override higher-level defaults.
 - Event-based templates may use a different logo image when authorized through feature G3.
 - Administrators must be able to preview themes before publishing.
+- Theme preview must allow selection of an eligible room and Available, Busy, or Buffer/Warning display state.
 - Published theme changes must update kiosk displays without redeploying application code.
+- Authorized users must be able to schedule published themes for one or more eligible centers, campuses, buildings, or rooms.
+- Scheduled themes must temporarily override the room theme configured in Room Management.
+- Theme schedules must include start and end times, target entities, selected theme, owner, creation time, and update time.
+- The portal must show active/future schedules and completed schedules from the previous two years.
+- Schedule creation and editing must respect the user's assigned location scope and theme-management permission.
 - The system must allow authorized users to create, update, clone, publish, archive, and restore kiosk templates through feature G3.
 - Administrators must be able to clone kiosk templates.
 - Google Fonts may be used by kiosk templates when the selected font is approved and available to the kiosk display.
