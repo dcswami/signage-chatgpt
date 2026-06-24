@@ -181,6 +181,7 @@ The management portal must provide secure administrative access to configure the
 - Assign rooms to a building.
 - Configure building-level booking URL and theme overrides.
 - Target notifications and safety broadcasts to a building.
+- Building booking, theme, and time zone values override campus or center defaults when configured.
 
 ### 5.4 Room Management
 
@@ -194,6 +195,7 @@ The management portal must provide secure administrative access to configure the
 - Preview kiosk display for a room.
 - Mark a room as unavailable for maintenance or closure.
 - Configure room privacy settings.
+- Room booking and theme values are optional overrides. Blank values inherit from building, then campus, then center.
 
 ### 5.5 User Management
 
@@ -299,7 +301,7 @@ The management portal must provide secure administrative access to configure the
 - Template changes may be scheduled from the management interface.
 - Scheduled template changes must support start date/time, end date/time, target scope, and priority.
 - Scheduled templates may be applied for special events by campus, building, or room while preserving the center default template.
-- When a scheduled template ends, the kiosk display must automatically return to the center's default template.
+- When a scheduled template ends, the kiosk display must return to the normal effective theme resolved in this order: room override, building default, campus default, then center default.
 - If multiple scheduled templates overlap, the system must apply a clear precedence order: room override, building override, campus override, center default.
 - The default attached-screen style must be available as a configurable CSS template in `templates/kiosk-default.css`.
 - The previously provided Available and Busy signage images should be treated as approved baseline layout references.
@@ -333,6 +335,10 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Authorized users must be able to create emergency or safety broadcasts.
 - Broadcasts must include title, message, severity, start time, end time, and target scope.
 - Broadcasts must be targetable by center, campus, building, room group, or specific room.
+- Multiple broadcasts may be active at the same time when they apply to separate or overlapping scopes.
+- If multiple active broadcasts apply to one room, the kiosk must display the highest-severity broadcast, then the most recently started broadcast when severity is equal.
+- Broadcasts may start immediately or at a scheduled time and may include an optional automatic expiration time.
+- The system must automatically activate and expire scheduled broadcasts without management-portal interaction.
 - Broadcast target choices must be limited to entities assigned to the user's role and access scope.
 - Users must be able to select one or more eligible centers, campuses, buildings, and rooms for a broadcast.
 - Emergency and safety broadcasts must require confirmation before publishing.
@@ -344,6 +350,9 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Broadcasts must be revocable by authorized users.
 - The system must track who created, updated, started, and ended each broadcast.
 - The management portal must clearly show active broadcasts.
+- The management portal must separately show active and future scheduled broadcasts with owner, target scope, severity, and effective time.
+- Broadcast creation, activation, updates, cancellation, and ending must create in-app notifications for eligible users.
+- Broadcast email notifications must be sent to eligible users when SMTP delivery is enabled.
 - The system must provide ready-to-use broadcast message templates that authorized users can launch at any moment.
 - Broadcast templates must be editable only by authorized administrators.
 - Broadcast template examples must include:

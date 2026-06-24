@@ -121,7 +121,7 @@ function footerHtml(room, footerClass = "kiosk-footer") {
 function headerHtml(room, headerClass = "kiosk-top") {
   return `
     <header class="${headerClass}">
-      <img class="kiosk-logo" src="/assets/branding/aksharderi-small2.png" alt="BAPS logo" />
+      <img class="kiosk-logo" src="${escapeHtml(room.logoUrl || "/assets/branding/aksharderi-small2.png")}" alt="Center logo" />
       <div><p class="center-name">${escapeHtml(room.centerName)}</p><p class="building-name">${escapeHtml(room.buildingName)}</p></div>
       <time>${escapeHtml(room.currentTime || new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }))}</time>
     </header>`;
@@ -211,7 +211,7 @@ async function enableAlertSound() {
 }
 
 function startAlert(room) {
-  if (isPreview || !room.activeBroadcast || !alertSound) {
+  if (isPreview || !room.activeBroadcast || room.activeBroadcast.audibleAlert === false || !alertSound) {
     stopAlert();
     return;
   }

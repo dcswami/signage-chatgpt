@@ -147,17 +147,40 @@ try {
     method: "POST",
     body: JSON.stringify({
       name: "Integration Center",
+      description: "Integration location",
+      logoUrl: "/assets/branding/aksharderi-small2.png",
+      contactName: "Center Contact",
+      contactEmail: "center@example.org",
+      contactPhone: "555-0100",
+      bookingUrl: "https://example.org/center-booking",
       timezone: "America/Chicago",
       defaultThemeId: "classic-institutional"
     })
   }, 201);
   const campus = await request("/api/campuses", {
     method: "POST",
-    body: JSON.stringify({ name: "Integration Campus", centerId: center.id })
+    body: JSON.stringify({
+      name: "Integration Campus",
+      centerId: center.id,
+      address: "100 Campus Way",
+      contactName: "Campus Contact",
+      contactEmail: "campus@example.org",
+      bookingUrl: "https://example.org/campus-booking",
+      defaultThemeId: "event-formal"
+    })
   }, 201);
   const building = await request("/api/buildings", {
     method: "POST",
-    body: JSON.stringify({ name: "Integration Building", campusId: campus.id, code: "IB" })
+    body: JSON.stringify({
+      name: "Integration Building",
+      campusId: campus.id,
+      code: "IB",
+      address: "100 Campus Way",
+      floors: "1, 2",
+      timezone: "America/Denver",
+      bookingUrl: "https://example.org/building-booking",
+      defaultThemeId: "custom-background"
+    })
   }, 201);
   const room = await request("/api/rooms", {
     method: "POST",
@@ -167,14 +190,23 @@ try {
       centerId: center.id,
       campusId: campus.id,
       buildingId: building.id,
-      bookingUrl: "https://example.org/book",
-      themeId: "classic-institutional",
-      capacity: 25
+      bookingUrl: "",
+      themeId: "",
+      roomNumber: "A-101",
+      floor: "1",
+      capacity: 25,
+      equipment: "Projector, microphone",
+      accessibilityNotes: "Step-free entrance",
+      maintenanceStatus: "available",
+      privacyMode: "private-title"
     })
   }, 201);
 
-  assert.equal(room.timezone, "America/Chicago");
+  assert.equal(room.timezone, "America/Denver");
   assert.equal(room.buildingName, "Integration Building");
+  assert.equal(room.bookingUrl, "https://example.org/building-booking");
+  assert.equal(room.themeName, "Custom Background");
+  assert.equal(room.roomNumber, "A-101");
   await request(`/api/centers/${center.id}`, { method: "DELETE" }, 409);
 
   const calendarAccount = await request("/api/calendar-accounts", {
@@ -311,6 +343,7 @@ try {
   });
   assert.equal(updatedRoom.themeName, "Event Formal");
   assert.equal(updatedRoom.capacity, 30);
+  assert.equal(updatedRoom.configuredBookingUrl, "https://example.org/new-booking");
 
   const clone = await request("/api/themes/classic-institutional/clone", {
     method: "POST",
@@ -406,13 +439,34 @@ try {
   assert.equal(scheduleState.themeSchedules.some(item => item.id === pastSchedule.id && item.ownerName === "System Administrator"), true);
   assert.equal(scheduleState.themeSchedules.some(item => item.id === oldSchedule.id), false);
 
+  const roomGroup = await request("/api/room-groups", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Integration Safety Group",
+      description: "One-room test group",
+      roomIds: [room.id],
+      active: true
+    })
+  }, 201);
+  assert.deepEqual(roomGroup.roomIds, [room.id]);
+
   const broadcast = await request("/api/broadcasts", {
     method: "POST",
     body: JSON.stringify({
       title: "SCOPED TEST",
       message: "Integration test",
       templateId: broadcastTemplate.id,
-      targetRoomCodes: ["updated-integration-room"],
+      roomGroupIds: [roomGroup.id],
+      confirm: true
+    })
+  }, 201);
+  const simultaneousBroadcast = await request("/api/broadcasts", {
+    method: "POST",
+    body: JSON.stringify({
+      title: "SECOND SCOPE",
+      message: "Separate room alert",
+      severity: "emergency",
+      roomIds: ["room-108"],
       confirm: true
     })
   }, 201);
@@ -420,9 +474,59 @@ try {
   const otherRoom = await request("/api/rooms/room-108-shishu");
   assert.equal(targetRoom.activeBroadcast.title, "SCOPED TEST");
   assert.equal(targetRoom.activeBroadcast.templateId, broadcastTemplate.id);
-  assert.equal(otherRoom.activeBroadcast, null);
+  assert.equal(otherRoom.activeBroadcast.title, "SECOND SCOPE");
 
-  await request("/api/broadcasts/end", { method: "POST", body: "{}" });
+  const updatedBroadcast = await request(`/api/broadcasts/${broadcast.id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      ...broadcast,
+      title: "UPDATED SCOPED TEST",
+      roomGroupIds: [roomGroup.id],
+      roomIds: [],
+      centerIds: [],
+      campusIds: [],
+      buildingIds: []
+    })
+  });
+  assert.equal(updatedBroadcast.updatedByName, "System Administrator");
+  assert.equal(updatedBroadcast.title, "UPDATED SCOPED TEST");
+
+  const scheduledBroadcast = await request("/api/broadcasts", {
+    method: "POST",
+    body: JSON.stringify({
+      title: "FUTURE TEST",
+      message: "Scheduled integration test",
+      severity: "informational",
+      audibleAlert: false,
+      startsAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      endsAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+      buildingIds: [building.id],
+      confirm: true
+    })
+  }, 201);
+  assert.equal(scheduledBroadcast.status, "scheduled");
+  await request(`/api/broadcasts/${scheduledBroadcast.id}/cancel`, { method: "POST", body: "{}" });
+
+  await request(`/api/broadcasts/${broadcast.id}/end`, { method: "POST", body: "{}" });
+  await request(`/api/broadcasts/${simultaneousBroadcast.id}/end`, { method: "POST", body: "{}" });
+
+  const expiringBroadcast = await request("/api/broadcasts", {
+    method: "POST",
+    body: JSON.stringify({
+      title: "EXPIRING TEST",
+      message: "This alert expires automatically.",
+      severity: "warning",
+      startsAt: new Date(Date.now() - 1000).toISOString(),
+      endsAt: new Date(Date.now() + 250).toISOString(),
+      roomIds: [room.id],
+      confirm: true
+    })
+  }, 201);
+  await new Promise(resolve => setTimeout(resolve, 400));
+  const lifecycleState = await request("/api/state");
+  assert.equal(lifecycleState.broadcastHistory.find(item => item.id === expiringBroadcast.id).status, "ended");
+  assert.equal(lifecycleState.notifications.some(item => item.sourceId === broadcast.id), true);
+
   const broadcastHistory = await request("/api/broadcasts/history");
   const completedBroadcast = broadcastHistory.find(item => item.id === broadcast.id);
   assert.equal(completedBroadcast.status, "ended");
@@ -437,6 +541,7 @@ try {
   await request(`/api/theme-schedules/${pastSchedule.id}`, { method: "DELETE" });
   await request(`/api/theme-schedules/${oldSchedule.id}`, { method: "DELETE" });
   await request(`/api/themes/${clone.id}/background`, { method: "DELETE" });
+  await request(`/api/room-groups/${roomGroup.id}`, { method: "DELETE" });
   await request(`/api/rooms/${room.id}`, { method: "DELETE" });
   await request(`/api/buildings/${building.id}`, { method: "DELETE" });
   await request(`/api/campuses/${campus.id}`, { method: "DELETE" });
@@ -457,7 +562,9 @@ try {
   assert.match(adminHtml, /Theme Scheduler/);
   assert.match(adminHtml, /Upcoming Schedule/);
   assert.match(adminHtml, /Broadcast History/);
-  assert.match(adminHtml, /Published By/);
+  assert.match(adminHtml, /Active Broadcasts/);
+  assert.match(adminHtml, /Room Groups/);
+  assert.match(adminHtml, /In-App Notifications/);
   assert.equal(smtpMessages.length >= 3, true);
 
   const finalState = await request("/api/state");

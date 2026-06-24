@@ -112,13 +112,22 @@ function renderDashboardFilters() {
 }
 
 function renderBroadcastTargets() {
-  const select = document.querySelector("#targetRooms");
-  const selected = new Set(Array.from(select.selectedOptions).map(option => option.value));
-  select.innerHTML = state.rooms.map(room => `
-    <option value="${escapeHtml(room.code)}" ${selected.size === 0 || selected.has(room.code) ? "selected" : ""}>
-      ${escapeHtml(room.name)} - ${escapeHtml(room.buildingName)}
-    </option>
-  `).join("");
+  const allowedRoomIds = new Set(state.viewer.accessibleRoomIds || []);
+  const rooms = state.rooms.filter(room => allowedRoomIds.has(room.id));
+  const fullyAccessible = (id, key) => {
+    const targets = state.rooms.filter(room => room[key] === id);
+    return targets.length && targets.every(room => allowedRoomIds.has(room.id));
+  };
+  const renderMulti = (selector, items, label) => {
+    const select = document.querySelector(selector);
+    const selected = new Set(Array.from(select.selectedOptions).map(option => option.value));
+    select.innerHTML = items.map(item => `<option value="${escapeHtml(item.id)}" ${selected.has(item.id) ? "selected" : ""}>${escapeHtml(label(item))}</option>`).join("");
+  };
+  renderMulti("#broadcastCenters", state.centers.filter(item => fullyAccessible(item.id, "centerId")), item => item.name);
+  renderMulti("#broadcastCampuses", state.campuses.filter(item => fullyAccessible(item.id, "campusId")), item => `${item.name} - ${centerName(item.centerId)}`);
+  renderMulti("#broadcastBuildings", state.buildings.filter(item => fullyAccessible(item.id, "buildingId")), item => `${item.name} - ${campusName(item.campusId)}`);
+  renderMulti("#broadcastRoomGroups", state.roomGroups || [], item => `${item.name} (${item.roomIds.length})`);
+  renderMulti("#targetRooms", rooms, item => `${item.name} - ${item.buildingName}`);
 }
 
 function renderBroadcastTemplates() {
@@ -165,8 +174,55 @@ function renderEntityLists() {
   ).join("") || `<p class="empty-state">No buildings configured.</p>`;
 
   document.querySelector("#roomList").innerHTML = state.rooms.map(room =>
-    entityItem(room, `${room.code} / ${room.buildingName} / ${room.themeName}`, "room")
+    entityItem(room, `${room.code} / ${room.buildingName} / ${room.themeName}${room.maintenanceStatus !== "available" ? ` / ${room.maintenanceStatus}` : ""}`, "room")
   ).join("") || `<p class="empty-state">No rooms configured.</p>`;
+
+  document.querySelector("#roomGroupList").innerHTML = (state.roomGroups || []).map(group =>
+    entityItem(group, `${group.roomIds.length} room${group.roomIds.length === 1 ? "" : "s"} / ${group.active ? "Active" : "Inactive"}`, "roomGroup")
+  ).join("") || `<p class="empty-state">No room groups configured.</p>`;
+}
+
+function broadcastTargetSummary(item) {
+  const scopes = [
+    ...(item.centerIds || []).map(centerName),
+    ...(item.campusIds || []).map(campusName),
+    ...(item.buildingIds || []).map(buildingName),
+    ...(item.roomGroupIds || []).map(id => state.roomGroups.find(group => group.id === id)?.name || "Deleted room group"),
+    ...(item.roomIds || []).map(id => state.rooms.find(room => room.id === id)?.name || "Deleted room")
+  ];
+  return `${scopes.join(", ") || "Direct room snapshot"} / ${item.resolvedRoomCount || item.targetRoomCodes?.length || 0} rooms`;
+}
+
+function broadcastItem(item, scheduled = false) {
+  return `<article class="entity-item broadcast-item severity-${escapeHtml(item.severity)}">
+    <div>
+      <strong>${escapeHtml(item.title)}</strong>
+      <span>${escapeHtml(item.severity)} / ${new Date(item.startsAt).toLocaleString()}${item.endsAt ? ` - ${new Date(item.endsAt).toLocaleString()}` : " / no automatic end"}</span>
+      <span>${escapeHtml(broadcastTargetSummary(item))}</span>
+      <span>Owner: ${escapeHtml(item.createdByName)}${item.updatedAt ? ` / Updated by ${escapeHtml(item.updatedByName)}` : ""}</span>
+    </div>
+    <div class="entity-actions">
+      <button type="button" class="secondary" data-edit-broadcast="${escapeHtml(item.id)}">Edit</button>
+      ${scheduled
+        ? `<button type="button" class="danger-text" data-cancel-broadcast="${escapeHtml(item.id)}">Cancel</button>`
+        : `<button type="button" class="danger-text" data-end-broadcast="${escapeHtml(item.id)}">End</button>`}
+    </div>
+  </article>`;
+}
+
+function renderBroadcastDashboard() {
+  document.querySelector("#activeBroadcastList").innerHTML = (state.activeBroadcasts || []).map(item => broadcastItem(item)).join("")
+    || `<p class="empty-state">No active broadcasts.</p>`;
+  document.querySelector("#scheduledBroadcastList").innerHTML = (state.scheduledBroadcasts || []).map(item => broadcastItem(item, true)).join("")
+    || `<p class="empty-state">No scheduled broadcasts.</p>`;
+}
+
+function renderInAppNotifications() {
+  document.querySelector("#inAppNotificationList").innerHTML = (state.notifications || []).map(item => `
+    <article class="entity-item notification-item severity-${escapeHtml(item.severity)}">
+      <div><strong>${escapeHtml(item.title)}</strong><span>${new Date(item.createdAt).toLocaleString()} / ${escapeHtml(item.source)}</span><span>${escapeHtml(item.message)}</span></div>
+    </article>
+  `).join("") || `<p class="empty-state">No in-app notifications yet.</p>`;
 }
 
 function renderThemes() {
@@ -390,15 +446,15 @@ function renderCalendarChoices() {
 
 function renderBroadcastHistory() {
   const panel = document.querySelector("#broadcastHistoryPanel");
-  panel.hidden = !state.viewer.isSystemAdmin;
-  if (!state.viewer.isSystemAdmin) return;
+  panel.hidden = !state.viewer.isSystemAdmin && !state.viewer.permissions.includes("broadcast.history.view");
+  if (panel.hidden) return;
   document.querySelector("#broadcastHistoryRows").innerHTML = state.broadcastHistory.map(item => `
     <tr>
-      <td>${new Date(item.startedAt || item.createdAt).toLocaleString()}</td>
-      <td>${escapeHtml(item.createdByName || "System")}</td>
+      <td>${new Date(item.startsAt || item.startedAt || item.createdAt).toLocaleString()}${item.endsAt ? `<span class="subtle">to ${new Date(item.endsAt).toLocaleString()}</span>` : ""}</td>
+      <td>${escapeHtml(item.createdByName || "System")}${item.updatedAt ? `<span class="subtle">Updated by ${escapeHtml(item.updatedByName || "System")} at ${new Date(item.updatedAt).toLocaleString()}</span>` : ""}</td>
       <td>${escapeHtml(item.title)}</td>
       <td>${escapeHtml(item.severity)}</td>
-      <td>${item.targetRoomCodes.length}</td>
+      <td>${escapeHtml(broadcastTargetSummary(item))}</td>
       <td>${escapeHtml(item.status || (item.endedAt ? "ended" : "active"))}</td>
       <td>${item.endedAt ? `${new Date(item.endedAt).toLocaleString()}<span class="subtle">by ${escapeHtml(item.endedByName || "System")}</span>` : "-"}</td>
     </tr>
@@ -482,7 +538,7 @@ function fieldsFor(type, entity = {}) {
       <label>Message <textarea name="message" required maxlength="5000">${escapeHtml(entity.message)}</textarea></label>
       <div class="form-grid">
         <label>Severity <select name="severity" required>
-          ${["warning", "urgent", "critical"].map(value => `<option value="${value}" ${value === severity ? "selected" : ""}>${value[0].toUpperCase()}${value.slice(1)}</option>`).join("")}
+          ${["informational", "warning", "urgent", "critical", "emergency"].map(value => `<option value="${value}" ${value === severity ? "selected" : ""}>${value[0].toUpperCase()}${value.slice(1)}</option>`).join("")}
         </select></label>
         <label>Visual Style <input name="visualStyle" maxlength="60" value="${escapeHtml(entity.visualStyle || "emergency")}" /></label>
         <label>Default Target Scope <select name="defaultTargetScope">
@@ -494,11 +550,27 @@ function fieldsFor(type, entity = {}) {
       <p class="help-text">Confirmation is mandatory for every template and cannot be disabled.</p>
     `;
   }
+  if (type === "roomGroup") {
+    return `
+      <label>Group Name <input name="name" required maxlength="160" value="${escapeHtml(entity.name)}" /></label>
+      <label>Description <textarea name="description" maxlength="1000">${escapeHtml(entity.description)}</textarea></label>
+      <label>Rooms <select name="roomIds" multiple required>${optionList(state.rooms.filter(room => state.viewer.accessibleRoomIds.includes(room.id)), "", room => `${room.name} - ${room.buildingName}`)}</select></label>
+      <label class="check-label"><input name="active" type="checkbox" ${active ? "checked" : ""} /> Active</label>
+    `;
+  }
   if (type === "center") {
     return `
       <label>Center Name <input name="name" required maxlength="160" value="${escapeHtml(entity.name)}" /></label>
-      <label>Time Zone <input name="timezone" required value="${escapeHtml(entity.timezone || "America/Chicago")}" placeholder="America/Chicago" /></label>
-      <label>Default Theme <select name="defaultThemeId" required>${optionList(state.themes, entity.defaultThemeId || state.themes[0]?.id)}</select></label>
+      <label>Description <textarea name="description" maxlength="2000">${escapeHtml(entity.description)}</textarea></label>
+      <div class="form-grid">
+        <label>Time Zone <input name="timezone" required value="${escapeHtml(entity.timezone || "America/Chicago")}" placeholder="America/Chicago" /></label>
+        <label>Default Theme <select name="defaultThemeId" required>${optionList(state.themes, entity.defaultThemeId || state.themes[0]?.id)}</select></label>
+        <label>Logo URL / Asset Path <input name="logoUrl" value="${escapeHtml(entity.logoUrl || "/assets/branding/aksharderi-small2.png")}" /></label>
+        <label>Default Booking URL <input name="bookingUrl" type="url" value="${escapeHtml(entity.bookingUrl)}" /></label>
+        <label>Contact Name <input name="contactName" value="${escapeHtml(entity.contactName)}" /></label>
+        <label>Contact Email <input name="contactEmail" type="email" value="${escapeHtml(entity.contactEmail)}" /></label>
+        <label>Contact Phone <input name="contactPhone" value="${escapeHtml(entity.contactPhone)}" /></label>
+      </div>
       <label class="check-label"><input name="active" type="checkbox" ${active ? "checked" : ""} /> Active</label>
     `;
   }
@@ -507,6 +579,13 @@ function fieldsFor(type, entity = {}) {
       <label>Center <select name="centerId" required>${optionList(state.centers, entity.centerId || state.centers[0]?.id)}</select></label>
       <label>Campus Name <input name="name" required maxlength="160" value="${escapeHtml(entity.name)}" /></label>
       <label>Address <textarea name="address">${escapeHtml(entity.address)}</textarea></label>
+      <div class="form-grid">
+        <label>Default Theme <select name="defaultThemeId"><option value="">Inherit center theme</option>${optionList(state.themes, entity.defaultThemeId)}</select></label>
+        <label>Default Booking URL <input name="bookingUrl" type="url" value="${escapeHtml(entity.bookingUrl)}" placeholder="Inherit center booking URL" /></label>
+        <label>Contact Name <input name="contactName" value="${escapeHtml(entity.contactName)}" /></label>
+        <label>Contact Email <input name="contactEmail" type="email" value="${escapeHtml(entity.contactEmail)}" /></label>
+        <label>Contact Phone <input name="contactPhone" value="${escapeHtml(entity.contactPhone)}" /></label>
+      </div>
       <label class="check-label"><input name="active" type="checkbox" ${active ? "checked" : ""} /> Active</label>
     `;
   }
@@ -514,7 +593,14 @@ function fieldsFor(type, entity = {}) {
     return `
       <label>Campus <select name="campusId" required>${optionList(state.campuses, entity.campusId || state.campuses[0]?.id, item => `${item.name} - ${centerName(item.centerId)}`)}</select></label>
       <label>Building Name <input name="name" required maxlength="160" value="${escapeHtml(entity.name)}" /></label>
-      <label>Building Code <input name="code" maxlength="40" value="${escapeHtml(entity.code)}" /></label>
+      <div class="form-grid">
+        <label>Building Code <input name="code" maxlength="40" value="${escapeHtml(entity.code)}" /></label>
+        <label>Floors <input name="floors" maxlength="300" value="${escapeHtml(entity.floors)}" placeholder="1, 2, Lower Level" /></label>
+        <label>Timezone Override <input name="timezone" value="${escapeHtml(entity.timezone)}" placeholder="Inherit center timezone" /></label>
+        <label>Default Theme <select name="defaultThemeId"><option value="">Inherit campus or center theme</option>${optionList(state.themes, entity.defaultThemeId)}</select></label>
+        <label>Default Booking URL <input name="bookingUrl" type="url" value="${escapeHtml(entity.bookingUrl)}" placeholder="Inherit booking URL" /></label>
+      </div>
+      <label>Address <textarea name="address">${escapeHtml(entity.address)}</textarea></label>
       <label class="check-label"><input name="active" type="checkbox" ${active ? "checked" : ""} /> Active</label>
     `;
   }
@@ -528,13 +614,25 @@ function fieldsFor(type, entity = {}) {
       <label>Center <select name="centerId" required>${optionList(state.centers, centerId)}</select></label>
       <label>Campus <select name="campusId" required>${optionList(campuses, campusId)}</select></label>
       <label>Building <select name="buildingId" required>${optionList(buildings, entity.buildingId || buildings[0]?.id)}</select></label>
-      <label>Theme <select name="themeId" required>${optionList(state.themes, entity.themeId || state.centers.find(center => center.id === centerId)?.defaultThemeId || state.themes[0]?.id)}</select></label>
+      <label>Theme <select name="themeId"><option value="">Inherit building, campus, or center theme</option>${optionList(state.themes, entity.configuredThemeId || entity.themeId)}</select></label>
       <label>Room Name <input name="name" required maxlength="160" value="${escapeHtml(entity.name)}" /></label>
       <label>Room Code <input name="code" required maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" value="${escapeHtml(entity.code)}" placeholder="room-108-shishu" /></label>
+      <label>Room Number <input name="roomNumber" maxlength="80" value="${escapeHtml(entity.roomNumber)}" /></label>
+      <label>Floor <input name="floor" maxlength="80" value="${escapeHtml(entity.floor)}" /></label>
       <label>Room Type <input name="roomType" maxlength="80" value="${escapeHtml(entity.roomType || "Classroom")}" /></label>
       <label>Capacity <input name="capacity" type="number" min="1" value="${escapeHtml(entity.capacity || "")}" /></label>
+      <label>Maintenance Status <select name="maintenanceStatus">
+        ${["available", "maintenance", "closed"].map(value => `<option value="${value}" ${value === (entity.maintenanceStatus || "available") ? "selected" : ""}>${value[0].toUpperCase()}${value.slice(1)}</option>`).join("")}
+      </select></label>
+      <label>Privacy <select name="privacyMode">
+        <option value="standard" ${entity.privacyMode === "standard" || !entity.privacyMode ? "selected" : ""}>Standard event details</option>
+        <option value="private-title" ${entity.privacyMode === "private-title" ? "selected" : ""}>Show all titles as Private Event</option>
+        <option value="hide-details" ${entity.privacyMode === "hide-details" ? "selected" : ""}>Hide titles and time details</option>
+      </select></label>
     </div>
-    <label>Booking URL <input name="bookingUrl" type="url" required value="${escapeHtml(entity.bookingUrl || "https://")}" /></label>
+    <label>Booking URL Override <input name="bookingUrl" type="url" value="${escapeHtml(entity.configuredBookingUrl ?? entity.bookingUrl ?? "")}" placeholder="Inherit building, campus, or center booking URL" /></label>
+    <label>Equipment <textarea name="equipment" maxlength="2000">${escapeHtml(entity.equipment)}</textarea></label>
+    <label>Accessibility Notes <textarea name="accessibilityNotes" maxlength="2000">${escapeHtml(entity.accessibilityNotes)}</textarea></label>
     <label class="check-label"><input name="active" type="checkbox" ${active ? "checked" : ""} /> Active</label>
   `;
 }
@@ -546,6 +644,7 @@ function findEntity(type, id) {
     building: state.buildings,
     room: state.rooms,
     user: state.users,
+    roomGroup: state.roomGroups,
     broadcastTemplate: state.broadcastTemplates,
     role: state.roles,
     calendarAccount: state.calendarAccounts
@@ -569,6 +668,9 @@ function openEntityDialog(type, id = "") {
     Array.from(entityForm.elements.centerIds.options).forEach(option => { option.selected = selectedCenters.has(option.value); });
     Array.from(entityForm.elements.campusIds.options).forEach(option => { option.selected = selectedCampuses.has(option.value); });
     Array.from(entityForm.elements.buildingIds.options).forEach(option => { option.selected = selectedBuildings.has(option.value); });
+  } else if (type === "roomGroup") {
+    const selectedRooms = new Set(entity.roomIds || []);
+    Array.from(entityForm.elements.roomIds.options).forEach(option => { option.selected = selectedRooms.has(option.value); });
   }
   document.querySelector("#formError").textContent = "";
   entityDialog.showModal();
@@ -616,6 +718,9 @@ async function saveEntity(event) {
       return { id: existing?.id, name, externalId, mailbox };
     }).filter(item => item.name && item.externalId);
     delete data.calendarLines;
+  } else if (type === "roomGroup") {
+    data.roomIds = Array.from(entityForm.elements.roomIds.selectedOptions).map(option => option.value);
+    data.active = entityForm.elements.active.checked;
   } else {
     data.active = entityForm.elements.active.checked;
   }
@@ -626,6 +731,8 @@ async function saveEntity(event) {
         ? "broadcast-templates"
         : type === "calendarAccount"
           ? "calendar-accounts"
+          : type === "roomGroup"
+            ? "room-groups"
         : `${type}s`;
     const result = await api(`/api/${endpoint}${id ? `/${id}` : ""}`, {
       method: id ? "PUT" : "POST",
@@ -719,6 +826,8 @@ async function deleteEntity(type, id) {
       ? "broadcast-templates"
       : type === "calendarAccount"
         ? "calendar-accounts"
+        : type === "roomGroup"
+          ? "room-groups"
       : `${type}s`;
   try {
     await api(`/api/${plural}/${id}`, { method: "DELETE" });
@@ -749,26 +858,97 @@ function showPreview(roomCode) {
 
 async function publishBroadcast(event) {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  const targetRoomCodes = Array.from(document.querySelector("#targetRooms").selectedOptions).map(option => option.value);
-  if (!targetRoomCodes.length) return alert("Select at least one target room.");
-  if (!confirm("Publish this Emergency/Safety Broadcast to the selected rooms?")) return;
-  await api("/api/broadcasts", {
-    method: "POST",
-    body: JSON.stringify({
-      title: form.get("title"),
-      message: form.get("message"),
-      severity: form.get("severity"),
-      templateId: form.get("templateId") || null,
-      targetRoomCodes,
-      confirm: true
-    })
-  });
+  const form = event.currentTarget;
+  const values = Object.fromEntries(new FormData(form));
+  const id = values.broadcastId;
+  const start = new Date(values.startsAt);
+  const end = values.endsAt ? new Date(values.endsAt) : null;
+  const payload = {
+    title: values.title,
+    message: values.message,
+    severity: values.severity,
+    templateId: values.templateId || null,
+    audibleAlert: form.elements.audibleAlert.checked,
+    startsAt: start.toISOString(),
+    endsAt: end?.toISOString() || null,
+    centerIds: selectedValues("#broadcastCenters"),
+    campusIds: selectedValues("#broadcastCampuses"),
+    buildingIds: selectedValues("#broadcastBuildings"),
+    roomGroupIds: selectedValues("#broadcastRoomGroups"),
+    roomIds: selectedValues("#targetRooms"),
+    confirm: true
+  };
+  const action = id ? "update this broadcast" : (start > new Date() ? "schedule this broadcast" : "publish this broadcast now");
+  if (!confirm(`Confirm that you want to ${action}?`)) return;
+  const status = document.querySelector("#broadcastFormStatus");
+  status.textContent = "Saving broadcast...";
+  try {
+    await api(`/api/broadcasts${id ? `/${id}` : ""}`, {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify(payload)
+    });
+    await load();
+    resetBroadcastForm();
+    status.textContent = "Broadcast saved.";
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+function resetBroadcastForm() {
+  const form = document.querySelector("#broadcastForm");
+  form.reset();
+  form.elements.broadcastId.value = "";
+  form.elements.title.value = "IMPORTANT SYSTEM OVERRIDE";
+  form.elements.message.value = "ADMINISTRATIVE OVERRIDE: ACTIVE ALARM DRILL RUNNING. VACATE BUILDING ACCORDING TO DRILL PROTOCOLS.";
+  form.elements.severity.value = "emergency";
+  form.elements.audibleAlert.checked = true;
+  form.elements.startsAt.value = localDateTimeValue(new Date());
+  form.elements.endsAt.value = "";
+  document.querySelector("#cancelBroadcastEdit").hidden = true;
+  document.querySelector("#saveBroadcast").textContent = "Confirm & Publish";
+  for (const selector of ["#broadcastCenters", "#broadcastCampuses", "#broadcastBuildings", "#broadcastRoomGroups", "#targetRooms"]) {
+    Array.from(document.querySelector(selector).options).forEach(option => { option.selected = false; });
+  }
+}
+
+function editBroadcast(id) {
+  const item = [...(state.activeBroadcasts || []), ...(state.scheduledBroadcasts || [])].find(broadcast => broadcast.id === id);
+  if (!item) return;
+  const form = document.querySelector("#broadcastForm");
+  form.elements.broadcastId.value = item.id;
+  form.elements.templateId.value = item.templateId || "";
+  form.elements.title.value = item.title;
+  form.elements.message.value = item.message;
+  form.elements.severity.value = item.severity;
+  form.elements.audibleAlert.checked = item.audibleAlert !== false;
+  form.elements.startsAt.value = localDateTimeValue(item.startsAt);
+  form.elements.endsAt.value = item.endsAt ? localDateTimeValue(item.endsAt) : "";
+  const selections = {
+    centerIds: new Set(item.centerIds || []),
+    campusIds: new Set(item.campusIds || []),
+    buildingIds: new Set(item.buildingIds || []),
+    roomGroupIds: new Set(item.roomGroupIds || []),
+    roomIds: new Set(item.roomIds || [])
+  };
+  for (const [name, values] of Object.entries(selections)) {
+    Array.from(form.elements[name].options).forEach(option => { option.selected = values.has(option.value); });
+  }
+  document.querySelector("#cancelBroadcastEdit").hidden = false;
+  document.querySelector("#saveBroadcast").textContent = "Confirm & Save Changes";
+  document.querySelector("#broadcastFormStatus").textContent = `Editing broadcast created by ${item.createdByName}.`;
+  form.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function endBroadcast(id) {
+  if (!confirm("End this broadcast now?")) return;
+  await api(`/api/broadcasts/${id}/end`, { method: "POST", body: "{}" });
   await load();
 }
 
-async function endBroadcast() {
-  await api("/api/broadcasts/end", { method: "POST", body: "{}" });
+async function cancelBroadcast(id) {
+  if (!confirm("Cancel this scheduled broadcast?")) return;
+  await api(`/api/broadcasts/${id}/cancel`, { method: "POST", body: "{}" });
   await load();
 }
 
@@ -1122,12 +1302,14 @@ function render() {
   renderDashboardRows();
   renderBroadcastTargets();
   renderBroadcastTemplates();
+  renderBroadcastDashboard();
   renderEntityLists();
   renderThemes();
   renderThemeSchedules();
   renderUsers();
   renderEmailSettings();
   renderEmailHistory();
+  renderInAppNotifications();
   renderUsersRoles();
   renderCalendars();
   renderBroadcastHistory();
@@ -1135,8 +1317,10 @@ function render() {
 }
 
 async function load() {
+  const firstLoad = !state;
   state = await api("/api/state");
   render();
+  if (firstLoad) resetBroadcastForm();
 }
 
 document.querySelectorAll("[data-tab]").forEach(button => {
@@ -1196,8 +1380,9 @@ document.querySelector("#broadcastTemplateSelect").addEventListener("change", ev
   form.elements.title.value = template.title;
   form.elements.message.value = template.message;
   form.elements.severity.value = template.severity;
+  form.elements.audibleAlert.checked = template.audibleAlert !== false;
 });
-document.querySelector("#endBroadcast").addEventListener("click", endBroadcast);
+document.querySelector("#cancelBroadcastEdit").addEventListener("click", resetBroadcastForm);
 document.querySelector("#closeDialog").addEventListener("click", () => entityDialog.close());
 document.querySelector("#cancelDialog").addEventListener("click", () => entityDialog.close());
 entityForm.addEventListener("submit", saveEntity);
@@ -1232,6 +1417,12 @@ document.addEventListener("click", event => {
   if (editScheduleButton) return editThemeSchedule(editScheduleButton.dataset.editThemeSchedule);
   const deleteScheduleButton = event.target.closest("[data-delete-theme-schedule]");
   if (deleteScheduleButton) return deleteThemeSchedule(deleteScheduleButton.dataset.deleteThemeSchedule);
+  const editBroadcastButton = event.target.closest("[data-edit-broadcast]");
+  if (editBroadcastButton) return editBroadcast(editBroadcastButton.dataset.editBroadcast);
+  const endBroadcastButton = event.target.closest("[data-end-broadcast]");
+  if (endBroadcastButton) return endBroadcast(endBroadcastButton.dataset.endBroadcast);
+  const cancelBroadcastButton = event.target.closest("[data-cancel-broadcast]");
+  if (cancelBroadcastButton) return cancelBroadcast(cancelBroadcastButton.dataset.cancelBroadcast);
 });
 
 document.addEventListener("change", event => {

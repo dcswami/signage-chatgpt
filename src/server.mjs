@@ -82,13 +82,44 @@ const seedData = {
     "Emergency & Safety Broadcast"
   ],
   centers: [
-    { id: "center-la", name: "BAPS LA Center", timezone: "America/Los_Angeles", defaultThemeId: "classic-institutional" }
+    {
+      id: "center-la",
+      name: "BAPS LA Center",
+      description: "",
+      logoUrl: "/assets/branding/aksharderi-small2.png",
+      contactName: "",
+      contactEmail: "",
+      contactPhone: "",
+      bookingUrl: "https://lamandir.site/erf",
+      timezone: "America/Los_Angeles",
+      defaultThemeId: "classic-institutional"
+    }
   ],
   campuses: [
-    { id: "campus-la-main", centerId: "center-la", name: "Los Angeles Mandir Campus" }
+    {
+      id: "campus-la-main",
+      centerId: "center-la",
+      name: "Los Angeles Mandir Campus",
+      address: "",
+      contactName: "",
+      contactEmail: "",
+      contactPhone: "",
+      bookingUrl: "",
+      defaultThemeId: ""
+    }
   ],
   buildings: [
-    { id: "building-shishu", campusId: "campus-la-main", name: "Shishu Building" }
+    {
+      id: "building-shishu",
+      campusId: "campus-la-main",
+      name: "Shishu Building",
+      code: "",
+      address: "",
+      floors: "",
+      timezone: "",
+      bookingUrl: "",
+      defaultThemeId: ""
+    }
   ],
   rooms: [
     {
@@ -100,6 +131,12 @@ const seedData = {
       buildingId: "building-shishu",
       bookingUrl: "https://lamandir.site/erf",
       themeId: "classic-institutional",
+      roomNumber: "108",
+      floor: "",
+      equipment: "",
+      accessibilityNotes: "",
+      maintenanceStatus: "available",
+      privacyMode: "standard",
       status: "available",
       currentEventTitle: "",
       currentEventUntil: "4:00 PM",
@@ -114,6 +151,12 @@ const seedData = {
       buildingId: "building-shishu",
       bookingUrl: "https://lamandir.site/erf",
       themeId: "event-formal",
+      roomNumber: "205",
+      floor: "",
+      equipment: "",
+      accessibilityNotes: "",
+      maintenanceStatus: "available",
+      privacyMode: "standard",
       status: "busy",
       currentEventTitle: "Gujarati Class - I",
       currentEventUntil: "2:00 PM",
@@ -128,6 +171,12 @@ const seedData = {
       buildingId: "building-shishu",
       bookingUrl: "https://lamandir.site/erf",
       themeId: "custom-background",
+      roomNumber: "301",
+      floor: "",
+      equipment: "",
+      accessibilityNotes: "",
+      maintenanceStatus: "available",
+      privacyMode: "standard",
       status: "warning",
       currentEventTitle: "Satsang Sabha Prep",
       currentEventUntil: "10 min",
@@ -173,6 +222,7 @@ const seedData = {
   calendarEvents: [],
   calendarSyncHistory: [],
   themeSchedules: [],
+  roomGroups: [],
   upcomingEvents: [
     { roomId: "room-108", title: "iB Parent's Meeting", detail: "Mon, Jun 22, 4:00 PM - 5:00 PM" },
     { roomId: "room-108", title: "Karyakar Meeting", detail: "Mon, Jun 22, 5:00 PM - 5:30 PM" },
@@ -235,6 +285,7 @@ const seedData = {
     }
   ],
   emailNotifications: [],
+  notifications: [],
   activeBroadcast: null,
   auditLogs: []
 };
@@ -253,16 +304,51 @@ function normalizeData(data) {
       }
     }
   };
-  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "calendarAssignments", "calendarEvents", "calendarSyncHistory", "themeSchedules", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "auditLogs"]) {
+  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "calendarAssignments", "calendarEvents", "calendarSyncHistory", "themeSchedules", "roomGroups", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "notifications", "auditLogs"]) {
     if (!Array.isArray(normalized[key])) normalized[key] = structuredClone(seedData[key] || []);
   }
-  normalized.centers = normalized.centers.map(center => ({ active: true, ...center }));
-  normalized.campuses = normalized.campuses.map(campus => ({ active: true, address: "", ...campus }));
-  normalized.buildings = normalized.buildings.map(building => ({ active: true, code: "", ...building }));
+  normalized.centers = normalized.centers.map(center => ({
+    active: true,
+    description: "",
+    logoUrl: "/assets/branding/aksharderi-small2.png",
+    contactName: "",
+    contactEmail: "",
+    contactPhone: "",
+    bookingUrl: "",
+    ...center
+  }));
+  normalized.campuses = normalized.campuses.map(campus => ({
+    active: true,
+    address: "",
+    contactName: "",
+    contactEmail: "",
+    contactPhone: "",
+    bookingUrl: "",
+    defaultThemeId: "",
+    ...campus
+  }));
+  normalized.buildings = normalized.buildings.map(building => ({
+    active: true,
+    code: "",
+    address: "",
+    floors: "",
+    timezone: "",
+    bookingUrl: "",
+    defaultThemeId: "",
+    ...building
+  }));
   normalized.rooms = normalized.rooms.map(room => ({
     active: true,
     roomType: "Classroom",
     capacity: null,
+    roomNumber: "",
+    floor: "",
+    equipment: "",
+    accessibilityNotes: "",
+    maintenanceStatus: "available",
+    privacyMode: "standard",
+    bookingUrl: "",
+    themeId: "",
     ...room
   }));
   normalized.themes = normalized.themes.map(theme => ({
@@ -330,6 +416,14 @@ function normalizeData(data) {
     updatedAt: null,
     ...schedule
   }));
+  normalized.roomGroups = normalized.roomGroups.map(group => ({
+    description: "",
+    roomIds: [],
+    active: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: null,
+    ...group
+  }));
   normalized.broadcastTemplates = normalized.broadcastTemplates.map(template => ({
     severity: "urgent",
     visualStyle: "emergency",
@@ -340,12 +434,40 @@ function normalizeData(data) {
     ...template,
     approvalRequired: true
   }));
-  normalized.broadcasts = normalized.broadcasts.map(broadcast => ({
-    endedAt: null,
-    endedBy: null,
-    status: broadcast.endedAt ? "ended" : "active",
-    ...broadcast
-  }));
+  if (normalized.activeBroadcast && !normalized.broadcasts.some(item => item.id === normalized.activeBroadcast.id)) {
+    normalized.broadcasts.unshift(normalized.activeBroadcast);
+  }
+  normalized.broadcasts = normalized.broadcasts.map(broadcast => {
+    const startsAt = broadcast.startsAt || broadcast.startedAt || broadcast.createdAt || new Date().toISOString();
+    const endsAt = broadcast.endsAt || null;
+    const targetRoomCodes = cleanIdArray(broadcast.targetRoomCodes);
+    return {
+      templateId: null,
+      title: "IMPORTANT SYSTEM OVERRIDE",
+      message: "",
+      severity: "urgent",
+      centerIds: [],
+      campusIds: [],
+      buildingIds: [],
+      roomGroupIds: [],
+      roomIds: targetRoomCodes.map(code => normalized.rooms.find(room => room.code === code)?.id).filter(Boolean),
+      targetRoomCodes,
+      startsAt,
+      endsAt,
+      startedAt: broadcast.startedAt || startsAt,
+      endedAt: null,
+      endedBy: null,
+      updatedAt: null,
+      updatedBy: null,
+      status: broadcast.endedAt ? "ended" : "active",
+      activationNotifiedAt: null,
+      endingNotifiedAt: null,
+      ...broadcast,
+      startsAt,
+      endsAt
+    };
+  });
+  normalized.activeBroadcast = null;
   const cutoff = Date.now() - 183 * 24 * 60 * 60 * 1000;
   normalized.calendarSyncHistory = normalized.calendarSyncHistory.filter(item => new Date(item.createdAt).getTime() >= cutoff);
   normalized.auditLogs = normalized.auditLogs.filter(item => new Date(item.createdAt).getTime() >= cutoff);
@@ -405,6 +527,61 @@ function scheduleTargetRooms(schedule) {
   );
 }
 
+function roomLocation(room) {
+  const center = db.centers.find(item => item.id === room.centerId);
+  const campus = db.campuses.find(item => item.id === room.campusId);
+  const building = db.buildings.find(item => item.id === room.buildingId);
+  return { center, campus, building };
+}
+
+function effectiveRoomSettings(room) {
+  const { center, campus, building } = roomLocation(room);
+  return {
+    bookingUrl: room.bookingUrl || building?.bookingUrl || campus?.bookingUrl || center?.bookingUrl || "",
+    themeId: room.themeId || building?.defaultThemeId || campus?.defaultThemeId || center?.defaultThemeId || db.themes[0]?.id || "",
+    timezone: building?.timezone || center?.timezone || "UTC",
+    logoUrl: center?.logoUrl || "/assets/branding/aksharderi-small2.png"
+  };
+}
+
+function broadcastTargetRooms(broadcast) {
+  const directCodes = new Set(broadcast.targetRoomCodes || []);
+  const groupRoomIds = new Set(
+    db.roomGroups
+      .filter(group => group.active !== false && broadcast.roomGroupIds?.includes(group.id))
+      .flatMap(group => group.roomIds || [])
+  );
+  return db.rooms.filter(room =>
+    directCodes.has(room.code)
+    || broadcast.roomIds?.includes(room.id)
+    || groupRoomIds.has(room.id)
+    || broadcast.buildingIds?.includes(room.buildingId)
+    || broadcast.campusIds?.includes(room.campusId)
+    || broadcast.centerIds?.includes(room.centerId)
+  );
+}
+
+function broadcastStatusAt(broadcast, at = new Date()) {
+  if (["ended", "cancelled"].includes(broadcast.status) || broadcast.endedAt) return broadcast.status || "ended";
+  const timestamp = at.getTime();
+  const startsAt = new Date(broadcast.startsAt || broadcast.startedAt || broadcast.createdAt).getTime();
+  const endsAt = broadcast.endsAt ? new Date(broadcast.endsAt).getTime() : Number.POSITIVE_INFINITY;
+  if (timestamp < startsAt) return "scheduled";
+  if (timestamp >= endsAt) return "ended";
+  return "active";
+}
+
+function activeBroadcastsForRoom(room, at = new Date()) {
+  const priority = { emergency: 5, critical: 4, urgent: 3, warning: 2, informational: 1 };
+  return db.broadcasts
+    .filter(broadcast => broadcastStatusAt(broadcast, at) === "active")
+    .filter(broadcast => broadcastTargetRooms(broadcast).some(target => target.id === room.id))
+    .sort((a, b) =>
+      (priority[b.severity] || 0) - (priority[a.severity] || 0)
+      || String(b.startsAt).localeCompare(String(a.startsAt))
+    );
+}
+
 function activeThemeSchedule(room, at = new Date()) {
   const timestamp = at.getTime();
   return db.themeSchedules
@@ -432,15 +609,21 @@ function publicThemeSchedule(schedule) {
 }
 
 function publicRoom(room, themeOverrideId = "", stateOverride = "") {
-  const center = db.centers.find(item => item.id === room.centerId);
-  const campus = db.campuses.find(item => item.id === room.campusId);
-  const building = db.buildings.find(item => item.id === room.buildingId);
+  const { center, campus, building } = roomLocation(room);
+  const effective = effectiveRoomSettings(room);
   const scheduledTheme = themeOverrideId ? null : activeThemeSchedule(room);
-  const requestedThemeId = themeOverrideId || scheduledTheme?.themeId || room.themeId;
+  const requestedThemeId = themeOverrideId || scheduledTheme?.themeId || effective.themeId;
   const theme = db.themes.find(item => item.id === requestedThemeId && (themeOverrideId || (item.published !== false && item.archived !== true)))
-    || db.themes.find(item => item.id === room.themeId)
+    || db.themes.find(item => item.id === effective.themeId)
     || db.themes[0];
-  const events = db.upcomingEvents.filter(item => item.roomId === room.id).slice(0, 4);
+  const events = db.upcomingEvents
+    .filter(item => item.roomId === room.id)
+    .slice(0, 4)
+    .map(event => room.privacyMode === "hide-details"
+      ? { ...event, title: "Private Event", detail: "" }
+      : room.privacyMode === "private-title"
+        ? { ...event, title: "Private Event" }
+        : event);
   const previewState = ["available", "busy", "warning"].includes(stateOverride) ? stateOverride : "";
   const previewValues = previewState === "available"
     ? { status: "available", currentEventTitle: "", currentEventUntil: "4:00 PM" }
@@ -449,15 +632,20 @@ function publicRoom(room, themeOverrideId = "", stateOverride = "") {
       : previewState === "busy"
         ? { status: "busy", currentEventTitle: "Sample Current Event", currentEventUntil: "2:00 PM" }
         : {};
+  const activeBroadcasts = activeBroadcastsForRoom(room).map(publicBroadcast);
   return {
     ...room,
     ...previewValues,
     centerName: center?.name || "Center",
     campusName: campus?.name || "Campus",
     buildingName: building?.name || "Building",
-    timezone: center?.timezone || "UTC",
+    bookingUrl: effective.bookingUrl,
+    configuredBookingUrl: room.bookingUrl || "",
+    configuredThemeId: room.themeId || "",
+    timezone: effective.timezone,
+    logoUrl: effective.logoUrl,
     currentTime: new Intl.DateTimeFormat("en-US", {
-      timeZone: center?.timezone || "UTC",
+      timeZone: effective.timezone,
       hour: "numeric",
       minute: "2-digit"
     }).format(new Date()),
@@ -468,7 +656,8 @@ function publicRoom(room, themeOverrideId = "", stateOverride = "") {
     activeThemeScheduleId: scheduledTheme?.id || null,
     buildVersion: assetVersion,
     upcomingEvents: events,
-    activeBroadcast: db.activeBroadcast?.targetRoomCodes?.includes(room.code) ? db.activeBroadcast : null
+    activeBroadcasts,
+    activeBroadcast: activeBroadcasts[0] || null
   };
 }
 
@@ -494,10 +683,17 @@ function publicCalendarAccount(account) {
 
 function publicBroadcast(broadcast) {
   const createdBy = db.users.find(user => user.id === broadcast.createdBy);
+  const updatedBy = db.users.find(user => user.id === broadcast.updatedBy);
   const endedBy = db.users.find(user => user.id === broadcast.endedBy);
+  const targetRooms = broadcastTargetRooms(broadcast);
   return {
     ...broadcast,
+    status: broadcastStatusAt(broadcast),
     createdByName: createdBy?.name || "System",
+    updatedByName: broadcast.updatedAt ? updatedBy?.name || "System" : "",
+    resolvedRoomIds: targetRooms.map(room => room.id),
+    resolvedRoomCodes: targetRooms.map(room => room.code),
+    resolvedRoomCount: targetRooms.length,
     endedByName: broadcast.endedAt ? endedBy?.name || "System" : ""
   };
 }
@@ -690,6 +886,97 @@ async function deliverTrackedEmail({ to, subject, text, html, type, userId = nul
   }
 }
 
+function broadcastRecipientUsers(broadcast) {
+  const roomIds = new Set(broadcastTargetRooms(broadcast).map(room => room.id));
+  return db.users.filter(user =>
+    user.status === "active"
+    && (viewerIsSystemAdmin(user) || user.features?.includes("Notifications") || user.features?.includes("Emergency & Safety Broadcast"))
+    && (viewerIsSystemAdmin(user) || db.rooms.some(room => roomIds.has(room.id) && viewerCanAccessRoom(user, room)))
+  );
+}
+
+async function notifyBroadcastEvent(broadcast, eventType) {
+  const labels = {
+    activated: "Broadcast active",
+    updated: "Broadcast updated",
+    ended: "Broadcast ended",
+    cancelled: "Broadcast cancelled"
+  };
+  const title = `${labels[eventType] || "Broadcast notice"}: ${broadcast.title}`;
+  const targetCount = broadcastTargetRooms(broadcast).length;
+  const message = `${broadcast.message}\n\nSeverity: ${broadcast.severity}. Target rooms: ${targetCount}.`;
+  const recipients = broadcastRecipientUsers(broadcast);
+  const createdAt = new Date().toISOString();
+  for (const user of recipients) {
+    db.notifications.unshift({
+      id: entityId("notification"),
+      userId: user.id,
+      title,
+      message,
+      severity: broadcast.severity,
+      source: "broadcast",
+      sourceId: broadcast.id,
+      actionUrl: "/admin#broadcast",
+      readAt: null,
+      createdAt
+    });
+  }
+  db.notifications = db.notifications.slice(0, 1000);
+  if (!db.settings.email.enabled) return;
+  await Promise.allSettled(recipients
+    .filter(user => validEmail(user.email))
+    .map(user => deliverTrackedEmail({
+      to: user.email,
+      subject: title,
+      text: message,
+      html: `<p>${escapeHtml(broadcast.message)}</p><p><strong>Severity:</strong> ${escapeHtml(broadcast.severity)}<br /><strong>Target rooms:</strong> ${targetCount}</p>`,
+      type: `broadcast-${eventType}`,
+      userId: user.id,
+      source: "broadcast"
+    })));
+}
+
+let broadcastLifecycleRunning = false;
+
+async function runBroadcastLifecycle() {
+  if (broadcastLifecycleRunning) return;
+  broadcastLifecycleRunning = true;
+  try {
+    const changedRoomCodes = new Set();
+    const notificationJobs = [];
+    let changed = false;
+    for (const broadcast of db.broadcasts) {
+      const nextStatus = broadcastStatusAt(broadcast);
+      if (nextStatus === broadcast.status) continue;
+      const previousStatus = broadcast.status;
+      broadcast.status = nextStatus;
+      if (nextStatus === "active") {
+        broadcast.startedAt ||= new Date().toISOString();
+        if (!broadcast.activationNotifiedAt) {
+          broadcast.activationNotifiedAt = new Date().toISOString();
+          notificationJobs.push(notifyBroadcastEvent(broadcast, "activated"));
+        }
+      } else if (nextStatus === "ended" && previousStatus !== "ended") {
+        broadcast.endedAt ||= broadcast.endsAt || new Date().toISOString();
+        if (!broadcast.endingNotifiedAt) {
+          broadcast.endingNotifiedAt = new Date().toISOString();
+          notificationJobs.push(notifyBroadcastEvent(broadcast, "ended"));
+        }
+      }
+      for (const room of broadcastTargetRooms(broadcast)) changedRoomCodes.add(room.code);
+      changed = true;
+    }
+    if (changed) {
+      await saveData();
+      notifyChangedRooms([...changedRoomCodes]);
+      await Promise.allSettled(notificationJobs);
+      await saveData();
+    }
+  } finally {
+    broadcastLifecycleRunning = false;
+  }
+}
+
 function invitationMessage(user) {
   const portalUrl = `${baseUrl.replace(/\/+$/, "")}/admin`;
   return {
@@ -740,6 +1027,50 @@ function scheduleFromBody(body, existing = {}) {
     buildingIds: cleanIdArray(body.buildingIds),
     roomIds: cleanIdArray(body.roomIds)
   };
+}
+
+function broadcastFromBody(body, existing = {}) {
+  return {
+    ...existing,
+    templateId: cleanText(body.templateId, 160) || null,
+    title: cleanText(body.title, 200),
+    message: cleanText(body.message, 5000),
+    severity: cleanText(body.severity, 30) || "emergency",
+    audibleAlert: body.audibleAlert !== false,
+    startsAt: cleanText(body.startsAt, 80),
+    endsAt: cleanText(body.endsAt, 80) || null,
+    centerIds: cleanIdArray(body.centerIds),
+    campusIds: cleanIdArray(body.campusIds),
+    buildingIds: cleanIdArray(body.buildingIds),
+    roomGroupIds: cleanIdArray(body.roomGroupIds),
+    roomIds: cleanIdArray(body.roomIds),
+    targetRoomCodes: cleanIdArray(body.targetRoomCodes)
+  };
+}
+
+function validateBroadcast(broadcast, viewer) {
+  if (!broadcast.title) return "Broadcast title is required.";
+  if (!broadcast.message) return "Broadcast message is required.";
+  if (!["informational", "warning", "urgent", "critical", "emergency"].includes(broadcast.severity)) {
+    return "Select a valid severity.";
+  }
+  const startsAt = new Date(broadcast.startsAt);
+  if (!Number.isFinite(startsAt.getTime())) return "Enter a valid broadcast start time.";
+  if (broadcast.endsAt) {
+    const endsAt = new Date(broadcast.endsAt);
+    if (!Number.isFinite(endsAt.getTime())) return "Enter a valid broadcast end time.";
+    if (endsAt <= startsAt) return "Broadcast end time must be after its start time.";
+  }
+  if (broadcast.centerIds.some(id => !db.centers.some(item => item.id === id))) return "One or more selected centers are invalid.";
+  if (broadcast.campusIds.some(id => !db.campuses.some(item => item.id === id))) return "One or more selected campuses are invalid.";
+  if (broadcast.buildingIds.some(id => !db.buildings.some(item => item.id === id))) return "One or more selected buildings are invalid.";
+  if (broadcast.roomGroupIds.some(id => !db.roomGroups.some(item => item.id === id && item.active !== false))) return "One or more selected room groups are invalid.";
+  if (broadcast.roomIds.some(id => !db.rooms.some(item => item.id === id))) return "One or more selected rooms are invalid.";
+  if (broadcast.targetRoomCodes.some(code => !db.rooms.some(item => item.code === code))) return "One or more selected room codes are invalid.";
+  const targetRooms = broadcastTargetRooms(broadcast);
+  if (!targetRooms.length) return "Select at least one center, campus, building, room group, or room.";
+  if (targetRooms.some(room => !viewerCanAccessRoom(viewer, room))) return "One or more selected targets include rooms outside your assigned scope.";
+  return "";
 }
 
 function validateThemeSchedule(schedule, viewer) {
@@ -901,6 +1232,10 @@ function adminPage() {
           <section class="panel">
             <div class="panel-heading"><div><h2>Rooms</h2><p>Manage kiosk code, booking link, and assigned theme.</p></div><button type="button" data-new="room">New</button></div>
             <div id="roomList" class="entity-list"></div>
+          </section>
+          <section class="panel span-2">
+            <div class="panel-heading"><div><h2>Room Groups</h2><p>Create reusable groups for broadcast targeting.</p></div><button type="button" data-new="roomGroup">New Group</button></div>
+            <div id="roomGroupList" class="entity-list"></div>
           </section>
         </section>
       </section>
@@ -1085,6 +1420,10 @@ function adminPage() {
             </table>
           </div>
         </section>
+        <section class="panel">
+          <div class="panel-heading"><div><h2>In-App Notifications</h2><p>Broadcast and operational notifications for the signed-in user.</p></div></div>
+          <div id="inAppNotificationList" class="entity-list"></div>
+        </section>
       </section>
 
       <section class="tab-panel" data-panel="broadcast">
@@ -1093,18 +1432,46 @@ function adminPage() {
             <div><h2>Emergency & Safety Broadcast</h2><p>Prepared templates still require confirmation before publishing.</p></div>
           </div>
           <form id="broadcastForm">
+            <input type="hidden" name="broadcastId" />
             <label>Prepared Template <select name="templateId" id="broadcastTemplateSelect"><option value="">Custom message</option></select></label>
             <label>Title <input name="title" value="IMPORTANT SYSTEM OVERRIDE" /></label>
             <label>Message <textarea name="message">ADMINISTRATIVE OVERRIDE: ACTIVE ALARM DRILL RUNNING. VACATE BUILDING ACCORDING TO DRILL PROTOCOLS.</textarea></label>
-            <label>Severity <select name="severity">
-              <option value="urgent">Urgent</option>
-              <option value="critical">Critical</option>
-              <option value="warning">Warning</option>
-            </select></label>
-            <label>Target Rooms <select name="targetRoomCodes" multiple id="targetRooms"></select></label>
-            <button type="submit">Confirm & Publish</button>
-            <button type="button" id="endBroadcast">End Broadcast</button>
+            <div class="form-grid">
+              <label>Severity <select name="severity">
+                <option value="informational">Informational</option>
+                <option value="warning">Warning</option>
+                <option value="urgent">Urgent</option>
+                <option value="critical">Critical</option>
+                <option value="emergency" selected>Emergency</option>
+              </select></label>
+              <label class="check-label"><input name="audibleAlert" type="checkbox" checked /> Play kiosk alert sound</label>
+              <label>Start <input name="startsAt" type="datetime-local" required /></label>
+              <label>End <input name="endsAt" type="datetime-local" /></label>
+            </div>
+            <div class="scheduler-target-grid broadcast-target-grid">
+              <label>Centers <select name="centerIds" id="broadcastCenters" multiple></select></label>
+              <label>Campuses <select name="campusIds" id="broadcastCampuses" multiple></select></label>
+              <label>Buildings <select name="buildingIds" id="broadcastBuildings" multiple></select></label>
+              <label>Room Groups <select name="roomGroupIds" id="broadcastRoomGroups" multiple></select></label>
+              <label>Rooms <select name="roomIds" multiple id="targetRooms"></select></label>
+            </div>
+            <p class="help-text">Select one or more scopes. The resolved room list is captured when the broadcast is saved.</p>
+            <div class="button-row">
+              <button type="submit" id="saveBroadcast">Confirm & Publish</button>
+              <button type="button" class="secondary" id="cancelBroadcastEdit" hidden>Cancel Edit</button>
+            </div>
+            <p id="broadcastFormStatus" class="form-status" role="status"></p>
           </form>
+        </section>
+        <section class="management-grid">
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Active Broadcasts</h2><p>Alerts currently overriding signage.</p></div></div>
+            <div id="activeBroadcastList" class="entity-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Scheduled Broadcasts</h2><p>Future alerts awaiting automatic activation.</p></div></div>
+            <div id="scheduledBroadcastList" class="entity-list"></div>
+          </section>
         </section>
         <section class="panel">
           <div class="panel-heading">
@@ -1116,7 +1483,7 @@ function adminPage() {
         <section class="panel" id="broadcastHistoryPanel" hidden>
           <div class="panel-heading"><div><h2>Broadcast History</h2><p>System Administrator view of broadcast lifecycle and targets.</p></div></div>
           <div class="table-wrap"><table>
-            <thead><tr><th>Started</th><th>Published By</th><th>Title</th><th>Severity</th><th>Targets</th><th>Status</th><th>Ended</th></tr></thead>
+            <thead><tr><th>Effective Time</th><th>Owner / Update</th><th>Title</th><th>Severity</th><th>Targets</th><th>Status</th><th>Ended</th></tr></thead>
             <tbody id="broadcastHistoryRows"></tbody>
           </table></div>
         </section>
@@ -1222,7 +1589,11 @@ async function handleApi(req, res, url) {
     return json(res, 200, { status: "healthy", app: "signage", storage: store.type, time: new Date().toISOString() });
   }
   if (req.method === "GET" && url.pathname === "/api/state") {
+    await runBroadcastLifecycle();
     const viewer = currentViewer(req);
+    const accessibleBroadcasts = db.broadcasts
+      .filter(broadcast => broadcastTargetRooms(broadcast).some(room => viewerCanAccessRoom(viewer, room)))
+      .map(publicBroadcast);
     return json(res, 200, {
       settings: {
         ...db.settings,
@@ -1242,21 +1613,32 @@ async function handleApi(req, res, url) {
       calendarAccounts: db.calendarAccounts.map(publicCalendarAccount),
       calendarAssignments: db.calendarAssignments,
       calendarSyncHistory: db.calendarSyncHistory.slice(0, 50),
+      roomGroups: db.roomGroups.filter(group =>
+        group.roomIds.length > 0 && group.roomIds.every(roomId => {
+          const room = db.rooms.find(item => item.id === roomId);
+          return room && viewerCanAccessRoom(viewer, room);
+        })
+      ),
       themeSchedules: db.themeSchedules
         .filter(schedule => new Date(schedule.endsAt).getTime() >= Date.now() - 2 * 365 * 24 * 60 * 60 * 1000)
         .filter(schedule => scheduleTargetRooms(schedule).some(room => viewerCanAccessRoom(viewer, room)))
         .map(publicThemeSchedule),
-      activeBroadcast: db.activeBroadcast,
-      broadcastHistory: viewerIsSystemAdmin(viewer) ? db.broadcasts.slice(0, 100).map(publicBroadcast) : [],
+      activeBroadcasts: accessibleBroadcasts.filter(broadcast => broadcast.status === "active"),
+      scheduledBroadcasts: accessibleBroadcasts.filter(broadcast => broadcast.status === "scheduled"),
+      broadcastHistory: viewerHasPermission(req, "broadcast.history.view") ? accessibleBroadcasts.slice(0, 200) : [],
       emailNotifications: db.emailNotifications.slice(0, 50),
+      notifications: db.notifications.filter(item => item.userId === viewer?.id).slice(0, 100),
       auditLogs: viewerIsSystemAdmin(viewer) ? db.auditLogs.slice(0, 20) : [],
       viewer: publicViewer(viewer)
     });
   }
   if (req.method === "GET" && url.pathname === "/api/broadcasts/history") {
     const viewer = currentViewer(req);
-    if (!viewerIsSystemAdmin(viewer)) return json(res, 403, { error: "System Administrator access is required." });
-    return json(res, 200, db.broadcasts.slice(0, 500).map(publicBroadcast));
+    if (!viewerHasPermission(req, "broadcast.history.view")) return json(res, 403, { error: "Broadcast history permission is required." });
+    return json(res, 200, db.broadcasts
+      .filter(broadcast => broadcastTargetRooms(broadcast).some(room => viewerCanAccessRoom(viewer, room)))
+      .slice(0, 500)
+      .map(publicBroadcast));
   }
   if (req.method === "POST" && url.pathname === "/api/roles") {
     if (!requirePermission(req, res, "role.manage")) return;
@@ -1822,7 +2204,7 @@ async function handleApi(req, res, url) {
     const title = cleanText(body.title, 200);
     const message = cleanText(body.message, 5000);
     const severity = cleanText(body.severity, 30) || "urgent";
-    const allowedSeverities = new Set(["warning", "urgent", "critical"]);
+    const allowedSeverities = new Set(["informational", "warning", "urgent", "critical", "emergency"]);
     if (!name) return validationError(res, "Template name is required.");
     if (!title) return validationError(res, "Broadcast title is required.");
     if (!message) return validationError(res, "Broadcast message is required.");
@@ -1857,7 +2239,7 @@ async function handleApi(req, res, url) {
     const title = cleanText(body.title, 200);
     const message = cleanText(body.message, 5000);
     const severity = cleanText(body.severity, 30);
-    const allowedSeverities = new Set(["warning", "urgent", "critical"]);
+    const allowedSeverities = new Set(["informational", "warning", "urgent", "critical", "emergency"]);
     if (!name) return validationError(res, "Template name is required.");
     if (!title) return validationError(res, "Broadcast title is required.");
     if (!message) return validationError(res, "Broadcast message is required.");
@@ -1894,12 +2276,24 @@ async function handleApi(req, res, url) {
     const timezone = cleanText(body.timezone, 80);
     if (!name) return validationError(res, "Center name is required.");
     if (!validTimezone(timezone)) return validationError(res, "Enter a valid IANA timezone, such as America/Chicago.");
+    const bookingUrl = cleanText(body.bookingUrl, 500);
+    const contactEmail = cleanText(body.contactEmail, 255).toLowerCase();
+    const logoUrl = cleanText(body.logoUrl, 500) || "/assets/branding/aksharderi-small2.png";
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid center booking URL.");
+    if (contactEmail && !validEmail(contactEmail)) return validationError(res, "Enter a valid center contact email.");
+    if (logoUrl && !validUrl(logoUrl) && !logoUrl.startsWith("/assets/")) return validationError(res, "Enter a valid logo URL or asset path.");
     if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) {
       return validationError(res, "Select a valid default theme.");
     }
     const center = {
       id: entityId("center"),
       name,
+      description: cleanText(body.description, 2000),
+      logoUrl,
+      contactName: cleanText(body.contactName, 160),
+      contactEmail,
+      contactPhone: cleanText(body.contactPhone, 80),
+      bookingUrl,
       timezone,
       defaultThemeId: body.defaultThemeId || db.themes[0]?.id || "",
       active: body.active !== false
@@ -1919,10 +2313,27 @@ async function handleApi(req, res, url) {
     const timezone = cleanText(body.timezone, 80);
     if (!name) return validationError(res, "Center name is required.");
     if (!validTimezone(timezone)) return validationError(res, "Enter a valid IANA timezone.");
+    const bookingUrl = cleanText(body.bookingUrl, 500);
+    const contactEmail = cleanText(body.contactEmail, 255).toLowerCase();
+    const logoUrl = cleanText(body.logoUrl, 500) || "/assets/branding/aksharderi-small2.png";
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid center booking URL.");
+    if (contactEmail && !validEmail(contactEmail)) return validationError(res, "Enter a valid center contact email.");
+    if (logoUrl && !validUrl(logoUrl) && !logoUrl.startsWith("/assets/")) return validationError(res, "Enter a valid logo URL or asset path.");
     if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) {
       return validationError(res, "Select a valid default theme.");
     }
-    Object.assign(center, { name, timezone, defaultThemeId: body.defaultThemeId || center.defaultThemeId, active: body.active !== false });
+    Object.assign(center, {
+      name,
+      description: cleanText(body.description, 2000),
+      logoUrl,
+      contactName: cleanText(body.contactName, 160),
+      contactEmail,
+      contactPhone: cleanText(body.contactPhone, 80),
+      bookingUrl,
+      timezone,
+      defaultThemeId: body.defaultThemeId || center.defaultThemeId,
+      active: body.active !== false
+    });
     addAudit("center.update", { centerId: center.id, name: center.name });
     await saveData();
     notifyChangedRooms(db.rooms.filter(room => room.centerId === center.id).map(room => room.code));
@@ -1947,11 +2358,21 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     if (!name) return validationError(res, "Campus name is required.");
     if (!db.centers.some(center => center.id === body.centerId)) return validationError(res, "Select a valid center.");
+    const bookingUrl = cleanText(body.bookingUrl, 500);
+    const contactEmail = cleanText(body.contactEmail, 255).toLowerCase();
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid campus booking URL.");
+    if (contactEmail && !validEmail(contactEmail)) return validationError(res, "Enter a valid campus contact email.");
+    if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) return validationError(res, "Select a valid campus theme.");
     const campus = {
       id: entityId("campus"),
       centerId: body.centerId,
       name,
       address: cleanText(body.address, 300),
+      contactName: cleanText(body.contactName, 160),
+      contactEmail,
+      contactPhone: cleanText(body.contactPhone, 80),
+      bookingUrl,
+      defaultThemeId: cleanText(body.defaultThemeId, 160),
       active: body.active !== false
     };
     db.campuses.push(campus);
@@ -1968,10 +2389,25 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     if (!name) return validationError(res, "Campus name is required.");
     if (!db.centers.some(center => center.id === body.centerId)) return validationError(res, "Select a valid center.");
+    const bookingUrl = cleanText(body.bookingUrl, 500);
+    const contactEmail = cleanText(body.contactEmail, 255).toLowerCase();
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid campus booking URL.");
+    if (contactEmail && !validEmail(contactEmail)) return validationError(res, "Enter a valid campus contact email.");
+    if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) return validationError(res, "Select a valid campus theme.");
     if (db.buildings.some(building => building.campusId === campus.id) && body.centerId !== campus.centerId) {
       return json(res, 409, { error: "A campus with buildings cannot be moved to another center." });
     }
-    Object.assign(campus, { centerId: body.centerId, name, address: cleanText(body.address, 300), active: body.active !== false });
+    Object.assign(campus, {
+      centerId: body.centerId,
+      name,
+      address: cleanText(body.address, 300),
+      contactName: cleanText(body.contactName, 160),
+      contactEmail,
+      contactPhone: cleanText(body.contactPhone, 80),
+      bookingUrl,
+      defaultThemeId: cleanText(body.defaultThemeId, 160),
+      active: body.active !== false
+    });
     addAudit("campus.update", { campusId: campus.id, name: campus.name });
     await saveData();
     notifyChangedRooms(db.rooms.filter(room => room.campusId === campus.id).map(room => room.code));
@@ -1996,11 +2432,21 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     if (!name) return validationError(res, "Building name is required.");
     if (!db.campuses.some(campus => campus.id === body.campusId)) return validationError(res, "Select a valid campus.");
+    const timezone = cleanText(body.timezone, 80);
+    const bookingUrl = cleanText(body.bookingUrl, 500);
+    if (timezone && !validTimezone(timezone)) return validationError(res, "Enter a valid building timezone override.");
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid building booking URL.");
+    if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) return validationError(res, "Select a valid building theme.");
     const building = {
       id: entityId("building"),
       campusId: body.campusId,
       name,
       code: cleanText(body.code, 40),
+      address: cleanText(body.address, 300),
+      floors: cleanText(body.floors, 300),
+      timezone,
+      bookingUrl,
+      defaultThemeId: cleanText(body.defaultThemeId, 160),
       active: body.active !== false
     };
     db.buildings.push(building);
@@ -2017,10 +2463,25 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     if (!name) return validationError(res, "Building name is required.");
     if (!db.campuses.some(campus => campus.id === body.campusId)) return validationError(res, "Select a valid campus.");
+    const timezone = cleanText(body.timezone, 80);
+    const bookingUrl = cleanText(body.bookingUrl, 500);
+    if (timezone && !validTimezone(timezone)) return validationError(res, "Enter a valid building timezone override.");
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid building booking URL.");
+    if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) return validationError(res, "Select a valid building theme.");
     if (db.rooms.some(room => room.buildingId === building.id) && body.campusId !== building.campusId) {
       return json(res, 409, { error: "A building with rooms cannot be moved to another campus." });
     }
-    Object.assign(building, { campusId: body.campusId, name, code: cleanText(body.code, 40), active: body.active !== false });
+    Object.assign(building, {
+      campusId: body.campusId,
+      name,
+      code: cleanText(body.code, 40),
+      address: cleanText(body.address, 300),
+      floors: cleanText(body.floors, 300),
+      timezone,
+      bookingUrl,
+      defaultThemeId: cleanText(body.defaultThemeId, 160),
+      active: body.active !== false
+    });
     addAudit("building.update", { buildingId: building.id, name: building.name });
     await saveData();
     notifyChangedRooms(db.rooms.filter(room => room.buildingId === building.id).map(room => room.code));
@@ -2045,13 +2506,16 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     const code = cleanText(body.code, 80).toLowerCase();
     const bookingUrl = cleanText(body.bookingUrl, 500);
+    const themeId = cleanText(body.themeId, 160);
     const hierarchy = findHierarchy(body);
     if (!name) return validationError(res, "Room name is required.");
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(code)) return validationError(res, "Room code must use lowercase letters, numbers, and single hyphens.");
     if (db.rooms.some(room => room.code === code)) return json(res, 409, { error: "That room code is already in use." });
-    if (!validUrl(bookingUrl)) return validationError(res, "Enter a valid HTTP or HTTPS booking URL.");
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid HTTP or HTTPS booking URL.");
     if (hierarchy.error) return validationError(res, hierarchy.error);
-    if (!db.themes.some(theme => theme.id === body.themeId)) return validationError(res, "Select a valid theme.");
+    if (themeId && !db.themes.some(theme => theme.id === themeId)) return validationError(res, "Select a valid theme.");
+    if (!["available", "maintenance", "closed"].includes(body.maintenanceStatus || "available")) return validationError(res, "Select a valid maintenance status.");
+    if (!["standard", "private-title", "hide-details"].includes(body.privacyMode || "standard")) return validationError(res, "Select a valid privacy setting.");
     const room = {
       id: entityId("room"),
       code,
@@ -2060,9 +2524,15 @@ async function handleApi(req, res, url) {
       campusId: body.campusId,
       buildingId: body.buildingId,
       bookingUrl,
-      themeId: body.themeId,
+      themeId,
+      roomNumber: cleanText(body.roomNumber, 80),
+      floor: cleanText(body.floor, 80),
       roomType: cleanText(body.roomType, 80) || "Classroom",
       capacity: Number.isFinite(Number(body.capacity)) && Number(body.capacity) > 0 ? Number(body.capacity) : null,
+      equipment: cleanText(body.equipment, 2000),
+      accessibilityNotes: cleanText(body.accessibilityNotes, 2000),
+      maintenanceStatus: body.maintenanceStatus || "available",
+      privacyMode: body.privacyMode || "standard",
       active: body.active !== false,
       status: "available",
       currentEventTitle: "",
@@ -2093,13 +2563,16 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     const code = cleanText(body.code, 80).toLowerCase();
     const bookingUrl = cleanText(body.bookingUrl, 500);
+    const themeId = cleanText(body.themeId, 160);
     const hierarchy = findHierarchy(body);
     if (!name) return validationError(res, "Room name is required.");
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(code)) return validationError(res, "Room code must use lowercase letters, numbers, and single hyphens.");
     if (db.rooms.some(item => item.id !== room.id && item.code === code)) return json(res, 409, { error: "That room code is already in use." });
-    if (!validUrl(bookingUrl)) return validationError(res, "Enter a valid HTTP or HTTPS booking URL.");
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid HTTP or HTTPS booking URL.");
     if (hierarchy.error) return validationError(res, hierarchy.error);
-    if (!db.themes.some(theme => theme.id === body.themeId)) return validationError(res, "Select a valid theme.");
+    if (themeId && !db.themes.some(theme => theme.id === themeId)) return validationError(res, "Select a valid theme.");
+    if (!["available", "maintenance", "closed"].includes(body.maintenanceStatus || "available")) return validationError(res, "Select a valid maintenance status.");
+    if (!["standard", "private-title", "hide-details"].includes(body.privacyMode || "standard")) return validationError(res, "Select a valid privacy setting.");
     const previousCode = room.code;
     Object.assign(room, {
       code,
@@ -2108,9 +2581,15 @@ async function handleApi(req, res, url) {
       campusId: body.campusId,
       buildingId: body.buildingId,
       bookingUrl,
-      themeId: body.themeId,
+      themeId,
+      roomNumber: cleanText(body.roomNumber, 80),
+      floor: cleanText(body.floor, 80),
       roomType: cleanText(body.roomType, 80) || "Classroom",
       capacity: Number.isFinite(Number(body.capacity)) && Number(body.capacity) > 0 ? Number(body.capacity) : null,
+      equipment: cleanText(body.equipment, 2000),
+      accessibilityNotes: cleanText(body.accessibilityNotes, 2000),
+      maintenanceStatus: body.maintenanceStatus || "available",
+      privacyMode: body.privacyMode || "standard",
       active: body.active !== false
     });
     addAudit("room.update", { roomId: room.id, roomCode: room.code, previousCode });
@@ -2124,6 +2603,7 @@ async function handleApi(req, res, url) {
     if (!room) return json(res, 404, { error: "Room not found" });
     db.rooms = db.rooms.filter(item => item.id !== room.id);
     db.upcomingEvents = db.upcomingEvents.filter(item => item.roomId !== room.id);
+    for (const group of db.roomGroups) group.roomIds = group.roomIds.filter(id => id !== room.id);
     addAudit("room.delete", { roomId: room.id, roomCode: room.code, name: room.name });
     await saveData();
     notifyRoom(room.code);
@@ -2160,6 +2640,70 @@ async function handleApi(req, res, url) {
     req.on("close", () => clients.get(roomCode)?.delete(res));
     return;
   }
+  if (req.method === "POST" && url.pathname === "/api/room-groups") {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const body = await readBody(req);
+    const viewer = currentViewer(req);
+    const name = cleanText(body.name);
+    const roomIds = cleanIdArray(body.roomIds);
+    const rooms = roomIds.map(id => db.rooms.find(room => room.id === id)).filter(Boolean);
+    if (!name) return validationError(res, "Room group name is required.");
+    if (!rooms.length || rooms.length !== roomIds.length) return validationError(res, "Select at least one valid room.");
+    if (rooms.some(room => !viewerCanAccessRoom(viewer, room))) return json(res, 403, { error: "One or more rooms are outside your assigned scope." });
+    const now = new Date().toISOString();
+    const group = {
+      id: entityId("room-group"),
+      name,
+      description: cleanText(body.description, 1000),
+      roomIds,
+      active: body.active !== false,
+      createdBy: viewer?.id || null,
+      createdAt: now,
+      updatedAt: null,
+      updatedBy: null
+    };
+    db.roomGroups.push(group);
+    addAudit("room-group.create", { groupId: group.id, name, roomCount: roomIds.length });
+    await saveData();
+    return json(res, 201, group);
+  }
+  const roomGroupMatch = url.pathname.match(/^\/api\/room-groups\/([^/]+)$/);
+  if (req.method === "PUT" && roomGroupMatch) {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const group = db.roomGroups.find(item => item.id === roomGroupMatch[1]);
+    if (!group) return json(res, 404, { error: "Room group not found" });
+    const body = await readBody(req);
+    const viewer = currentViewer(req);
+    const name = cleanText(body.name);
+    const roomIds = cleanIdArray(body.roomIds);
+    const rooms = roomIds.map(id => db.rooms.find(room => room.id === id)).filter(Boolean);
+    if (!name) return validationError(res, "Room group name is required.");
+    if (!rooms.length || rooms.length !== roomIds.length) return validationError(res, "Select at least one valid room.");
+    if (rooms.some(room => !viewerCanAccessRoom(viewer, room))) return json(res, 403, { error: "One or more rooms are outside your assigned scope." });
+    Object.assign(group, {
+      name,
+      description: cleanText(body.description, 1000),
+      roomIds,
+      active: body.active !== false,
+      updatedAt: new Date().toISOString(),
+      updatedBy: viewer?.id || null
+    });
+    addAudit("room-group.update", { groupId: group.id, name, roomCount: roomIds.length });
+    await saveData();
+    return json(res, 200, group);
+  }
+  if (req.method === "DELETE" && roomGroupMatch) {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const group = db.roomGroups.find(item => item.id === roomGroupMatch[1]);
+    if (!group) return json(res, 404, { error: "Room group not found" });
+    const viewer = currentViewer(req);
+    const rooms = group.roomIds.map(id => db.rooms.find(room => room.id === id)).filter(Boolean);
+    if (rooms.some(room => !viewerCanAccessRoom(viewer, room))) return json(res, 403, { error: "This group includes rooms outside your assigned scope." });
+    db.roomGroups = db.roomGroups.filter(item => item.id !== group.id);
+    addAudit("room-group.delete", { groupId: group.id, name: group.name });
+    await saveData();
+    return json(res, 200, { deleted: true });
+  }
   if (req.method === "POST" && url.pathname === "/api/broadcasts") {
     if (!requirePermission(req, res, "broadcast.publish")) return;
     const body = await readBody(req);
@@ -2168,56 +2712,138 @@ async function handleApi(req, res, url) {
       ? db.broadcastTemplates.find(item => item.id === body.templateId && item.active)
       : null;
     if (body.templateId && !template) return validationError(res, "Select an active broadcast template.");
-    const targetRoomCodes = Array.isArray(body.targetRoomCodes) ? [...new Set(body.targetRoomCodes)] : db.rooms.map(room => room.code);
-    const targetRooms = targetRoomCodes.map(code => db.rooms.find(room => room.code === code)).filter(Boolean);
-    if (!targetRooms.length || targetRooms.length !== targetRoomCodes.length) return validationError(res, "Select valid target rooms.");
     const viewer = currentViewer(req);
-    if (targetRooms.some(room => !viewerCanAccessRoom(viewer, room))) {
-      return json(res, 403, { error: "One or more target rooms are outside your assigned scope." });
-    }
-    const broadcast = {
+    const now = new Date();
+    const broadcast = broadcastFromBody({
+      ...body,
+      title: body.title || template?.title || "IMPORTANT SYSTEM OVERRIDE",
+      message: body.message || template?.message || "",
+      severity: body.severity || template?.severity || "emergency",
+      audibleAlert: body.audibleAlert ?? template?.audibleAlert ?? true,
+      startsAt: body.startsAt || now.toISOString()
+    }, {
       id: crypto.randomUUID(),
-      templateId: template?.id || null,
-      title: cleanText(body.title || template?.title || "IMPORTANT SYSTEM OVERRIDE", 200),
-      message: cleanText(body.message || template?.message || "", 5000),
-      severity: cleanText(body.severity || template?.severity || "urgent", 30),
-      targetRoomCodes,
       createdBy: viewer?.id || null,
       updatedBy: null,
-      startedAt: new Date().toISOString(),
+      startedAt: null,
       endedAt: null,
       endedBy: null,
-      status: "active",
-      createdAt: new Date().toISOString()
-    };
+      status: "scheduled",
+      activationNotifiedAt: null,
+      endingNotifiedAt: null,
+      createdAt: now.toISOString(),
+      updatedAt: null
+    });
+    broadcast.templateId = template?.id || broadcast.templateId;
+    const error = validateBroadcast(broadcast, viewer);
+    if (error?.includes("outside your assigned scope")) return json(res, 403, { error });
+    if (error) return validationError(res, error);
+    broadcast.startsAt = new Date(broadcast.startsAt).toISOString();
+    broadcast.endsAt = broadcast.endsAt ? new Date(broadcast.endsAt).toISOString() : null;
+    broadcast.targetRoomCodes = broadcastTargetRooms(broadcast).map(room => room.code);
+    broadcast.status = broadcastStatusAt(broadcast, now);
+    if (broadcast.status === "active") {
+      broadcast.startedAt = now.toISOString();
+      broadcast.activationNotifiedAt = now.toISOString();
+    }
     db.broadcasts.unshift(broadcast);
-    db.activeBroadcast = broadcast;
-    addAudit("broadcast.publish", { title: broadcast.title, targetRoomCodes: broadcast.targetRoomCodes });
+    addAudit(broadcast.status === "active" ? "broadcast.publish" : "broadcast.schedule", {
+      id: broadcast.id,
+      title: broadcast.title,
+      targetRoomCodes: broadcast.targetRoomCodes,
+      startsAt: broadcast.startsAt,
+      endsAt: broadcast.endsAt
+    });
     await saveData();
-    notifyAllRooms();
-    return json(res, 201, broadcast);
+    notifyChangedRooms(broadcast.targetRoomCodes);
+    if (broadcast.status === "active") {
+      await notifyBroadcastEvent(broadcast, "activated");
+      await saveData();
+    }
+    return json(res, 201, publicBroadcast(broadcast));
+  }
+  const broadcastMatch = url.pathname.match(/^\/api\/broadcasts\/([^/]+)$/);
+  if (req.method === "PUT" && broadcastMatch) {
+    if (!requirePermission(req, res, "broadcast.publish")) return;
+    const broadcast = db.broadcasts.find(item => item.id === broadcastMatch[1]);
+    if (!broadcast) return json(res, 404, { error: "Broadcast not found" });
+    if (["ended", "cancelled"].includes(broadcastStatusAt(broadcast))) return json(res, 409, { error: "Ended or cancelled broadcasts cannot be edited." });
+    const viewer = currentViewer(req);
+    if (broadcastTargetRooms(broadcast).some(room => !viewerCanAccessRoom(viewer, room))) return json(res, 403, { error: "This broadcast includes rooms outside your assigned scope." });
+    const previousRoomCodes = broadcastTargetRooms(broadcast).map(room => room.code);
+    const body = await readBody(req);
+    const updated = broadcastFromBody(body, broadcast);
+    const error = validateBroadcast(updated, viewer);
+    if (error?.includes("outside your assigned scope")) return json(res, 403, { error });
+    if (error) return validationError(res, error);
+    updated.startsAt = new Date(updated.startsAt).toISOString();
+    updated.endsAt = updated.endsAt ? new Date(updated.endsAt).toISOString() : null;
+    updated.updatedAt = new Date().toISOString();
+    updated.updatedBy = viewer?.id || null;
+    updated.status = broadcastStatusAt(updated);
+    updated.targetRoomCodes = broadcastTargetRooms({ ...broadcast, ...updated, targetRoomCodes: [] }).map(room => room.code);
+    Object.assign(broadcast, updated);
+    addAudit("broadcast.update", { id: broadcast.id, title: broadcast.title, targetRoomCodes: broadcast.targetRoomCodes });
+    await saveData();
+    notifyChangedRooms([...previousRoomCodes, ...broadcast.targetRoomCodes]);
+    await notifyBroadcastEvent(broadcast, "updated");
+    await saveData();
+    return json(res, 200, publicBroadcast(broadcast));
+  }
+  const broadcastEndMatch = url.pathname.match(/^\/api\/broadcasts\/([^/]+)\/end$/);
+  if (req.method === "POST" && broadcastEndMatch) {
+    if (!requirePermission(req, res, "broadcast.publish")) return;
+    const broadcast = db.broadcasts.find(item => item.id === broadcastEndMatch[1]);
+    if (!broadcast) return json(res, 404, { error: "Broadcast not found" });
+    const viewer = currentViewer(req);
+    const rooms = broadcastTargetRooms(broadcast);
+    if (rooms.some(room => !viewerCanAccessRoom(viewer, room))) return json(res, 403, { error: "This broadcast includes rooms outside your assigned scope." });
+    broadcast.endedAt = new Date().toISOString();
+    broadcast.endedBy = viewer?.id || null;
+    broadcast.status = "ended";
+    broadcast.endingNotifiedAt = broadcast.endedAt;
+    addAudit("broadcast.end", { id: broadcast.id });
+    await saveData();
+    notifyChangedRooms(rooms.map(room => room.code));
+    await notifyBroadcastEvent(broadcast, "ended");
+    await saveData();
+    return json(res, 200, publicBroadcast(broadcast));
+  }
+  const broadcastCancelMatch = url.pathname.match(/^\/api\/broadcasts\/([^/]+)\/cancel$/);
+  if (req.method === "POST" && broadcastCancelMatch) {
+    if (!requirePermission(req, res, "broadcast.publish")) return;
+    const broadcast = db.broadcasts.find(item => item.id === broadcastCancelMatch[1]);
+    if (!broadcast) return json(res, 404, { error: "Broadcast not found" });
+    if (broadcastStatusAt(broadcast) !== "scheduled") return json(res, 409, { error: "Only scheduled broadcasts can be cancelled." });
+    const viewer = currentViewer(req);
+    const rooms = broadcastTargetRooms(broadcast);
+    if (rooms.some(room => !viewerCanAccessRoom(viewer, room))) return json(res, 403, { error: "This broadcast includes rooms outside your assigned scope." });
+    broadcast.status = "cancelled";
+    broadcast.endedAt = new Date().toISOString();
+    broadcast.endedBy = viewer?.id || null;
+    addAudit("broadcast.cancel", { id: broadcast.id });
+    await notifyBroadcastEvent(broadcast, "cancelled");
+    await saveData();
+    return json(res, 200, publicBroadcast(broadcast));
   }
   if (req.method === "POST" && url.pathname === "/api/broadcasts/end") {
     if (!requirePermission(req, res, "broadcast.publish")) return;
-    const ended = db.activeBroadcast;
     const viewer = currentViewer(req);
-    if (ended && !viewerIsSystemAdmin(viewer)) {
-      const outsideScope = ended.targetRoomCodes
-        .map(code => db.rooms.find(room => room.code === code))
-        .filter(Boolean)
-        .some(room => !viewerCanAccessRoom(viewer, room));
-      if (outsideScope) return json(res, 403, { error: "This broadcast includes rooms outside your assigned scope." });
-    }
-    if (ended) {
-      ended.endedAt = new Date().toISOString();
-      ended.endedBy = viewer?.id || null;
-      ended.status = "ended";
-    }
-    db.activeBroadcast = null;
-    addAudit("broadcast.end", { id: ended?.id || null });
+    const broadcast = db.broadcasts
+      .filter(item => broadcastStatusAt(item) === "active")
+      .filter(item => broadcastTargetRooms(item).every(room => viewerCanAccessRoom(viewer, room)))
+      .sort((a, b) => String(b.startsAt).localeCompare(String(a.startsAt)))[0];
+    if (!broadcast) return json(res, 200, { ended: false });
+    broadcast.endedAt = new Date().toISOString();
+    broadcast.endedBy = viewer?.id || null;
+    broadcast.status = "ended";
+    broadcast.endingNotifiedAt = broadcast.endedAt;
+    addAudit("broadcast.end", { id: broadcast.id });
     await saveData();
-    notifyAllRooms();
-    return json(res, 200, { ended: Boolean(ended) });
+    notifyChangedRooms(broadcastTargetRooms(broadcast).map(room => room.code));
+    await notifyBroadcastEvent(broadcast, "ended");
+    await saveData();
+    return json(res, 200, { ended: true, broadcast: publicBroadcast(broadcast) });
   }
   if (req.method === "POST" && url.pathname === "/api/theme-schedules") {
     if (!requirePermission(req, res, "theme.manage")) return;
@@ -2442,3 +3068,7 @@ server.listen(port, host, () => {
 
 const calendarSyncTimer = setInterval(runScheduledCalendarSync, 60000);
 calendarSyncTimer.unref();
+const broadcastLifecycleTimer = setInterval(() => {
+  runBroadcastLifecycle().catch(error => console.error("Broadcast lifecycle update failed:", error.message));
+}, 5000);
+broadcastLifecycleTimer.unref();
