@@ -314,6 +314,28 @@ th {
   color: var(--warning);
 }
 
+.status-pill.user-active,
+.status-pill.email-sent {
+  background: var(--available-bg);
+  color: var(--available);
+}
+
+.status-pill.user-invited {
+  background: #e4edf7;
+  color: #315f8a;
+}
+
+.status-pill.user-suspended,
+.status-pill.email-failed {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.status-pill.user-deactivated {
+  background: #e8ecee;
+  color: var(--muted);
+}
+
 .row-actions,
 .entity-actions,
 .dialog-actions {
@@ -383,6 +405,57 @@ th {
 
 .broadcast-panel {
   max-width: 900px;
+}
+
+.user-filters {
+  grid-template-columns: minmax(240px, 2fr) minmax(180px, 1fr);
+}
+
+.feature-summary {
+  display: block;
+  font-size: 13px;
+  max-width: 280px;
+}
+
+.email-grid {
+  align-items: start;
+}
+
+.email-grid .panel {
+  margin-bottom: 0;
+}
+
+.subform {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 18px;
+}
+
+.help-text,
+.form-status {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+.form-status:not(:empty) {
+  background: #f2f7f8;
+  border-left: 4px solid #52869b;
+  padding: 10px;
+}
+
+.feature-fieldset {
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 14px;
+}
+
+.feature-fieldset legend {
+  color: var(--muted);
+  font-size: 14px;
+  padding: 0 5px;
 }
 
 form {

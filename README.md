@@ -18,6 +18,8 @@ The scaffold includes:
 - Center, campus, building, and room create/edit/delete workflows.
 - Room-code validation, booking URL management, timezone inheritance, and theme assignment.
 - Built-in theme cloning and hierarchy deletion safeguards.
+- User provisioning with status, role, center, and feature assignments.
+- Encrypted SMTP settings, connection testing, invitation emails, manual notifications, and delivery history.
 - Built-in themes: Classic Institutional, Event Formal, and Custom Background.
 - Sample HTML/CSS theme gallery in `samples/kiosk-layout-options.html`.
 - PostgreSQL schema in `database/schema.sql`.

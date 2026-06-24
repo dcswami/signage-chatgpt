@@ -1,20 +1,52 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
 const rootDir = path.resolve(import.meta.dirname, "..");
 const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "signage-test-"));
 const port = 3187;
+const smtpPort = 3188;
 const baseUrl = `http://127.0.0.1:${port}`;
+const smtpMessages = [];
+const smtpServer = net.createServer(socket => {
+  let dataMode = false;
+  let message = "";
+  socket.write("220 localhost test smtp\r\n");
+  socket.on("data", chunk => {
+    for (const line of chunk.toString().split(/\r?\n/)) {
+      if (dataMode) {
+        if (line === ".") {
+          smtpMessages.push(message);
+          message = "";
+          dataMode = false;
+          socket.write("250 message accepted\r\n");
+        } else {
+          message += `${line}\n`;
+        }
+        continue;
+      }
+      if (/^(EHLO|HELO)/i.test(line)) socket.write("250-localhost\r\n250-AUTH PLAIN LOGIN\r\n250 PIPELINING\r\n");
+      else if (/^AUTH PLAIN/i.test(line)) socket.write("235 authenticated\r\n");
+      else if (/^DATA/i.test(line)) {
+        dataMode = true;
+        socket.write("354 end with dot\r\n");
+      } else if (/^QUIT/i.test(line)) socket.end("221 goodbye\r\n");
+      else if (line) socket.write("250 ok\r\n");
+    }
+  });
+});
+await new Promise(resolve => smtpServer.listen(smtpPort, "127.0.0.1", resolve));
 const child = spawn(process.execPath, ["src/server.mjs"], {
   cwd: rootDir,
   env: {
     ...process.env,
     DATA_DIR: dataDir,
     HOST: "127.0.0.1",
-    PORT: String(port)
+    PORT: String(port),
+    CREDENTIAL_ENCRYPTION_KEY: "integration-test-credential-key-123456789"
   },
   stdio: ["ignore", "pipe", "pipe"]
 });
@@ -46,6 +78,31 @@ try {
 
   const initialState = await request("/api/state");
   assert.equal(initialState.rooms.length, 3);
+  assert.equal(initialState.settings.email.hasPassword, false);
+
+  const emailSettings = await request("/api/settings/email", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: true,
+      host: "127.0.0.1",
+      port: smtpPort,
+      secure: false,
+      username: "smtp-user",
+      password: "smtp-password",
+      fromName: "Signage Test",
+      fromEmail: "signage@example.org",
+      replyTo: "support@example.org"
+    })
+  });
+  assert.equal(emailSettings.enabled, true);
+  assert.equal(emailSettings.hasPassword, true);
+  assert.equal("encryptedPassword" in emailSettings, false);
+
+  const smtpTest = await request("/api/settings/email/test", {
+    method: "POST",
+    body: JSON.stringify({ recipient: "test-recipient@example.org" })
+  });
+  assert.equal(smtpTest.emailSent, true);
 
   const center = await request("/api/centers", {
     method: "POST",
@@ -80,6 +137,49 @@ try {
   assert.equal(room.timezone, "America/Chicago");
   assert.equal(room.buildingName, "Integration Building");
   await request(`/api/centers/${center.id}`, { method: "DELETE" }, 409);
+
+  const user = await request("/api/users", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Integration User",
+      email: "integration.user@example.org",
+      status: "invited",
+      roleIds: ["center-admin"],
+      centerIds: [center.id],
+      features: ["Notifications"],
+      sendInvitation: true
+    })
+  }, 201);
+  assert.equal(user.status, "invited");
+  assert.deepEqual(user.roleIds, ["center-admin"]);
+  assert.deepEqual(user.features, ["Notifications"]);
+  assert.equal(user.invitedAt !== null, true);
+
+  const updatedUser = await request(`/api/users/${user.id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      ...user,
+      name: "Updated Integration User",
+      status: "suspended",
+      roleIds: ["room-manager"],
+      centerIds: [center.id],
+      features: ["Notifications", "Emergency & Safety Broadcast"]
+    })
+  });
+  assert.equal(updatedUser.status, "suspended");
+  assert.deepEqual(updatedUser.roleIds, ["room-manager"]);
+
+  const manualEmail = await request("/api/email/send", {
+    method: "POST",
+    body: JSON.stringify({
+      userIds: [],
+      roleIds: ["room-manager"],
+      centerIds: [],
+      subject: "Integration notification",
+      message: "This is an integration notification."
+    })
+  });
+  assert.equal(manualEmail.results[0].status, "sent");
 
   const updatedRoom = await request(`/api/rooms/${room.id}`, {
     method: "PUT",
@@ -124,10 +224,19 @@ try {
   const adminResponse = await fetch(`${baseUrl}/admin`);
   const adminHtml = await adminResponse.text();
   assert.match(adminHtml, /Locations & Rooms/);
+  assert.match(adminHtml, /User Management/);
+  assert.match(adminHtml, /SMTP Settings/);
   assert.match(adminHtml, /Emergency Broadcast/);
+  assert.equal(smtpMessages.length >= 3, true);
+
+  const finalState = await request("/api/state");
+  assert.equal(finalState.settings.email.hasPassword, true);
+  assert.equal(JSON.stringify(finalState).includes("smtp-password"), false);
+  assert.equal(finalState.emailNotifications.length >= 3, true);
 
   console.log("Integration checks passed");
 } finally {
   child.kill("SIGTERM");
+  await new Promise(resolve => smtpServer.close(resolve));
   await fs.rm(dataDir, { recursive: true, force: true });
 }

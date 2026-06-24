@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import { createStore } from "./storage.mjs";
+import { encryptCredential, publicEmailSettings, sendEmail, verifySmtp } from "./email.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -19,7 +20,18 @@ const seedData = {
   settings: {
     appName: "Signage Management System",
     routeBase: "https://signage.bapswest.org",
-    alertSound: "/assets/audio/alarm.mp3"
+    alertSound: "/assets/audio/alarm.mp3",
+    email: {
+      enabled: false,
+      host: "",
+      port: 587,
+      secure: false,
+      username: "",
+      encryptedPassword: "",
+      fromName: "Signage Management System",
+      fromEmail: "",
+      replyTo: ""
+    }
   },
   features: [
     "Calendar Sync",
@@ -104,7 +116,11 @@ const seedData = {
         "Front End Theme and Style Management",
         "Notifications",
         "Emergency & Safety Broadcast"
-      ]
+      ],
+      status: "active",
+      twoFactorEnabled: false,
+      invitedAt: null,
+      lastEmailAt: null
     }
   ],
   calendarAccounts: [
@@ -134,6 +150,7 @@ const seedData = {
     { roomId: "room-301", title: "Karyakar Meeting", detail: "Mon, Jun 22, 5:00 PM - 5:30 PM" }
   ],
   broadcasts: [],
+  emailNotifications: [],
   activeBroadcast: null,
   auditLogs: []
 };
@@ -143,12 +160,16 @@ function normalizeData(data) {
     ...structuredClone(seedData),
     ...data,
     settings: {
-    ...seedData.settings,
-    ...data.settings,
-    alertSound: seedData.settings.alertSound
+      ...seedData.settings,
+      ...data.settings,
+      alertSound: seedData.settings.alertSound,
+      email: {
+        ...seedData.settings.email,
+        ...data.settings?.email
+      }
     }
   };
-  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "upcomingEvents", "broadcasts", "auditLogs"]) {
+  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "upcomingEvents", "broadcasts", "emailNotifications", "auditLogs"]) {
     if (!Array.isArray(normalized[key])) normalized[key] = structuredClone(seedData[key] || []);
   }
   normalized.centers = normalized.centers.map(center => ({ active: true, ...center }));
@@ -159,6 +180,17 @@ function normalizeData(data) {
     roomType: "Classroom",
     capacity: null,
     ...room
+  }));
+  normalized.users = normalized.users.map(user => ({
+    status: "active",
+    roleIds: [],
+    centerIds: [],
+    features: [],
+    twoFactorEnabled: false,
+    invitedAt: null,
+    lastEmailAt: null,
+    ...user,
+    email: String(user.email || "").toLowerCase()
   }));
   return normalized;
 }
@@ -222,6 +254,69 @@ function publicRoom(room) {
     themeName: theme?.name || "Theme",
     upcomingEvents: events,
     activeBroadcast: db.activeBroadcast?.targetRoomCodes?.includes(room.code) ? db.activeBroadcast : null
+  };
+}
+
+function publicUser(user) {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    status: user.status,
+    roleIds: user.roleIds,
+    centerIds: user.centerIds,
+    features: user.features,
+    twoFactorEnabled: Boolean(user.twoFactorEnabled),
+    invitedAt: user.invitedAt || null,
+    lastEmailAt: user.lastEmailAt || null,
+    createdAt: user.createdAt || null,
+    updatedAt: user.updatedAt || null
+  };
+}
+
+function validEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function validIds(values, collection) {
+  const allowed = new Set(collection.map(item => item.id));
+  return Array.isArray(values) && values.every(value => allowed.has(value));
+}
+
+function recordEmail({ to, subject, type, status, error = "", userId = null, source = "administrative" }) {
+  const notification = {
+    id: crypto.randomUUID(),
+    to,
+    subject,
+    type,
+    status,
+    error,
+    userId,
+    source,
+    createdAt: new Date().toISOString()
+  };
+  db.emailNotifications.unshift(notification);
+  db.emailNotifications = db.emailNotifications.slice(0, 500);
+  return notification;
+}
+
+async function deliverTrackedEmail({ to, subject, text, html, type, userId = null, source }) {
+  try {
+    const result = await sendEmail(db.settings.email, { to, subject, text, html });
+    const notification = recordEmail({ to, subject, type, status: "sent", userId, source });
+    return { notification, messageId: result.messageId };
+  } catch (error) {
+    recordEmail({ to, subject, type, status: "failed", error: error.message, userId, source });
+    throw error;
+  }
+}
+
+function invitationMessage(user) {
+  const portalUrl = `${baseUrl.replace(/\/+$/, "")}/admin`;
+  return {
+    subject: "Your Signage Management System account",
+    text: `Hello ${user.name},\n\nAn account has been provisioned for ${user.email} in the Signage Management System.\n\nManagement portal: ${portalUrl}\n\nYour administrator will provide login activation instructions when authentication enrollment is enabled.\n`,
+    html: `<p>Hello ${escapeHtml(user.name)},</p><p>An account has been provisioned for <strong>${escapeHtml(user.email)}</strong> in the Signage Management System.</p><p><a href="${escapeHtml(portalUrl)}">Open management portal</a></p><p>Your administrator will provide login activation instructions when authentication enrollment is enabled.</p>`
   };
 }
 
@@ -315,6 +410,8 @@ function adminPage() {
       <nav class="admin-tabs" aria-label="Management sections">
         <button type="button" class="active" data-tab="dashboard">Dashboard</button>
         <button type="button" data-tab="locations">Locations & Rooms</button>
+        <button type="button" data-tab="users">Users</button>
+        <button type="button" data-tab="notifications">Email Notifications</button>
         <button type="button" data-tab="broadcast">Emergency Broadcast</button>
         <button type="button" data-tab="configuration">Configuration</button>
       </nav>
@@ -376,6 +473,82 @@ function adminPage() {
         </section>
       </section>
 
+      <section class="tab-panel" data-panel="users">
+        <section class="panel">
+          <div class="panel-heading">
+            <div><h2>User Management</h2><p>Provision accounts, assign roles and centers, and grant system features.</p></div>
+            <button type="button" data-new="user">New User</button>
+          </div>
+          <div class="filters user-filters">
+            <label>Search <input id="userSearch" type="search" placeholder="Name or email" /></label>
+            <label>Status <select id="userStatusFilter">
+              <option value="">All statuses</option>
+              <option value="active">Active</option>
+              <option value="invited">Invited</option>
+              <option value="suspended">Suspended</option>
+              <option value="deactivated">Deactivated</option>
+            </select></label>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>User</th><th>Status</th><th>Roles</th><th>Centers</th><th>Features</th><th>Actions</th></tr></thead>
+              <tbody id="userRows"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="tab-panel" data-panel="notifications">
+        <section class="management-grid email-grid">
+          <section class="panel">
+            <div class="panel-heading"><div><h2>SMTP Settings</h2><p>Credentials are encrypted before storage and are never displayed again.</p></div></div>
+            <form id="smtpForm">
+              <label class="check-label"><input name="enabled" type="checkbox" /> Enable email delivery</label>
+              <div class="form-grid">
+                <label>SMTP Host <input name="host" required placeholder="smtp.example.org" /></label>
+                <label>Port <input name="port" type="number" min="1" max="65535" required value="587" /></label>
+                <label>Username <input name="username" autocomplete="off" /></label>
+                <label>Password <input name="password" type="password" autocomplete="new-password" placeholder="Leave blank to keep stored password" /></label>
+                <label>From Name <input name="fromName" required /></label>
+                <label>From Email <input name="fromEmail" type="email" required /></label>
+                <label>Reply-To <input name="replyTo" type="email" /></label>
+                <label class="check-label"><input name="secure" type="checkbox" /> Use implicit TLS (usually port 465)</label>
+              </div>
+              <p id="smtpPasswordStatus" class="help-text"></p>
+              <p id="smtpStatus" class="form-status" role="status"></p>
+              <div class="button-row"><button type="submit">Save Settings</button></div>
+            </form>
+            <form id="smtpTestForm" class="subform">
+              <label>Test Recipient <input name="recipient" type="email" placeholder="admin@example.org" /></label>
+              <button type="submit" class="secondary">Test Connection & Send</button>
+            </form>
+          </section>
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Send Email</h2><p>Send an administrative notification to one or more managed users.</p></div></div>
+            <form id="emailForm">
+              <div class="form-grid">
+                <label>Specific Users <select name="userIds" id="emailRecipients" multiple></select></label>
+                <label>Users With Roles <select name="roleIds" id="emailRecipientRoles" multiple></select></label>
+                <label>Users Assigned To Centers <select name="centerIds" id="emailRecipientCenters" multiple></select></label>
+              </div>
+              <label>Subject <input name="subject" required maxlength="200" /></label>
+              <label>Message <textarea name="message" required maxlength="10000"></textarea></label>
+              <p id="emailSendStatus" class="form-status" role="status"></p>
+              <button type="submit">Send Email</button>
+            </form>
+          </section>
+        </section>
+        <section class="panel">
+          <div class="panel-heading"><div><h2>Email History</h2><p>Recent delivery attempts, without message content or credentials.</p></div></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Time</th><th>Recipient</th><th>Subject</th><th>Type</th><th>Status</th></tr></thead>
+              <tbody id="emailHistoryRows"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
       <section class="tab-panel" data-panel="broadcast">
         <section class="panel broadcast-panel">
           <h2>Emergency & Safety Broadcast</h2>
@@ -392,7 +565,7 @@ function adminPage() {
       <section class="tab-panel" data-panel="configuration">
         <section class="admin-grid">
           <section class="panel"><h2>Themes</h2><div id="themeList"></div></section>
-          <section class="panel"><h2>Users & Roles</h2><div id="userRoleList"></div></section>
+          <section class="panel"><h2>Roles</h2><div id="userRoleList"></div></section>
           <section class="panel"><h2>Calendar Accounts</h2><div id="calendarList"></div></section>
           <section class="panel"><h2>Recent Audit Activity</h2><div id="auditList"></div></section>
         </section>
@@ -486,19 +659,276 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "GET" && url.pathname === "/api/state") {
     return json(res, 200, {
-      settings: db.settings,
+      settings: {
+        ...db.settings,
+        email: publicEmailSettings(db.settings.email)
+      },
       storageType: store.type,
       centers: db.centers,
       campuses: db.campuses,
       buildings: db.buildings,
       rooms: db.rooms.map(publicRoom),
       themes: db.themes,
+      features: db.features,
       roles: db.roles,
-      users: db.users,
+      users: db.users.map(publicUser),
       calendarAccounts: db.calendarAccounts,
       activeBroadcast: db.activeBroadcast,
+      emailNotifications: db.emailNotifications.slice(0, 50),
       auditLogs: db.auditLogs.slice(0, 20)
     });
+  }
+  if (req.method === "PUT" && url.pathname === "/api/settings/email") {
+    const body = await readBody(req);
+    const host = cleanText(body.host, 255);
+    const username = cleanText(body.username, 255);
+    const fromName = cleanText(body.fromName, 160);
+    const fromEmail = cleanText(body.fromEmail, 255).toLowerCase();
+    const replyTo = cleanText(body.replyTo, 255).toLowerCase();
+    const portValue = Number(body.port);
+    if (!host) return validationError(res, "SMTP host is required.");
+    if (!Number.isInteger(portValue) || portValue < 1 || portValue > 65535) {
+      return validationError(res, "SMTP port must be between 1 and 65535.");
+    }
+    if (!validEmail(fromEmail)) return validationError(res, "Enter a valid From email address.");
+    if (replyTo && !validEmail(replyTo)) return validationError(res, "Enter a valid Reply-To email address.");
+    let encryptedPassword = db.settings.email.encryptedPassword || "";
+    if (body.password) {
+      try {
+        encryptedPassword = encryptCredential(String(body.password));
+      } catch (error) {
+        return json(res, 500, { error: error.message });
+      }
+    }
+    if (username && !encryptedPassword) return validationError(res, "SMTP password is required for authenticated SMTP.");
+    db.settings.email = {
+      ...db.settings.email,
+      enabled: body.enabled === true,
+      host,
+      port: portValue,
+      secure: body.secure === true,
+      username,
+      encryptedPassword,
+      fromName: fromName || "Signage Management System",
+      fromEmail,
+      replyTo
+    };
+    addAudit("email.settings.update", {
+      host,
+      port: portValue,
+      secure: body.secure === true,
+      username,
+      enabled: body.enabled === true
+    });
+    await saveData();
+    return json(res, 200, publicEmailSettings(db.settings.email));
+  }
+  if (req.method === "POST" && url.pathname === "/api/settings/email/test") {
+    const body = await readBody(req);
+    const recipient = cleanText(body.recipient, 255).toLowerCase();
+    if (recipient && !validEmail(recipient)) return validationError(res, "Enter a valid test recipient.");
+    try {
+      await verifySmtp(db.settings.email);
+      if (recipient) {
+        try {
+          await sendEmail(
+            { ...db.settings.email, enabled: true },
+            {
+              to: recipient,
+              subject: "Signage SMTP test successful",
+              text: "The Signage Management System successfully connected to SMTP and delivered this test message.",
+              html: "<p>The Signage Management System successfully connected to SMTP and delivered this test message.</p>"
+            }
+          );
+          recordEmail({
+            to: recipient,
+            subject: "Signage SMTP test successful",
+            type: "smtp-test",
+            status: "sent",
+            source: "email-settings"
+          });
+        } catch (error) {
+          recordEmail({
+            to: recipient,
+            subject: "Signage SMTP test successful",
+            type: "smtp-test",
+            status: "failed",
+            error: error.message,
+            source: "email-settings"
+          });
+          throw error;
+        }
+      }
+      db.settings.email.lastTestAt = new Date().toISOString();
+      db.settings.email.lastTestStatus = "success";
+      db.settings.email.lastTestError = "";
+      addAudit("email.settings.test", { status: "success", recipient: recipient || null });
+      await saveData();
+      return json(res, 200, { verified: true, emailSent: Boolean(recipient) });
+    } catch (error) {
+      db.settings.email.lastTestAt = new Date().toISOString();
+      db.settings.email.lastTestStatus = "failed";
+      db.settings.email.lastTestError = cleanText(error.message, 300);
+      addAudit("email.settings.test", { status: "failed", error: cleanText(error.message, 300) });
+      await saveData();
+      return json(res, 502, { error: `SMTP test failed: ${error.message}` });
+    }
+  }
+  if (req.method === "POST" && url.pathname === "/api/email/send") {
+    const body = await readBody(req);
+    const subject = cleanText(body.subject, 200);
+    const message = cleanText(body.message, 10000);
+    const userIds = Array.isArray(body.userIds) ? [...new Set(body.userIds)] : [];
+    const roleIds = Array.isArray(body.roleIds) ? [...new Set(body.roleIds)] : [];
+    const centerIds = Array.isArray(body.centerIds) ? [...new Set(body.centerIds)] : [];
+    if (!subject) return validationError(res, "Email subject is required.");
+    if (!message) return validationError(res, "Email message is required.");
+    if (!userIds.length && !roleIds.length && !centerIds.length) {
+      return validationError(res, "Select at least one user, role, or center.");
+    }
+    if (!validIds(userIds, db.users)) return validationError(res, "One or more selected users are invalid.");
+    if (!validIds(roleIds, db.roles)) return validationError(res, "One or more selected roles are invalid.");
+    if (!validIds(centerIds, db.centers)) return validationError(res, "One or more selected centers are invalid.");
+    const selectedUsers = new Set(userIds);
+    for (const user of db.users) {
+      if (user.roleIds.some(id => roleIds.includes(id)) || user.centerIds.some(id => centerIds.includes(id))) {
+        selectedUsers.add(user.id);
+      }
+    }
+    const recipients = db.users.filter(user => selectedUsers.has(user.id) && user.status !== "deactivated");
+    if (!recipients.length) return validationError(res, "No active recipients match the selected targets.");
+    const results = [];
+    for (const user of recipients) {
+      try {
+        await deliverTrackedEmail({
+          to: user.email,
+          subject,
+          text: message,
+          html: `<p>${escapeHtml(message).replaceAll("\n", "<br />")}</p>`,
+          type: "administrative",
+          userId: user.id,
+          source: "manual-notification"
+        });
+        user.lastEmailAt = new Date().toISOString();
+        results.push({ userId: user.id, status: "sent" });
+      } catch (error) {
+        results.push({ userId: user.id, status: "failed", error: cleanText(error.message, 300) });
+      }
+    }
+    addAudit("email.notification.send", {
+      subject,
+      roleIds,
+      centerIds,
+      recipientCount: recipients.length,
+      sentCount: results.filter(result => result.status === "sent").length
+    });
+    await saveData();
+    const failed = results.filter(result => result.status === "failed");
+    return json(res, failed.length ? 207 : 200, { results });
+  }
+  if (req.method === "POST" && url.pathname === "/api/users") {
+    const body = await readBody(req);
+    const name = cleanText(body.name);
+    const email = cleanText(body.email, 255).toLowerCase();
+    const status = cleanText(body.status, 30) || "invited";
+    const allowedStatuses = new Set(["active", "invited", "suspended", "deactivated"]);
+    if (!name) return validationError(res, "User name is required.");
+    if (!validEmail(email)) return validationError(res, "Enter a valid email address.");
+    if (db.users.some(user => user.email === email)) return json(res, 409, { error: "That email address is already assigned to a user." });
+    if (!allowedStatuses.has(status)) return validationError(res, "Select a valid user status.");
+    if (!validIds(body.roleIds || [], db.roles)) return validationError(res, "One or more roles are invalid.");
+    if (!validIds(body.centerIds || [], db.centers)) return validationError(res, "One or more centers are invalid.");
+    const features = Array.isArray(body.features) ? body.features.filter(feature => db.features.includes(feature)) : [];
+    const now = new Date().toISOString();
+    const user = {
+      id: entityId("user"),
+      name,
+      email,
+      status,
+      roleIds: body.roleIds || [],
+      centerIds: body.centerIds || [],
+      features,
+      twoFactorEnabled: false,
+      invitedAt: null,
+      lastEmailAt: null,
+      createdAt: now,
+      updatedAt: now
+    };
+    db.users.push(user);
+    addAudit("user.create", { userId: user.id, email: user.email, status: user.status });
+    let invitationError = "";
+    if (body.sendInvitation === true) {
+      const message = invitationMessage(user);
+      try {
+        await deliverTrackedEmail({
+          to: user.email,
+          ...message,
+          type: "user-invitation",
+          userId: user.id,
+          source: "user-management"
+        });
+        user.status = "invited";
+        user.invitedAt = now;
+        user.lastEmailAt = now;
+      } catch (error) {
+        invitationError = cleanText(error.message, 300);
+      }
+    }
+    await saveData();
+    return json(res, 201, { ...publicUser(user), invitationError });
+  }
+  const userMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
+  if (req.method === "PUT" && userMatch) {
+    const user = db.users.find(item => item.id === userMatch[1]);
+    if (!user) return json(res, 404, { error: "User not found" });
+    const body = await readBody(req);
+    const name = cleanText(body.name);
+    const email = cleanText(body.email, 255).toLowerCase();
+    const status = cleanText(body.status, 30);
+    const allowedStatuses = new Set(["active", "invited", "suspended", "deactivated"]);
+    if (!name) return validationError(res, "User name is required.");
+    if (!validEmail(email)) return validationError(res, "Enter a valid email address.");
+    if (db.users.some(item => item.id !== user.id && item.email === email)) return json(res, 409, { error: "That email address is already assigned to a user." });
+    if (!allowedStatuses.has(status)) return validationError(res, "Select a valid user status.");
+    if (!validIds(body.roleIds || [], db.roles)) return validationError(res, "One or more roles are invalid.");
+    if (!validIds(body.centerIds || [], db.centers)) return validationError(res, "One or more centers are invalid.");
+    const features = Array.isArray(body.features) ? body.features.filter(feature => db.features.includes(feature)) : [];
+    Object.assign(user, {
+      name,
+      email,
+      status,
+      roleIds: body.roleIds || [],
+      centerIds: body.centerIds || [],
+      features,
+      updatedAt: new Date().toISOString()
+    });
+    addAudit("user.update", { userId: user.id, email: user.email, status: user.status });
+    await saveData();
+    return json(res, 200, publicUser(user));
+  }
+  const userInviteMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/invite$/);
+  if (req.method === "POST" && userInviteMatch) {
+    const user = db.users.find(item => item.id === userInviteMatch[1]);
+    if (!user) return json(res, 404, { error: "User not found" });
+    const message = invitationMessage(user);
+    try {
+      await deliverTrackedEmail({
+        to: user.email,
+        ...message,
+        type: "user-invitation",
+        userId: user.id,
+        source: "user-management"
+      });
+      user.status = "invited";
+      user.invitedAt = new Date().toISOString();
+      user.lastEmailAt = user.invitedAt;
+      addAudit("user.invitation.send", { userId: user.id, email: user.email });
+      await saveData();
+      return json(res, 200, publicUser(user));
+    } catch (error) {
+      await saveData();
+      return json(res, 502, { error: `Invitation email failed: ${error.message}` });
+    }
   }
   if (req.method === "POST" && url.pathname === "/api/centers") {
     const body = await readBody(req);

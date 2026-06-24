@@ -45,6 +45,10 @@ function buildingName(id) {
   return state.buildings.find(item => item.id === id)?.name || "Unknown building";
 }
 
+function roleName(id) {
+  return state.roles.find(item => item.id === id)?.name || "Unknown role";
+}
+
 function renderSummary() {
   const counts = {
     total: state.rooms.length,
@@ -159,9 +163,82 @@ function renderThemes() {
 
 function renderUsersRoles() {
   document.querySelector("#userRoleList").innerHTML = `<div class="list">
-    ${state.users.map(user => `<div class="list-item"><strong>${escapeHtml(user.name)}</strong><span>${escapeHtml(user.email)}</span><span>Features: ${user.features.map(escapeHtml).join(", ")}</span></div>`).join("")}
     ${state.roles.map(role => `<div class="list-item"><strong>${escapeHtml(role.name)}</strong><span>${role.cloneable ? "Cloneable role" : "System locked"}</span></div>`).join("")}
   </div>`;
+}
+
+function filteredUsers() {
+  const search = document.querySelector("#userSearch").value.trim().toLowerCase();
+  const status = document.querySelector("#userStatusFilter").value;
+  return state.users.filter(user =>
+    (!search || `${user.name} ${user.email}`.toLowerCase().includes(search)) &&
+    (!status || user.status === status)
+  );
+}
+
+function renderUsers() {
+  const users = filteredUsers();
+  const target = document.querySelector("#userRows");
+  if (!users.length) {
+    target.innerHTML = `<tr><td colspan="6" class="empty-state">No users match these filters.</td></tr>`;
+    return;
+  }
+  target.innerHTML = users.map(user => `
+    <tr>
+      <td><strong>${escapeHtml(user.name)}</strong><span class="subtle">${escapeHtml(user.email)}</span></td>
+      <td><span class="status-pill user-${escapeHtml(user.status)}">${escapeHtml(user.status)}</span>${user.twoFactorEnabled ? `<span class="subtle">2FA enabled</span>` : ""}</td>
+      <td>${user.roleIds.map(roleName).map(escapeHtml).join(", ") || "None"}</td>
+      <td>${user.centerIds.map(centerName).map(escapeHtml).join(", ") || "None"}</td>
+      <td><span class="feature-summary">${user.features.map(escapeHtml).join(", ") || "None"}</span></td>
+      <td><div class="row-actions">
+        <button type="button" class="secondary" data-edit="user" data-id="${escapeHtml(user.id)}">Edit</button>
+        <button type="button" class="secondary" data-invite-user="${escapeHtml(user.id)}">Send Invite</button>
+      </div></td>
+    </tr>
+  `).join("");
+}
+
+function renderEmailSettings() {
+  const settings = state.settings.email;
+  const form = document.querySelector("#smtpForm");
+  form.elements.enabled.checked = settings.enabled;
+  form.elements.host.value = settings.host;
+  form.elements.port.value = settings.port;
+  form.elements.secure.checked = settings.secure;
+  form.elements.username.value = settings.username;
+  form.elements.password.value = "";
+  form.elements.fromName.value = settings.fromName;
+  form.elements.fromEmail.value = settings.fromEmail;
+  form.elements.replyTo.value = settings.replyTo;
+  document.querySelector("#smtpPasswordStatus").textContent = settings.hasPassword
+    ? "An encrypted SMTP password is stored. Leave the field blank to keep it."
+    : "No SMTP password is stored.";
+  document.querySelector("#smtpStatus").textContent = settings.lastTestAt
+    ? `Last test: ${settings.lastTestStatus} at ${new Date(settings.lastTestAt).toLocaleString()}${settings.lastTestError ? ` - ${settings.lastTestError}` : ""}`
+    : "";
+  document.querySelector("#emailRecipients").innerHTML = state.users
+    .filter(user => user.status !== "deactivated")
+    .map(user => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.name)} - ${escapeHtml(user.email)}</option>`)
+    .join("");
+  document.querySelector("#emailRecipientRoles").innerHTML = state.roles
+    .map(role => `<option value="${escapeHtml(role.id)}">${escapeHtml(role.name)}</option>`)
+    .join("");
+  document.querySelector("#emailRecipientCenters").innerHTML = state.centers
+    .map(center => `<option value="${escapeHtml(center.id)}">${escapeHtml(center.name)}</option>`)
+    .join("");
+}
+
+function renderEmailHistory() {
+  const target = document.querySelector("#emailHistoryRows");
+  target.innerHTML = state.emailNotifications.map(item => `
+    <tr>
+      <td>${new Date(item.createdAt).toLocaleString()}</td>
+      <td>${escapeHtml(item.to)}</td>
+      <td>${escapeHtml(item.subject)}</td>
+      <td>${escapeHtml(item.type)}</td>
+      <td><span class="status-pill email-${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>${item.error ? `<span class="subtle">${escapeHtml(item.error)}</span>` : ""}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="5" class="empty-state">No email delivery attempts yet.</td></tr>`;
 }
 
 function renderCalendars() {
@@ -182,6 +259,24 @@ function renderAudit() {
 
 function fieldsFor(type, entity = {}) {
   const active = entity.active !== false;
+  if (type === "user") {
+    const status = entity.status || "invited";
+    return `
+      <div class="form-grid">
+        <label>Name <input name="name" required maxlength="160" value="${escapeHtml(entity.name)}" /></label>
+        <label>Email <input name="email" type="email" required maxlength="255" value="${escapeHtml(entity.email)}" /></label>
+        <label>Status <select name="status" required>
+          ${["active", "invited", "suspended", "deactivated"].map(value => `<option value="${value}" ${value === status ? "selected" : ""}>${value[0].toUpperCase()}${value.slice(1)}</option>`).join("")}
+        </select></label>
+      </div>
+      <label>Roles <select name="roleIds" multiple>${optionList(state.roles, "", item => item.name)}</select></label>
+      <label>Centers <select name="centerIds" multiple>${optionList(state.centers, "", item => item.name)}</select></label>
+      <fieldset class="feature-fieldset"><legend>Feature Access Grants</legend>
+        ${state.features.map(feature => `<label class="check-label"><input type="checkbox" name="features" value="${escapeHtml(feature)}" ${entity.features?.includes(feature) ? "checked" : ""} /> ${escapeHtml(feature)}</label>`).join("")}
+      </fieldset>
+      ${entity.id ? "" : `<label class="check-label"><input name="sendInvitation" type="checkbox" /> Send invitation email after creating user</label>`}
+    `;
+  }
   if (type === "center") {
     return `
       <label>Center Name <input name="name" required maxlength="160" value="${escapeHtml(entity.name)}" /></label>
@@ -228,7 +323,7 @@ function fieldsFor(type, entity = {}) {
 }
 
 function findEntity(type, id) {
-  const collection = { center: state.centers, campus: state.campuses, building: state.buildings, room: state.rooms }[type];
+  const collection = { center: state.centers, campus: state.campuses, building: state.buildings, room: state.rooms, user: state.users }[type];
   return collection?.find(item => item.id === id);
 }
 
@@ -238,6 +333,12 @@ function openEntityDialog(type, id = "") {
   entityForm.elements.entityType.value = type;
   entityForm.elements.entityId.value = id;
   document.querySelector("#entityFields").innerHTML = fieldsFor(type, entity);
+  if (type === "user") {
+    const selectedRoles = new Set(entity.roleIds || []);
+    const selectedCenters = new Set(entity.centerIds || []);
+    Array.from(entityForm.elements.roleIds.options).forEach(option => { option.selected = selectedRoles.has(option.value); });
+    Array.from(entityForm.elements.centerIds.options).forEach(option => { option.selected = selectedCenters.has(option.value); });
+  }
   document.querySelector("#formError").textContent = "";
   entityDialog.showModal();
 }
@@ -262,17 +363,96 @@ async function saveEntity(event) {
   const id = data.entityId;
   delete data.entityType;
   delete data.entityId;
-  data.active = entityForm.elements.active.checked;
+  if (type === "user") {
+    data.roleIds = Array.from(entityForm.elements.roleIds.selectedOptions).map(option => option.value);
+    data.centerIds = Array.from(entityForm.elements.centerIds.selectedOptions).map(option => option.value);
+    data.features = Array.from(entityForm.querySelectorAll('input[name="features"]:checked')).map(input => input.value);
+    data.sendInvitation = Boolean(entityForm.elements.sendInvitation?.checked);
+  } else {
+    data.active = entityForm.elements.active.checked;
+  }
   try {
     const plural = type === "campus" ? "campuses" : `${type}s`;
-    await api(`/api/${plural}${id ? `/${id}` : ""}`, {
+    const result = await api(`/api/${plural}${id ? `/${id}` : ""}`, {
       method: id ? "PUT" : "POST",
       body: JSON.stringify(data)
     });
     entityDialog.close();
     await load();
+    if (result.invitationError) {
+      alert(`User was created, but the invitation email failed: ${result.invitationError}`);
+    }
   } catch (error) {
     document.querySelector("#formError").textContent = error.message;
+  }
+}
+
+async function inviteUser(userId) {
+  const user = state.users.find(item => item.id === userId);
+  if (!user || !confirm(`Send an invitation email to ${user.email}?`)) return;
+  try {
+    await api(`/api/users/${userId}/invite`, { method: "POST", body: "{}" });
+    await load();
+    alert(`Invitation sent to ${user.email}.`);
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function saveSmtpSettings(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = Object.fromEntries(new FormData(form));
+  values.enabled = form.elements.enabled.checked;
+  values.secure = form.elements.secure.checked;
+  values.port = Number(values.port);
+  const status = document.querySelector("#smtpStatus");
+  status.textContent = "Saving...";
+  try {
+    await api("/api/settings/email", { method: "PUT", body: JSON.stringify(values) });
+    await load();
+    status.textContent = "SMTP settings saved.";
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function testSmtp(event) {
+  event.preventDefault();
+  const recipient = new FormData(event.currentTarget).get("recipient");
+  const status = document.querySelector("#smtpStatus");
+  status.textContent = "Testing SMTP connection...";
+  try {
+    const result = await api("/api/settings/email/test", {
+      method: "POST",
+      body: JSON.stringify({ recipient })
+    });
+    await load();
+    status.textContent = result.emailSent ? "SMTP verified and test email sent." : "SMTP connection verified.";
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function sendAdministrativeEmail(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = Object.fromEntries(new FormData(form));
+  values.userIds = Array.from(form.elements.userIds.selectedOptions).map(option => option.value);
+  values.roleIds = Array.from(form.elements.roleIds.selectedOptions).map(option => option.value);
+  values.centerIds = Array.from(form.elements.centerIds.selectedOptions).map(option => option.value);
+  const status = document.querySelector("#emailSendStatus");
+  status.textContent = "Sending...";
+  try {
+    const result = await api("/api/email/send", { method: "POST", body: JSON.stringify(values) });
+    const sent = result.results.filter(item => item.status === "sent").length;
+    const failed = result.results.length - sent;
+    status.textContent = `Sent: ${sent}${failed ? `, failed: ${failed}` : ""}.`;
+    form.elements.subject.value = "";
+    form.elements.message.value = "";
+    await load();
+  } catch (error) {
+    status.textContent = error.message;
   }
 }
 
@@ -346,6 +526,9 @@ function render() {
   renderBroadcastTargets();
   renderEntityLists();
   renderThemes();
+  renderUsers();
+  renderEmailSettings();
+  renderEmailHistory();
   renderUsersRoles();
   renderCalendars();
   renderAudit();
@@ -367,6 +550,11 @@ document.querySelector("#roomSearch").addEventListener("input", renderDashboardR
 document.querySelector("#dashboardCenterFilter").addEventListener("change", renderDashboardRows);
 document.querySelector("#dashboardStatusFilter").addEventListener("change", renderDashboardRows);
 document.querySelector("#refreshDashboard").addEventListener("click", load);
+document.querySelector("#userSearch").addEventListener("input", renderUsers);
+document.querySelector("#userStatusFilter").addEventListener("change", renderUsers);
+document.querySelector("#smtpForm").addEventListener("submit", saveSmtpSettings);
+document.querySelector("#smtpTestForm").addEventListener("submit", testSmtp);
+document.querySelector("#emailForm").addEventListener("submit", sendAdministrativeEmail);
 document.querySelector("#broadcastForm").addEventListener("submit", publishBroadcast);
 document.querySelector("#endBroadcast").addEventListener("click", endBroadcast);
 document.querySelector("#closeDialog").addEventListener("click", () => entityDialog.close());
@@ -387,6 +575,8 @@ document.addEventListener("click", event => {
   if (previewButton) return showPreview(previewButton.dataset.preview);
   const cloneButton = event.target.closest("[data-clone-theme]");
   if (cloneButton) return cloneTheme(cloneButton.dataset.cloneTheme);
+  const inviteButton = event.target.closest("[data-invite-user]");
+  if (inviteButton) return inviteUser(inviteButton.dataset.inviteUser);
 });
 
 document.addEventListener("change", event => {

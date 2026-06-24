@@ -89,16 +89,27 @@ APP_ENV=test
 APP_BASE_URL=https://signage-test.bapswest.org
 HOST=0.0.0.0
 PORT=3000
-POSTGRES_DB=signage_test
+POSTGRES_DB=signage
 POSTGRES_USER=signage_app
 POSTGRES_PASSWORD=CHANGE_ME_TEST_PASSWORD
 POSTGRES_HOST=postgres
 REDIS_URL=redis://redis:6379
 SESSION_SECRET=CHANGE_ME_LONG_RANDOM_TEST_SECRET
+CREDENTIAL_ENCRYPTION_KEY=CHANGE_ME_SEPARATE_LONG_RANDOM_CREDENTIAL_KEY
 TWO_FACTOR_ISSUER=BAPS Signage Test
 ```
 
 Use strong random values for passwords and secrets.
+
+If the PostgreSQL volume already exists, keep the database name that is already present. The current test server uses `signage`; changing only the `.env` value does not rename an initialized PostgreSQL database.
+
+Generate the credential encryption key with:
+
+```bash
+openssl rand -base64 48
+```
+
+Store this key in the server password manager or another protected backup. Do not change or lose it after SMTP credentials are saved, because existing encrypted credentials cannot be decrypted without the same key.
 
 ## 5. Start Test Containers
 
@@ -245,8 +256,40 @@ In the admin portal:
 13. Confirm only that room switches to broadcast mode and plays the alert sound.
 14. Confirm the admin portal preview stays silent.
 15. End the broadcast.
+16. Open **Users**, create a temporary invited user, and assign a role, center, and feature grants.
+17. Edit the user and confirm status, role, center, and feature changes persist.
+18. Open **Email Notifications**, save the SMTP settings, and send a test message.
+19. Send administrative emails using a specific user, role, and center target, and confirm delivery appears in Email History without duplicate recipients.
+20. Confirm the SMTP password is never displayed after saving.
 
-## 9. Pull Updates Later
+## 9. Configure SMTP Email
+
+Obtain these values from the email provider:
+
+```text
+SMTP host
+SMTP port
+TLS mode
+SMTP username
+SMTP password or app password
+From name
+From email
+Reply-To email, if required
+```
+
+In the management portal:
+
+1. Open **Email Notifications**.
+2. Enter the SMTP settings.
+3. Enable email delivery.
+4. Save the settings.
+5. Enter a test recipient.
+6. Select **Test Connection & Send**.
+7. Confirm the message arrives and Email History shows `sent`.
+
+Use port `465` with implicit TLS enabled when required by the provider. Port `587` normally uses STARTTLS and should leave implicit TLS disabled.
+
+## 10. Pull Updates Later
 
 ```bash
 cd /opt/signage/source
@@ -256,7 +299,7 @@ docker compose -f docker-compose.test.yml -p signage-test up -d --force-recreate
 docker compose -f docker-compose.test.yml -p signage-test ps
 ```
 
-## 10. Stop Test Environment
+## 11. Stop Test Environment
 
 ```bash
 cd /opt/signage/source
@@ -271,7 +314,7 @@ docker compose -f docker-compose.test.yml -p signage-test down -v
 
 Only use `down -v` when you intentionally want to delete the test database and Redis data.
 
-## 11. Notes
+## 12. Notes
 
 - PostgreSQL is the primary application data store.
 - `data/app-data.json` is retained as an automatically updated compatibility mirror and migration source.

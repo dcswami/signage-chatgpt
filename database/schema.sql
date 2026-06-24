@@ -207,6 +207,35 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS email_settings (
+  id text PRIMARY KEY DEFAULT 'primary',
+  enabled boolean NOT NULL DEFAULT false,
+  host text NOT NULL,
+  port integer NOT NULL DEFAULT 587,
+  secure boolean NOT NULL DEFAULT false,
+  username text,
+  encrypted_password text,
+  from_name text NOT NULL,
+  from_email text NOT NULL,
+  reply_to text,
+  last_test_at timestamptz,
+  last_test_status text,
+  last_test_error text,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS email_delivery_history (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid REFERENCES users(id),
+  recipient_email text NOT NULL,
+  subject text NOT NULL,
+  notification_type text NOT NULL,
+  source text NOT NULL,
+  status text NOT NULL,
+  error text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   actor_user_id uuid REFERENCES users(id),
@@ -221,3 +250,4 @@ CREATE INDEX IF NOT EXISTS idx_rooms_code ON rooms(code);
 CREATE INDEX IF NOT EXISTS idx_calendar_events_room_time ON calendar_events(room_id, starts_at, ends_at);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);
+CREATE INDEX IF NOT EXISTS idx_email_delivery_history_created_at ON email_delivery_history(created_at);
