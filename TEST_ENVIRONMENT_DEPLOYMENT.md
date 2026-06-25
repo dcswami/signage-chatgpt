@@ -250,10 +250,14 @@ Authentication readiness:
 
 1. Open `https://signage-test.bapswest.org/admin` and confirm it redirects to `/login`.
 2. Sign in as `admin@example.org` using the temporary `BOOTSTRAP_ADMIN_PASSWORD`.
-3. Open **Configuration**, enroll an authenticator app, log out, and confirm the next login requires its six-digit code.
-4. Remove `BOOTSTRAP_ADMIN_PASSWORD` from `.env` and recreate the app container.
-5. Change the signed-in administrator password under **Configuration**, then confirm the new password works.
-6. As System Administrator, set a temporary user's password and confirm the user's older sessions are revoked.
+3. Confirm the signed-in user's name appears in the upper-right portal header.
+4. Open **Configuration**, enroll an authenticator app, log out, and confirm the next login requires its six-digit code.
+5. As System Administrator, save the Twilio Account SID, Auth Token, and sender number in E.164 format, then send a test SMS.
+6. Enroll a test user for **Cell phone text message** 2FA, confirm the enrollment code, log out, and verify the next login sends a fresh six-digit code.
+7. Confirm an SMS code expires after five minutes, cannot be reused, and cannot be resent more frequently than the configured cooldown.
+8. Remove `BOOTSTRAP_ADMIN_PASSWORD` from `.env` and recreate the app container.
+9. Change the signed-in administrator password under **Configuration**, then confirm the new password works.
+10. As System Administrator, set a temporary user's password and confirm the user's older sessions are revoked.
 
 Functional readiness in the admin portal:
 

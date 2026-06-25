@@ -422,8 +422,8 @@ function renderUsers() {
   }
   target.innerHTML = users.map(user => `
     <tr>
-      <td><strong>${escapeHtml(user.name)}</strong><span class="subtle">${escapeHtml(user.email)}</span></td>
-      <td><span class="status-pill user-${escapeHtml(user.status)}">${escapeHtml(user.status)}</span>${user.twoFactorEnabled ? `<span class="subtle">2FA enabled</span>` : ""}</td>
+      <td><strong>${escapeHtml(user.name)}</strong><span class="subtle">${escapeHtml(user.email)}</span>${user.phoneNumber ? `<span class="subtle">${escapeHtml(user.phoneNumber)}</span>` : ""}</td>
+      <td><span class="status-pill user-${escapeHtml(user.status)}">${escapeHtml(user.status)}</span>${user.twoFactorEnabled ? `<span class="subtle">2FA: ${escapeHtml(user.twoFactorMethod === "sms" ? "SMS" : "Authenticator")}</span>` : ""}</td>
       <td>${user.roleIds.map(roleName).map(escapeHtml).join(", ") || "None"}</td>
       <td>${[
         ...user.centerIds.map(centerName),
@@ -471,6 +471,24 @@ function renderEmailSettings() {
   document.querySelector("#emailRecipientCenters").innerHTML = state.centers
     .map(center => `<option value="${escapeHtml(center.id)}">${escapeHtml(center.name)}</option>`)
     .join("");
+}
+
+function renderTwilioSettings() {
+  const panel = document.querySelector("#twilioSettingsPanel");
+  panel.hidden = !state.viewer.isSystemAdmin;
+  if (panel.hidden) return;
+  const settings = state.settings.twilio || {};
+  const form = document.querySelector("#twilioForm");
+  form.elements.enabled.checked = Boolean(settings.enabled);
+  form.elements.accountSid.value = settings.accountSid || "";
+  form.elements.authToken.value = "";
+  form.elements.fromPhoneNumber.value = settings.fromPhoneNumber || "";
+  document.querySelector("#twilioTokenStatus").textContent = settings.hasAuthToken
+    ? "An encrypted Auth Token is stored. Leave the field blank to keep it."
+    : "No Twilio Auth Token is stored.";
+  document.querySelector("#twilioStatus").textContent = settings.lastTestAt
+    ? `Last test: ${settings.lastTestStatus} at ${new Date(settings.lastTestAt).toLocaleString()}${settings.lastTestError ? ` - ${settings.lastTestError}` : ""}`
+    : "";
 }
 
 function renderEmailHistory() {
@@ -853,6 +871,7 @@ function fieldsFor(type, entity = {}) {
       <div class="form-grid">
         <label>Name <input name="name" required maxlength="160" value="${escapeHtml(entity.name)}" /></label>
         <label>Email <input name="email" type="email" required maxlength="255" value="${escapeHtml(entity.email)}" /></label>
+        <label>Cell Phone <input name="phoneNumber" type="tel" maxlength="30" value="${escapeHtml(entity.phoneNumber)}" placeholder="+13125550123" /></label>
         <label>Status <select name="status" required>
           ${["active", "invited", "suspended", "deactivated"].map(value => `<option value="${value}" ${value === status ? "selected" : ""}>${value[0].toUpperCase()}${value.slice(1)}</option>`).join("")}
         </select></label>
@@ -1249,12 +1268,29 @@ async function setUserPassword(event) {
 
 async function setupTwoFactor() {
   const status = document.querySelector("#twoFactorStatus");
+  const method = document.querySelector("#twoFactorMethod").value;
+  const phoneNumber = document.querySelector("#twoFactorPhoneNumber").value.trim();
+  status.textContent = method === "sms" ? "Sending verification code..." : "Preparing authenticator setup...";
   try {
-    const result = await api("/api/auth/2fa/setup", { method: "POST", body: "{}" });
-    document.querySelector("#twoFactorSecret").value = result.secret;
-    document.querySelector("#twoFactorUri").value = result.otpauthUri;
+    const result = await api("/api/auth/2fa/setup", {
+      method: "POST",
+      body: JSON.stringify({ method, phoneNumber })
+    });
+    const authenticatorFields = document.querySelector("#authenticatorSetupFields");
+    const smsMessage = document.querySelector("#smsSetupMessage");
+    authenticatorFields.hidden = method !== "authenticator";
+    smsMessage.hidden = method !== "sms";
+    if (method === "authenticator") {
+      document.querySelector("#twoFactorSecret").value = result.secret;
+      document.querySelector("#twoFactorUri").value = result.otpauthUri;
+    } else {
+      smsMessage.textContent = result.message;
+    }
     document.querySelector("#twoFactorSetup").hidden = false;
-    status.textContent = "Add the account to your authenticator app, then enter its current code.";
+    document.querySelector("#confirmTwoFactorForm").reset();
+    status.textContent = method === "authenticator"
+      ? "Add the account to your authenticator app, then enter its current code."
+      : result.message;
   } catch (error) {
     status.textContent = error.message;
   }
@@ -1271,6 +1307,39 @@ async function confirmTwoFactor(event) {
     document.querySelector("#twoFactorSetup").hidden = true;
     status.textContent = "Two-factor authentication is enabled.";
     await load();
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function saveTwilioSettings(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = Object.fromEntries(new FormData(form));
+  values.enabled = form.elements.enabled.checked;
+  const status = document.querySelector("#twilioStatus");
+  status.textContent = "Saving...";
+  try {
+    await api("/api/settings/twilio", { method: "PUT", body: JSON.stringify(values) });
+    await load();
+    status.textContent = "Twilio SMS settings saved.";
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function testTwilio(event) {
+  event.preventDefault();
+  const recipient = new FormData(event.currentTarget).get("recipient");
+  const status = document.querySelector("#twilioStatus");
+  status.textContent = "Sending test SMS...";
+  try {
+    const result = await api("/api/settings/twilio/test", {
+      method: "POST",
+      body: JSON.stringify({ recipient })
+    });
+    await load();
+    status.textContent = `Test SMS ${result.status || "queued"}.`;
   } catch (error) {
     status.textContent = error.message;
   }
@@ -1926,7 +1995,14 @@ async function deleteThemeSchedule(scheduleId) {
 }
 
 function render() {
+  document.querySelector("#currentUserName").textContent = state.viewer.name;
   document.querySelector("#storageBadge").textContent = state.storageType === "postgresql-normalized" ? "PostgreSQL" : "Local JSON";
+  document.querySelector("#twoFactorCurrentStatus").textContent = state.viewer.twoFactorEnabled
+    ? `Enabled using ${state.viewer.twoFactorMethod === "sms" ? `SMS to ${state.viewer.phoneNumber}` : "an authenticator app"}.`
+    : "Not enabled.";
+  document.querySelector("#twoFactorMethod").value = state.viewer.twoFactorMethod || "authenticator";
+  document.querySelector("#twoFactorPhoneField").hidden = document.querySelector("#twoFactorMethod").value !== "sms";
+  document.querySelector("#twoFactorPhoneNumber").value = state.viewer.phoneNumber || "";
   renderSummary();
   renderDashboardFilters();
   renderDashboardRows();
@@ -1940,6 +2016,7 @@ function render() {
   renderThemeSchedules();
   renderUsers();
   renderEmailSettings();
+  renderTwilioSettings();
   renderEmailHistory();
   renderInAppNotifications();
   renderUsersRoles();
@@ -1988,6 +2065,11 @@ document.querySelector("#dashboardCenterFilter").addEventListener("change", rend
 document.querySelector("#dashboardStatusFilter").addEventListener("change", renderDashboardRows);
 document.querySelector("#refreshDashboard").addEventListener("click", load);
 document.querySelector("#setupTwoFactor").addEventListener("click", setupTwoFactor);
+document.querySelector("#twoFactorMethod").addEventListener("change", event => {
+  document.querySelector("#twoFactorPhoneField").hidden = event.target.value !== "sms";
+  document.querySelector("#twoFactorSetup").hidden = true;
+  document.querySelector("#twoFactorStatus").textContent = "";
+});
 document.querySelector("#confirmTwoFactorForm").addEventListener("submit", confirmTwoFactor);
 document.querySelector("#changePasswordForm").addEventListener("submit", changePassword);
 document.querySelector("#logoutButton").addEventListener("click", async () => {
@@ -2003,6 +2085,8 @@ document.querySelector("#userSearch").addEventListener("input", renderUsers);
 document.querySelector("#userStatusFilter").addEventListener("change", renderUsers);
 document.querySelector("#smtpForm").addEventListener("submit", saveSmtpSettings);
 document.querySelector("#smtpTestForm").addEventListener("submit", testSmtp);
+document.querySelector("#twilioForm").addEventListener("submit", saveTwilioSettings);
+document.querySelector("#twilioTestForm").addEventListener("submit", testTwilio);
 document.querySelector("#emailForm").addEventListener("submit", sendAdministrativeEmail);
 document.querySelector("#calendarAssignmentForm").addEventListener("submit", saveCalendarAssignment);
 document.querySelector("#kioskRefreshForm").addEventListener("submit", sendKioskRefresh);

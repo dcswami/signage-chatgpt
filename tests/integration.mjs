@@ -11,6 +11,7 @@ const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "signage-test-"));
 const port = 3187;
 const smtpPort = 3188;
 const calendarPort = 3189;
+const twilioPort = 3190;
 const baseUrl = `http://127.0.0.1:${port}`;
 const icalDate = date => date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 const listen = (server, listenPort) => new Promise((resolve, reject) => {
@@ -79,6 +80,27 @@ const smtpServer = net.createServer(socket => {
   });
 });
 await listen(smtpServer, smtpPort);
+const twilioMessages = [];
+const twilioServer = http.createServer((req, res) => {
+  let body = "";
+  req.on("data", chunk => { body += chunk; });
+  req.on("end", () => {
+    const values = new URLSearchParams(body);
+    twilioMessages.push({
+      to: values.get("To"),
+      from: values.get("From"),
+      body: values.get("Body"),
+      authorization: req.headers.authorization
+    });
+    res.writeHead(201, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      sid: `SM${"1".repeat(32)}`,
+      status: "queued",
+      to: values.get("To")
+    }));
+  });
+});
+await listen(twilioServer, twilioPort);
 const child = spawn(process.execPath, ["src/server.mjs"], {
   cwd: rootDir,
   env: {
@@ -89,7 +111,8 @@ const child = spawn(process.execPath, ["src/server.mjs"], {
     APP_BASE_URL: baseUrl,
     BOOTSTRAP_ADMIN_PASSWORD: "Integration-Admin-Password-2026!",
     THEME_ASSETS_DIR: path.join(dataDir, "theme-assets"),
-    CREDENTIAL_ENCRYPTION_KEY: "integration-test-credential-key-123456789"
+    CREDENTIAL_ENCRYPTION_KEY: "integration-test-credential-key-123456789",
+    TWILIO_API_BASE_URL: `http://127.0.0.1:${twilioPort}`
   },
   stdio: ["ignore", "pipe", "pipe"]
 });
@@ -163,6 +186,7 @@ try {
   assert.equal(changedAdminLogin.status, 200);
   assert.equal(initialState.rooms.length, 3);
   assert.equal(initialState.settings.email.hasPassword, false);
+  assert.equal(initialState.settings.twilio.hasAuthToken, false);
   assert.equal(initialState.roles.some(role => role.id === "campus-manager"), true);
   assert.equal(initialState.roles.some(role => role.id === "building-manager"), true);
   assert.equal(initialState.broadcastTemplates.length >= 4, true);
@@ -202,6 +226,24 @@ try {
     body: JSON.stringify({ recipient: "test-recipient@example.org" })
   });
   assert.equal(smtpTest.emailSent, true);
+
+  const twilioSettings = await request("/api/settings/twilio", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: true,
+      accountSid: `AC${"a".repeat(32)}`,
+      authToken: "twilio-auth-token",
+      fromPhoneNumber: "+13125550123"
+    })
+  });
+  assert.equal(twilioSettings.enabled, true);
+  assert.equal(twilioSettings.hasAuthToken, true);
+  assert.equal("encryptedAuthToken" in twilioSettings, false);
+  const twilioTest = await request("/api/settings/twilio/test", {
+    method: "POST",
+    body: JSON.stringify({ recipient: "+13125550124" })
+  });
+  assert.equal(twilioTest.sent, true);
 
   const center = await request("/api/centers", {
     method: "POST",
@@ -377,6 +419,7 @@ try {
     body: JSON.stringify({
       name: "Integration User",
       email: "integration.user@example.org",
+      phoneNumber: "+13125550125",
       status: "invited",
       roleIds: ["campus-manager", "building-manager"],
       centerIds: [center.id],
@@ -391,6 +434,7 @@ try {
   assert.deepEqual(user.campusIds, [campus.id]);
   assert.deepEqual(user.buildingIds, [building.id]);
   assert.deepEqual(user.features, ["Notifications"]);
+  assert.equal(user.phoneNumber, "+13125550125");
   assert.equal(user.invitedAt !== null, true);
   await request("/api/auth/request-reset", {
     method: "POST",
@@ -884,6 +928,8 @@ try {
   assert.match(adminHtml, /kioskDeviceSearch/);
   assert.match(adminHtml, /changePasswordForm/);
   assert.match(adminHtml, /adminPasswordForm/);
+  assert.match(adminHtml, /currentUserName/);
+  assert.match(adminHtml, /Twilio SMS Settings/);
   const serviceWorkerResponse = await fetch(`${baseUrl}/static/kiosk-sw.js`);
   assert.equal(serviceWorkerResponse.status, 200);
   assert.match(await serviceWorkerResponse.text(), /signage-kiosk-runtime/);
@@ -891,14 +937,48 @@ try {
 
   const finalState = await request("/api/state");
   assert.equal(finalState.settings.email.hasPassword, true);
+  assert.equal(finalState.settings.twilio.hasAuthToken, true);
   assert.equal(JSON.stringify(finalState).includes("smtp-password"), false);
+  assert.equal(JSON.stringify(finalState).includes("twilio-auth-token"), false);
   assert.equal(JSON.stringify(finalState).includes("passwordHash"), false);
   assert.equal(finalState.emailNotifications.length >= 3, true);
+
+  await request("/api/auth/2fa/setup", {
+    method: "POST",
+    body: JSON.stringify({ method: "sms", phoneNumber: "+13125550124" })
+  });
+  const setupCode = twilioMessages.at(-1).body.match(/\b(\d{6})\b/)[1];
+  const confirmedTwoFactor = await request("/api/auth/2fa/confirm", {
+    method: "POST",
+    body: JSON.stringify({ code: setupCode })
+  });
+  assert.equal(confirmedTwoFactor.method, "sms");
+  await request("/api/auth/logout", { method: "POST", body: "{}" });
+  authCookie = "";
+  csrfToken = "";
+  const smsLoginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: "admin@example.org",
+      password: "Integration-Admin-Password-Changed-2026!"
+    })
+  });
+  const smsLoginChallenge = await smsLoginResponse.json();
+  assert.equal(smsLoginChallenge.twoFactorMethod, "sms");
+  const loginCode = twilioMessages.at(-1).body.match(/\b(\d{6})\b/)[1];
+  const verifiedSmsLogin = await fetch(`${baseUrl}/api/auth/verify-2fa`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ challengeToken: smsLoginChallenge.challengeToken, code: loginCode })
+  });
+  assert.equal(verifiedSmsLogin.status, 200);
 
   console.log("Integration checks passed");
 } finally {
   child.kill("SIGTERM");
   await new Promise(resolve => smtpServer.close(resolve));
   await new Promise(resolve => calendarServer.close(resolve));
+  await new Promise(resolve => twilioServer.close(resolve));
   await fs.rm(dataDir, { recursive: true, force: true });
 }

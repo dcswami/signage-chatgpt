@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import QRCode from "qrcode";
 import { createStore } from "./storage.mjs";
 import { decryptCredential, encryptCredential, publicEmailSettings, sendEmail, verifySmtp } from "./email.mjs";
+import { maskPhoneNumber, publicTwilioSettings, sendSms, validPhoneNumber } from "./sms.mjs";
 import {
   calendarAuthorizationUrl,
   deleteCalendarEvent,
@@ -23,6 +24,7 @@ import {
   clearSessionCookie,
   generateTotpSecret,
   hashPassword,
+  numericCode,
   otpauthUri,
   parseCookies,
   randomToken,
@@ -104,6 +106,15 @@ const seedData = {
       fromName: "Signage Management System",
       fromEmail: "",
       replyTo: ""
+    },
+    twilio: {
+      enabled: false,
+      accountSid: "",
+      encryptedAuthToken: "",
+      fromPhoneNumber: "",
+      lastTestAt: null,
+      lastTestStatus: "",
+      lastTestError: ""
     }
   },
   features: [
@@ -339,6 +350,10 @@ function normalizeData(data) {
       email: {
         ...seedData.settings.email,
         ...data.settings?.email
+      },
+      twilio: {
+        ...seedData.settings.twilio,
+        ...data.settings?.twilio
       }
     }
   };
@@ -417,8 +432,15 @@ function normalizeData(data) {
     features: [],
     passwordHash: "",
     twoFactorEnabled: false,
+    twoFactorMethod: "",
+    phoneNumber: "",
+    phoneVerifiedAt: null,
     encryptedTwoFactorSecret: "",
     encryptedPendingTwoFactorSecret: "",
+    pendingTwoFactorMethod: "",
+    pendingPhoneNumber: "",
+    pendingSmsCodeHash: "",
+    pendingSmsCodeExpiresAt: null,
     invitedAt: null,
     lastEmailAt: null,
     ...user,
@@ -1029,6 +1051,10 @@ function publicViewer(user, session = null) {
   return {
     id: user?.id || "",
     name: user?.name || "",
+    email: user?.email || "",
+    phoneNumber: user?.phoneNumber || "",
+    twoFactorEnabled: Boolean(user?.twoFactorEnabled),
+    twoFactorMethod: user?.twoFactorMethod || (user?.twoFactorEnabled && user?.encryptedTwoFactorSecret ? "authenticator" : ""),
     isSystemAdmin: viewerIsSystemAdmin(user),
     permissions: [...viewerPermissions(user)],
     features: [...activeFeatureNames(user)],
@@ -1338,6 +1364,8 @@ function publicUser(user) {
     id: user.id,
     name: user.name,
     email: user.email,
+    phoneNumber: user.phoneNumber || "",
+    phoneVerifiedAt: user.phoneVerifiedAt || null,
     status: user.status,
     roleIds: user.roleIds,
     centerIds: user.centerIds,
@@ -1347,6 +1375,7 @@ function publicUser(user) {
     features: user.features,
     featureGrants: db.featureGrants.filter(grant => grant.userId === user.id),
     twoFactorEnabled: Boolean(user.twoFactorEnabled),
+    twoFactorMethod: user.twoFactorMethod || (user.twoFactorEnabled && user.encryptedTwoFactorSecret ? "authenticator" : ""),
     invitedAt: user.invitedAt || null,
     lastEmailAt: user.lastEmailAt || null,
     lastLoginAt: user.lastLoginAt || null,
@@ -1820,6 +1849,7 @@ function adminPage() {
           <h1>Management Portal</h1>
         </div>
         <div class="header-actions">
+          <span id="currentUserName" class="current-user"></span>
           <span id="storageBadge" class="storage-badge"></span>
           <a href="/room-108-shishu" target="_blank">Open Kiosk</a>
           <button type="button" class="secondary" id="logoutButton">Log Out</button>
@@ -2220,7 +2250,7 @@ function adminPage() {
       <section class="tab-panel" data-panel="configuration">
         <section class="admin-grid">
           <section class="panel">
-            <div class="panel-heading"><div><h2>Account Security</h2><p>Enroll an authenticator app and protect this management account.</p></div></div>
+            <div class="panel-heading"><div><h2>Account Security</h2><p>Protect this management account with SMS or an authenticator app.</p></div></div>
             <form id="changePasswordForm">
               <label>Current Password <input name="currentPassword" type="password" autocomplete="current-password" required /></label>
               <div class="form-grid">
@@ -2230,18 +2260,46 @@ function adminPage() {
               <button type="submit">Change Password</button>
               <p id="changePasswordStatus" class="form-status" role="status"></p>
             </form>
-            <button type="button" id="setupTwoFactor">Set Up Authenticator App</button>
+            <h3>Two-Factor Authentication</h3>
+            <p id="twoFactorCurrentStatus" class="help-text"></p>
+            <div class="form-grid">
+              <label>Verification Method <select id="twoFactorMethod">
+                <option value="authenticator">Authenticator app</option>
+                <option value="sms">Cell phone text message</option>
+              </select></label>
+              <label id="twoFactorPhoneField" hidden>Cell Phone <input id="twoFactorPhoneNumber" type="tel" autocomplete="tel" placeholder="+13125550123" /></label>
+            </div>
+            <button type="button" id="setupTwoFactor">Start Two-Factor Setup</button>
             <div id="twoFactorSetup" hidden>
-              <label>Authenticator Secret <input id="twoFactorSecret" readonly /></label>
-              <label>Authenticator URI <textarea id="twoFactorUri" readonly></textarea></label>
+              <div id="authenticatorSetupFields">
+                <label>Authenticator Secret <input id="twoFactorSecret" readonly /></label>
+                <label>Authenticator URI <textarea id="twoFactorUri" readonly></textarea></label>
+              </div>
+              <p id="smsSetupMessage" class="help-text" hidden></p>
               <form id="confirmTwoFactorForm">
-                <label>Six-Digit Code <input name="code" inputmode="numeric" pattern="[0-9]{6}" required /></label>
+                <label>Six-Digit Code <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required /></label>
                 <button type="submit">Confirm Two-Factor Authentication</button>
               </form>
             </div>
             <p id="twoFactorStatus" class="form-status" role="status"></p>
             <h3>Active Sessions</h3>
             <div id="sessionList" class="entity-list"></div>
+          </section>
+          <section class="panel" id="twilioSettingsPanel" hidden>
+            <div class="panel-heading"><div><h2>Twilio SMS Settings</h2><p>System Administrator configuration for cell-phone verification codes.</p></div></div>
+            <form id="twilioForm">
+              <label class="check-label"><input name="enabled" type="checkbox" /> Enable Twilio SMS</label>
+              <label>Account SID <input name="accountSid" autocomplete="off" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" /></label>
+              <label>Auth Token <input name="authToken" type="password" autocomplete="new-password" placeholder="Leave blank to keep stored token" /></label>
+              <label>Twilio Phone Number <input name="fromPhoneNumber" type="tel" autocomplete="tel" placeholder="+13125550123" /></label>
+              <p id="twilioTokenStatus" class="help-text"></p>
+              <button type="submit">Save Twilio Settings</button>
+              <p id="twilioStatus" class="form-status" role="status"></p>
+            </form>
+            <form id="twilioTestForm" class="subform">
+              <label>Test Recipient <input name="recipient" type="tel" placeholder="+13125550123" required /></label>
+              <button type="submit" class="secondary">Send Test SMS</button>
+            </form>
           </section>
           <section class="panel span-2">
             <div class="panel-heading"><div><h2>Permission & Role Editor</h2><p>Configure module and action permissions, clone roles, and protect assignments.</p></div><button type="button" data-new="role">New Role</button></div>
@@ -2295,7 +2353,7 @@ function adminPage() {
         <p id="passwordDialogUser" class="help-text"></p>
         <label>New Password <input name="newPassword" type="password" autocomplete="new-password" minlength="12" required /></label>
         <label>Confirm New Password <input name="confirmPassword" type="password" autocomplete="new-password" minlength="12" required /></label>
-        <label class="check-label"><input name="resetTwoFactor" type="checkbox" /> Reset authenticator-app enrollment</label>
+        <label class="check-label"><input name="resetTwoFactor" type="checkbox" /> Reset two-factor authentication enrollment</label>
         <p class="help-text">All existing sessions for this user will be revoked.</p>
         <p id="adminPasswordStatus" class="form-error" role="alert"></p>
         <div class="dialog-actions"><button type="button" class="secondary" id="cancelPasswordDialog">Cancel</button><button type="submit">Set Password</button></div>
@@ -2407,6 +2465,21 @@ function loginRateLimited(req, email) {
   ).length >= 8;
 }
 
+function smsTwoFactorRateLimited(userId) {
+  const cutoff = Date.now() - 15 * 60 * 1000;
+  return db.loginAudit.filter(item =>
+    item.userId === userId
+    && ["two-factor-sms-sent", "two-factor-enrollment-sms-sent"].includes(item.outcome)
+    && new Date(item.createdAt).getTime() >= cutoff
+  ).length >= 8;
+}
+
+function secureHashMatch(left, right) {
+  const leftBuffer = Buffer.from(String(left || ""));
+  const rightBuffer = Buffer.from(String(right || ""));
+  return Boolean(leftBuffer.length && leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer));
+}
+
 function createAuthenticatedSession(user, req) {
   const token = randomToken();
   const now = Date.now();
@@ -2425,6 +2498,27 @@ function createAuthenticatedSession(user, req) {
   db.sessions.push(session);
   user.lastLoginAt = new Date(now).toISOString();
   return { token, session };
+}
+
+function effectiveTwoFactorMethod(user) {
+  if (!user?.twoFactorEnabled) return "";
+  if (user.twoFactorMethod === "sms" || user.twoFactorMethod === "authenticator") return user.twoFactorMethod;
+  return user.encryptedTwoFactorSecret ? "authenticator" : "";
+}
+
+function twoFactorSmsBody(code) {
+  return `${db.settings.appName} verification code: ${code}. It expires in 5 minutes. Do not share this code.`;
+}
+
+async function sendLoginSmsChallenge(user, challenge) {
+  const code = numericCode();
+  await sendSms(db.settings.twilio, {
+    to: user.phoneNumber,
+    body: twoFactorSmsBody(code)
+  });
+  challenge.codeHash = tokenHash(code);
+  challenge.lastSentAt = new Date().toISOString();
+  challenge.sendCount = Number(challenge.sendCount || 0) + 1;
 }
 
 function loginPage(message = "") {
@@ -2455,9 +2549,10 @@ function loginPage(message = "") {
       <form id="loginForm">
         <label>Email <input name="email" type="email" autocomplete="username" required /></label>
         <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
-        <label id="codeField" hidden>Authenticator Code <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" /></label>
+        <label id="codeField" hidden><span id="codeLabel">Verification Code</span><input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" /></label>
         <input name="challengeToken" type="hidden" />
         <button type="submit">Sign In</button>
+        <button id="resendCode" type="button" hidden>Resend Code</button>
         <p id="status" role="alert">${escapeHtml(message)}</p>
       </form>
       <p><a href="/forgot-password">Forgot password?</a></p>
@@ -2481,10 +2576,21 @@ function loginPage(message = "") {
           document.querySelector("#codeField").hidden = false;
           form.elements.code.required = true;
           form.elements.code.focus();
-          document.querySelector("#status").textContent = "Enter the six-digit code from your authenticator app.";
+          document.querySelector("#codeLabel").textContent = result.twoFactorMethod === "sms" ? "SMS Verification Code" : "Authenticator Code";
+          document.querySelector("#resendCode").hidden = result.twoFactorMethod !== "sms";
+          document.querySelector("#status").textContent = result.message || "Enter your six-digit verification code.";
           return;
         }
         document.querySelector("#status").textContent = result.error || "Sign-in failed.";
+      });
+      document.querySelector("#resendCode").addEventListener("click", async () => {
+        const response = await fetch("/api/auth/resend-2fa", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ challengeToken: form.elements.challengeToken.value })
+        });
+        const result = await response.json().catch(() => ({}));
+        document.querySelector("#status").textContent = result.message || result.error || "Request complete.";
       });
     </script>
   </body>
@@ -2522,19 +2628,56 @@ async function handleAuthApi(req, res, url) {
       await saveData();
       return json(res, 401, { error: "Email or password is incorrect." });
     }
-    if (user.twoFactorEnabled && user.encryptedTwoFactorSecret) {
+    const twoFactorMethod = effectiveTwoFactorMethod(user);
+    if (user.twoFactorEnabled) {
+      if (!twoFactorMethod) {
+        recordLoginAudit({ email, userId: user.id, outcome: "two-factor-misconfigured", req });
+        await saveData();
+        return json(res, 503, { error: "Two-factor authentication is not configured correctly. Contact a System Administrator." });
+      }
       const challengeToken = randomToken();
-      db.sessions.push({
+      const challenge = {
         id: entityId("login-challenge"),
         userId: user.id,
         challengeHash: tokenHash(challengeToken),
         status: "pending-2fa",
+        twoFactorMethod,
+        attempts: 0,
         createdAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString()
-      });
+      };
+      if (twoFactorMethod === "authenticator" && !user.encryptedTwoFactorSecret) {
+        return json(res, 503, { error: "Authenticator-app verification is not configured correctly. Contact a System Administrator." });
+      }
+      if (twoFactorMethod === "sms") {
+        if (!validPhoneNumber(user.phoneNumber)) {
+          return json(res, 503, { error: "SMS verification is not configured with a valid phone number. Contact a System Administrator." });
+        }
+        if (smsTwoFactorRateLimited(user.id)) {
+          recordLoginAudit({ email, userId: user.id, outcome: "rate-limited", req, details: { channel: "sms-2fa" } });
+          await saveData();
+          return json(res, 429, { error: "Too many verification messages were requested. Try again later." });
+        }
+        try {
+          await sendLoginSmsChallenge(user, challenge);
+          recordLoginAudit({ email, userId: user.id, outcome: "two-factor-sms-sent", req });
+        } catch (error) {
+          recordLoginAudit({ email, userId: user.id, outcome: "two-factor-send-failed", req, details: { error: cleanText(error.message, 300) } });
+          await saveData();
+          return json(res, 503, { error: "The verification code could not be sent. Contact a System Administrator." });
+        }
+      }
+      db.sessions.push(challenge);
       recordLoginAudit({ email, userId: user.id, outcome: "password-accepted", req });
       await saveData();
-      return json(res, 200, { twoFactorRequired: true, challengeToken });
+      return json(res, 200, {
+        twoFactorRequired: true,
+        twoFactorMethod,
+        challengeToken,
+        message: twoFactorMethod === "sms"
+          ? `Enter the six-digit code sent to ${maskPhoneNumber(user.phoneNumber)}.`
+          : "Enter the six-digit code from your authenticator app."
+      });
     }
     const { token } = createAuthenticatedSession(user, req);
     recordLoginAudit({ email, userId: user.id, outcome: "success", req });
@@ -2551,16 +2694,26 @@ async function handleAuthApi(req, res, url) {
       && new Date(item.expiresAt).getTime() > Date.now()
     );
     const user = db.users.find(item => item.id === challenge?.userId && item.status === "active");
-    let twoFactorSecret = "";
-    try {
-      twoFactorSecret = user?.encryptedTwoFactorSecret ? decryptCredential(user.encryptedTwoFactorSecret) : "";
-    } catch {
-      twoFactorSecret = "";
+    let validCode = false;
+    if (challenge && user && challenge.twoFactorMethod === "sms") {
+      validCode = secureHashMatch(tokenHash(String(body.code || "").replace(/\s/g, "")), challenge.codeHash);
+    } else if (challenge && user) {
+      let twoFactorSecret = "";
+      try {
+        twoFactorSecret = user.encryptedTwoFactorSecret ? decryptCredential(user.encryptedTwoFactorSecret) : "";
+      } catch {
+        twoFactorSecret = "";
+      }
+      validCode = Boolean(twoFactorSecret && verifyTotp(twoFactorSecret, body.code));
     }
-    if (!challenge || !user || !twoFactorSecret || !verifyTotp(twoFactorSecret, body.code)) {
+    if (!challenge || !user || !validCode) {
+      if (challenge) {
+        challenge.attempts = Number(challenge.attempts || 0) + 1;
+        if (challenge.attempts >= 5) db.sessions = db.sessions.filter(item => item.id !== challenge.id);
+      }
       recordLoginAudit({ email: user?.email, userId: user?.id, outcome: "two-factor-failed", req });
       await saveData();
-      return json(res, 401, { error: "Authenticator code is invalid or expired." });
+      return json(res, 401, { error: "Verification code is invalid or expired." });
     }
     db.sessions = db.sessions.filter(item => item.id !== challenge.id);
     const { token } = createAuthenticatedSession(user, req);
@@ -2568,6 +2721,33 @@ async function handleAuthApi(req, res, url) {
     await saveData();
     res.setHeader("Set-Cookie", sessionCookie(token, { secure: baseUrl.startsWith("https://") }));
     return json(res, 200, { authenticated: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/resend-2fa") {
+    if (store.type === "postgresql-normalized") db = await store.refresh();
+    const body = await readBody(req);
+    const challenge = db.sessions.find(item =>
+      item.status === "pending-2fa"
+      && item.twoFactorMethod === "sms"
+      && item.challengeHash === tokenHash(body.challengeToken)
+      && new Date(item.expiresAt).getTime() > Date.now()
+    );
+    const user = db.users.find(item => item.id === challenge?.userId && item.status === "active");
+    if (!challenge || !user) return json(res, 404, { error: "SMS verification challenge was not found or has expired." });
+    if (smsTwoFactorRateLimited(user.id)) return json(res, 429, { error: "Too many verification messages were requested. Try again later." });
+    if (challenge.lastSentAt && Date.now() - new Date(challenge.lastSentAt).getTime() < 30_000) {
+      return json(res, 429, { error: "Wait 30 seconds before requesting another code." });
+    }
+    if (Number(challenge.sendCount || 0) >= 5) return json(res, 429, { error: "The maximum number of verification messages has been reached." });
+    try {
+      await sendLoginSmsChallenge(user, challenge);
+      recordLoginAudit({ email: user.email, userId: user.id, outcome: "two-factor-sms-sent", req });
+      await saveData();
+      return json(res, 200, { message: `A new code was sent to ${maskPhoneNumber(user.phoneNumber)}.` });
+    } catch (error) {
+      recordLoginAudit({ email: user.email, userId: user.id, outcome: "two-factor-send-failed", req, details: { error: cleanText(error.message, 300) } });
+      await saveData();
+      return json(res, 503, { error: "The verification code could not be sent." });
+    }
   }
   if (req.method === "POST" && url.pathname === "/api/auth/logout") {
     if (!csrfValid(req)) return json(res, 403, { error: "Invalid CSRF token." });
@@ -2679,10 +2859,44 @@ async function handleAuthApi(req, res, url) {
   }
   if (!csrfValid(req)) return json(res, 403, { error: "Invalid CSRF token." });
   if (req.method === "POST" && url.pathname === "/api/auth/2fa/setup") {
+    const body = await readBody(req);
+    const method = cleanText(body.method, 30) || "authenticator";
+    if (!["authenticator", "sms"].includes(method)) return validationError(res, "Select a valid two-factor authentication method.");
+    if (method === "sms") {
+      const phoneNumber = cleanText(body.phoneNumber, 30);
+      if (!validPhoneNumber(phoneNumber)) return validationError(res, "Enter the phone number in E.164 format, such as +13125550123.");
+      if (smsTwoFactorRateLimited(viewer.id)) return json(res, 429, { error: "Too many verification messages were requested. Try again later." });
+      const code = numericCode();
+      try {
+        await sendSms(db.settings.twilio, {
+          to: phoneNumber,
+          body: twoFactorSmsBody(code)
+        });
+      } catch (error) {
+        return json(res, 503, { error: cleanText(error.message, 300) });
+      }
+      viewer.pendingTwoFactorMethod = method;
+      viewer.pendingPhoneNumber = phoneNumber;
+      viewer.pendingSmsCodeHash = tokenHash(code);
+      viewer.pendingSmsCodeExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+      viewer.encryptedPendingTwoFactorSecret = "";
+      recordLoginAudit({ email: viewer.email, userId: viewer.id, outcome: "two-factor-enrollment-sms-sent", req });
+      await saveData();
+      return json(res, 200, {
+        method,
+        destination: maskPhoneNumber(phoneNumber),
+        message: `A six-digit code was sent to ${maskPhoneNumber(phoneNumber)}.`
+      });
+    }
     const secret = generateTotpSecret();
+    viewer.pendingTwoFactorMethod = method;
+    viewer.pendingPhoneNumber = "";
+    viewer.pendingSmsCodeHash = "";
+    viewer.pendingSmsCodeExpiresAt = null;
     viewer.encryptedPendingTwoFactorSecret = encryptCredential(secret);
     await saveData();
     return json(res, 200, {
+      method,
       secret,
       otpauthUri: otpauthUri({
         secret,
@@ -2693,20 +2907,46 @@ async function handleAuthApi(req, res, url) {
   }
   if (req.method === "POST" && url.pathname === "/api/auth/2fa/confirm") {
     const body = await readBody(req);
-    let pendingSecret = "";
-    try {
-      pendingSecret = decryptCredential(viewer.encryptedPendingTwoFactorSecret);
-    } catch {
-      pendingSecret = "";
+    const method = viewer.pendingTwoFactorMethod || "authenticator";
+    if (method === "sms") {
+      const codeHash = tokenHash(String(body.code || "").replace(/\s/g, ""));
+      if (
+        !viewer.pendingSmsCodeHash
+        || !secureHashMatch(codeHash, viewer.pendingSmsCodeHash)
+        || new Date(viewer.pendingSmsCodeExpiresAt).getTime() <= Date.now()
+      ) {
+        return validationError(res, "SMS verification code is invalid or expired.");
+      }
+      viewer.phoneNumber = viewer.pendingPhoneNumber;
+      viewer.phoneVerifiedAt = new Date().toISOString();
+      viewer.twoFactorMethod = "sms";
+      viewer.encryptedTwoFactorSecret = "";
+    } else {
+      let pendingSecret = "";
+      try {
+        pendingSecret = decryptCredential(viewer.encryptedPendingTwoFactorSecret);
+      } catch {
+        pendingSecret = "";
+      }
+      if (!pendingSecret || !verifyTotp(pendingSecret, body.code)) {
+        return validationError(res, "Authenticator code is invalid.");
+      }
+      viewer.encryptedTwoFactorSecret = viewer.encryptedPendingTwoFactorSecret;
+      viewer.twoFactorMethod = "authenticator";
     }
-    if (!pendingSecret || !verifyTotp(pendingSecret, body.code)) {
-      return validationError(res, "Authenticator code is invalid.");
-    }
-    viewer.encryptedTwoFactorSecret = viewer.encryptedPendingTwoFactorSecret;
     viewer.encryptedPendingTwoFactorSecret = "";
+    viewer.pendingTwoFactorMethod = "";
+    viewer.pendingPhoneNumber = "";
+    viewer.pendingSmsCodeHash = "";
+    viewer.pendingSmsCodeExpiresAt = null;
     viewer.twoFactorEnabled = true;
+    const current = currentSession(req);
+    for (const session of db.sessions) {
+      if (session.userId === viewer.id && session.id !== current?.id) session.revokedAt = new Date().toISOString();
+    }
+    addAudit("user.two-factor.enable", { userId: viewer.id, method: viewer.twoFactorMethod });
     await saveData();
-    return json(res, 200, { enabled: true });
+    return json(res, 200, { enabled: true, method: viewer.twoFactorMethod });
   }
   return json(res, 404, { error: "Authentication endpoint not found." });
 }
@@ -2783,7 +3023,10 @@ async function handleApi(req, res, url) {
     return json(res, 200, {
       settings: {
         ...db.settings,
-        email: publicEmailSettings(db.settings.email)
+        email: publicEmailSettings(db.settings.email),
+        twilio: viewerIsSystemAdmin(viewer)
+          ? publicTwilioSettings(db.settings.twilio)
+          : { enabled: Boolean(db.settings.twilio?.enabled) }
       },
       storageType: store.type,
       calendarQueueEnabled: calendarQueue.enabled,
@@ -3634,6 +3877,69 @@ async function handleApi(req, res, url) {
       return json(res, 502, { error: `SMTP test failed: ${error.message}` });
     }
   }
+  if (req.method === "PUT" && url.pathname === "/api/settings/twilio") {
+    const viewer = currentViewer(req);
+    if (!viewerIsSystemAdmin(viewer)) return json(res, 403, { error: "System Administrator access is required." });
+    const body = await readBody(req);
+    const accountSid = cleanText(body.accountSid, 80);
+    const fromPhoneNumber = cleanText(body.fromPhoneNumber, 30);
+    if (accountSid && !/^AC[0-9a-fA-F]{32}$/.test(accountSid)) return validationError(res, "Enter a valid Twilio Account SID.");
+    if (fromPhoneNumber && !validPhoneNumber(fromPhoneNumber)) {
+      return validationError(res, "Enter the Twilio phone number in E.164 format, such as +13125550123.");
+    }
+    let encryptedAuthToken = db.settings.twilio.encryptedAuthToken || "";
+    if (body.authToken) {
+      try {
+        encryptedAuthToken = encryptCredential(String(body.authToken));
+      } catch (error) {
+        return validationError(res, error.message);
+      }
+    }
+    if (body.enabled === true && (!accountSid || !encryptedAuthToken || !fromPhoneNumber)) {
+      return validationError(res, "Account SID, Auth Token, and Twilio phone number are required when SMS is enabled.");
+    }
+    db.settings.twilio = {
+      ...db.settings.twilio,
+      enabled: body.enabled === true,
+      accountSid,
+      encryptedAuthToken,
+      fromPhoneNumber
+    };
+    addAudit("twilio.settings.update", {
+      enabled: db.settings.twilio.enabled,
+      accountSid,
+      fromPhoneNumber,
+      actorUserId: viewer.id
+    });
+    await saveData();
+    return json(res, 200, publicTwilioSettings(db.settings.twilio));
+  }
+  if (req.method === "POST" && url.pathname === "/api/settings/twilio/test") {
+    const viewer = currentViewer(req);
+    if (!viewerIsSystemAdmin(viewer)) return json(res, 403, { error: "System Administrator access is required." });
+    const body = await readBody(req);
+    const recipient = cleanText(body.recipient, 30);
+    if (!validPhoneNumber(recipient)) return validationError(res, "Enter a valid recipient phone number in E.164 format.");
+    try {
+      const result = await sendSms({ ...db.settings.twilio, enabled: true }, {
+        to: recipient,
+        body: `${db.settings.appName} Twilio configuration test.`
+      });
+      db.settings.twilio.lastTestAt = new Date().toISOString();
+      db.settings.twilio.lastTestStatus = "success";
+      db.settings.twilio.lastTestError = "";
+      addAudit("twilio.settings.test", { status: "success", recipient: maskPhoneNumber(recipient), messageSid: result.sid });
+      await saveData();
+      return json(res, 200, { sent: true, messageSid: result.sid, status: result.status });
+    } catch (error) {
+      db.settings.twilio.lastTestAt = new Date().toISOString();
+      db.settings.twilio.lastTestStatus = "failed";
+      db.settings.twilio.lastTestError = cleanText(error.message, 300);
+      addAudit("twilio.settings.test", { status: "failed", error: db.settings.twilio.lastTestError });
+      await saveData();
+      return json(res, 502, { error: db.settings.twilio.lastTestError });
+    }
+  }
   if (req.method === "POST" && url.pathname === "/api/email/send") {
     if (!requirePermission(req, res, "notification.manage")) return;
     const body = await readBody(req);
@@ -3692,10 +3998,12 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     const name = cleanText(body.name);
     const email = cleanText(body.email, 255).toLowerCase();
+    const phoneNumber = cleanText(body.phoneNumber, 30);
     const status = cleanText(body.status, 30) || "invited";
     const allowedStatuses = new Set(["active", "invited", "suspended", "deactivated"]);
     if (!name) return validationError(res, "User name is required.");
     if (!validEmail(email)) return validationError(res, "Enter a valid email address.");
+    if (phoneNumber && !validPhoneNumber(phoneNumber)) return validationError(res, "Enter the phone number in E.164 format, such as +13125550123.");
     if (db.users.some(user => user.email === email)) return json(res, 409, { error: "That email address is already assigned to a user." });
     if (!allowedStatuses.has(status)) return validationError(res, "Select a valid user status.");
     if (!validIds(body.roleIds || [], db.roles)) return validationError(res, "One or more roles are invalid.");
@@ -3712,6 +4020,8 @@ async function handleApi(req, res, url) {
       id: entityId("user"),
       name,
       email,
+      phoneNumber,
+      phoneVerifiedAt: null,
       status,
       roleIds: body.roleIds || [],
       centerIds: body.centerIds || [],
@@ -3720,6 +4030,7 @@ async function handleApi(req, res, url) {
       roomIds: body.roomIds || [],
       features,
       twoFactorEnabled: false,
+      twoFactorMethod: "",
       invitedAt: null,
       lastEmailAt: null,
       createdAt: now,
@@ -3757,10 +4068,12 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     const name = cleanText(body.name);
     const email = cleanText(body.email, 255).toLowerCase();
+    const phoneNumber = cleanText(body.phoneNumber, 30);
     const status = cleanText(body.status, 30);
     const allowedStatuses = new Set(["active", "invited", "suspended", "deactivated"]);
     if (!name) return validationError(res, "User name is required.");
     if (!validEmail(email)) return validationError(res, "Enter a valid email address.");
+    if (phoneNumber && !validPhoneNumber(phoneNumber)) return validationError(res, "Enter the phone number in E.164 format, such as +13125550123.");
     if (db.users.some(item => item.id !== user.id && item.email === email)) return json(res, 409, { error: "That email address is already assigned to a user." });
     if (!allowedStatuses.has(status)) return validationError(res, "Select a valid user status.");
     if (!validIds(body.roleIds || [], db.roles)) return validationError(res, "One or more roles are invalid.");
@@ -3772,9 +4085,12 @@ async function handleApi(req, res, url) {
     if (!assignmentsWithinViewerScope(currentViewer(req), body)) return json(res, 403, { error: "One or more user assignments are outside your scope." });
     const features = Array.isArray(body.features) ? body.features.filter(feature => db.features.includes(feature)) : [];
     if (!featureAssignmentsAllowed(currentViewer(req), features)) return json(res, 403, { error: "One or more feature grants exceed your access." });
+    const smsPhoneChanged = user.twoFactorMethod === "sms" && phoneNumber !== user.phoneNumber;
     Object.assign(user, {
       name,
       email,
+      phoneNumber,
+      phoneVerifiedAt: phoneNumber === user.phoneNumber ? user.phoneVerifiedAt : null,
       status,
       roleIds: body.roleIds || [],
       centerIds: body.centerIds || [],
@@ -3784,6 +4100,14 @@ async function handleApi(req, res, url) {
       features,
       updatedAt: new Date().toISOString()
     });
+    if (smsPhoneChanged) {
+      user.twoFactorEnabled = false;
+      user.twoFactorMethod = "";
+      user.phoneVerifiedAt = null;
+      for (const session of db.sessions) {
+        if (session.userId === user.id) session.revokedAt = new Date().toISOString();
+      }
+    }
     addAudit("user.update", { userId: user.id, email: user.email, status: user.status });
     await saveData();
     return json(res, 200, publicUser(user));
@@ -3872,8 +4196,14 @@ async function handleApi(req, res, url) {
     user.updatedAt = new Date().toISOString();
     if (body.resetTwoFactor === true) {
       user.twoFactorEnabled = false;
+      user.twoFactorMethod = "";
       user.encryptedTwoFactorSecret = "";
       user.encryptedPendingTwoFactorSecret = "";
+      user.pendingTwoFactorMethod = "";
+      user.pendingPhoneNumber = "";
+      user.pendingSmsCodeHash = "";
+      user.pendingSmsCodeExpiresAt = null;
+      user.phoneVerifiedAt = null;
     }
     for (const session of db.sessions) {
       if (session.userId === user.id) session.revokedAt = new Date().toISOString();

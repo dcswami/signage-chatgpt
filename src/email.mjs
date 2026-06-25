@@ -21,7 +21,7 @@ export function encryptCredential(value) {
 export function decryptCredential(value) {
   if (!value) return "";
   const [ivValue, tagValue, encryptedValue] = value.split(".");
-  if (!ivValue || !tagValue || !encryptedValue) throw new Error("Stored SMTP credential is invalid.");
+  if (!ivValue || !tagValue || !encryptedValue) throw new Error("Stored credential is invalid.");
   const decipher = crypto.createDecipheriv(
     "aes-256-gcm",
     encryptionKey(),

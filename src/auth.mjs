@@ -62,6 +62,12 @@ export function randomToken(bytes = 32) {
   return crypto.randomBytes(bytes).toString("base64url");
 }
 
+export function numericCode(digits = 6) {
+  const length = Math.max(4, Math.min(10, Number(digits) || 6));
+  const maximum = 10 ** length;
+  return String(crypto.randomInt(0, maximum)).padStart(length, "0");
+}
+
 export function tokenHash(token) {
   return crypto.createHash("sha256").update(String(token || "")).digest("hex");
 }

@@ -219,7 +219,7 @@ The management portal must provide secure administrative access to configure the
 - Track user status such as active, invited, suspended, or deactivated.
 - Support email address as username.
 - Store passwords securely using encrypted or hashed password storage.
-- Support two-factor authentication using an authenticator app.
+- Support two-factor authentication using either an authenticator app or SMS text message.
 - Allow users to be assigned to multiple centers when authorized.
 - External identity provider support should be planned for a future version.
 
@@ -577,7 +577,12 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Password-reset links must be single-use, expire after 30 minutes, and revoke existing sessions when used.
 - Signed-in users must be able to change their password by providing their current password and confirming a new password.
 - System Administrators must be able to assign or reset a user's password. The reset must revoke that user's existing sessions and may explicitly clear authenticator-app enrollment.
-- Authenticator-app two-factor authentication must use standard TOTP enrollment and verification.
+- Users must be able to choose either authenticator-app TOTP or SMS text-message verification as their two-factor authentication method.
+- Authenticator-app two-factor authentication must use standard six-digit TOTP enrollment and verification.
+- SMS two-factor authentication must send a random six-digit, single-use code that expires after five minutes. Codes must be stored only as cryptographic hashes and resend requests must be rate-limited.
+- User cell-phone numbers and Twilio sender numbers must use E.164 format.
+- System Administrators must be able to configure Twilio Account SID, Auth Token, and sender phone number. The Auth Token must be encrypted at rest and never returned to the browser.
+- The management portal must display the current signed-in user's name in the upper-right header.
 - Authenticated sessions must use high-entropy server-tracked tokens, secure HTTP-only same-site cookies, an eight-hour expiration, explicit logout, and revocation.
 - Management write operations must require a per-session CSRF token.
 - Login attempts must be rate limited and recorded with outcome, IP address, user agent, and time.
@@ -755,7 +760,7 @@ The initial release should include:
 - Center, campus, building, and room management.
 - User and role management with basic permissions.
 - Email username and password authentication.
-- Two-factor authentication using an authenticator app.
+- Two-factor authentication using an authenticator app or SMS text message.
 - Dedicated kiosk display page per room.
 - Facility name, building name, logo, room name, current event or room status, current event time, current time, booking QR code, booking link, and upcoming events.
 - Calendar sync for Google Calendar, Microsoft 365, CalDAV/iCloud, and public iCalendar URLs.
@@ -824,7 +829,7 @@ The initial release should include:
 - System Administrators and responsible Center Administrators may approve kiosk pairing.
 - The first production deployment may use one on-premise Proxmox VM with Debian 12, Nginx, Docker, PostgreSQL, Redis, and Cloudflare Tunnel.
 - Public access uses `signage.bapswest.org` with path-based routes for admin, kiosk, preview, and API access.
-- Initial authentication uses email as username, encrypted or hashed password storage, and authenticator-app two-factor authentication.
+- Initial authentication uses email as username, encrypted or hashed password storage, and user-selectable authenticator-app or SMS two-factor authentication.
 - External identity provider support is a future enhancement.
 - The mandatory default logo for all center default themes is `assets/branding/aksharderi-small2.png`.
 - The logo must be rendered from an image asset.

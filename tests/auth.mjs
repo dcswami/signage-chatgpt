@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   generateTotpSecret,
   hashPassword,
+  numericCode,
   otpauthUri,
   randomToken,
   tokenHash,
@@ -26,5 +27,6 @@ assert.match(otpauthUri({ secret, email: "admin@example.org", issuer: "Signage" 
 const token = randomToken();
 assert.equal(tokenHash(token), tokenHash(token));
 assert.notEqual(tokenHash(token), tokenHash(`${token}x`));
+assert.match(numericCode(), /^\d{6}$/);
 
 console.log("Authentication security checks passed");

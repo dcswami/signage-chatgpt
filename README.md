@@ -14,8 +14,9 @@ The scaffold includes:
 - Emergency/Safety Broadcast API with confirmation requirement.
 - Live kiosk refresh using Server-Sent Events.
 - Transactional per-domain PostgreSQL storage with versioned migrations, first-run legacy import, indexed queries, and optimistic concurrency protection.
-- Email/password authentication, password reset, authenticator-app 2FA, secure sessions, CSRF protection, rate limiting, security headers, and login auditing.
+- Email/password authentication, password reset, selectable SMS or authenticator-app 2FA, secure sessions, CSRF protection, rate limiting, security headers, and login auditing.
 - Self-service password changes plus System Administrator password resets with session revocation and optional authenticator reset.
+- Encrypted System Administrator-managed Twilio SMS credentials, test messaging, expiring six-digit codes, resend throttling, and verified E.164 user phone numbers.
 - Scope-filtered rooms, locations, users, calendars, themes, room-level assignments, and permanent or scheduled feature grants.
 - Dashboard search, status filters, room controls, and live kiosk preview.
 - Center, campus, building, and room create/edit/delete workflows.
@@ -82,7 +83,7 @@ cp .env.example .env
 docker compose -f docker-compose.test.yml -p signage-test up -d --build
 ```
 
-Before the first secure start, replace `BOOTSTRAP_ADMIN_PASSWORD` in `.env`. Sign in as `admin@example.org`, enroll authenticator-app two-factor authentication under **Configuration**, then remove the bootstrap password and recreate the app container.
+Before the first secure start, replace `BOOTSTRAP_ADMIN_PASSWORD` in `.env`. Sign in as `admin@example.org`, enroll authenticator-app two-factor authentication under **Configuration** or configure Twilio and enroll SMS verification, then remove the bootstrap password and recreate the app container.
 
 Full steps are in `TEST_ENVIRONMENT_DEPLOYMENT.md`.
 

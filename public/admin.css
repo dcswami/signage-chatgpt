@@ -107,7 +107,15 @@ button.compact {
 .header-actions {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
+  justify-content: flex-end;
+}
+
+.current-user {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .storage-badge {
