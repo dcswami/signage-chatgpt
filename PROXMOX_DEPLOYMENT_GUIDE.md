@@ -7,7 +7,7 @@ The deployment has two separate server environments:
 - Test server: `signage-test.bapswest.org`
 - Production server: `signage.bapswest.org`
 
-The current application includes the admin portal, kiosk pages, preview pages, live kiosk refresh, emergency broadcast display, location and room management, dashboard controls, sample themes, and deployment files. PostgreSQL is the primary application data store. Redis is included for future multi-instance broadcast fan-out and background jobs.
+The current application includes the admin portal, kiosk pages, preview pages, live kiosk refresh, emergency broadcast display, location and room management, calendar synchronization, optional kiosk pairing, offline kiosk caching, dashboard controls, sample themes, and deployment files. PostgreSQL is the primary application data store. Redis runs BullMQ calendar synchronization jobs; if Redis is temporarily unavailable, the application falls back to in-process polling.
 
 ## 1. Route Structure
 
@@ -334,13 +334,24 @@ Important current behavior:
 - `/opt/signage/source/data/app-data.json` is maintained as a compatibility mirror and first-run migration source.
 - Uploaded theme backgrounds are persisted under `/opt/signage/source/data/theme-assets` and mounted into the app container.
 - On the first database-backed startup, existing JSON state is imported automatically without changing room codes.
-- Redis is available for future production broadcast fan-out and job processing.
+- Redis queues calendar synchronization and remains available for future multi-instance broadcast fan-out.
 
 Check local health:
 
 ```bash
 curl http://127.0.0.1:3000/api/health
 ```
+
+Confirm PostgreSQL and Redis are healthy:
+
+```bash
+docker compose -f docker-compose.test.yml -p signage-test ps
+docker compose -f docker-compose.test.yml -p signage-test exec redis redis-cli ping
+docker compose -f docker-compose.test.yml -p signage-test exec postgres \
+  pg_isready -U "${POSTGRES_USER:-signage_app}" -d "${POSTGRES_DB:-signage}"
+```
+
+The health response reports `"calendarQueue": "redis"` when Redis/BullMQ is active. If it reports `"in-process"`, review the app and Redis logs; calendar synchronization continues through the fallback.
 
 ## 9. Configure Nginx
 

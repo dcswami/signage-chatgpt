@@ -13,26 +13,43 @@ const smtpPort = 3188;
 const calendarPort = 3189;
 const baseUrl = `http://127.0.0.1:${port}`;
 const icalDate = date => date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+const listen = (server, listenPort) => new Promise((resolve, reject) => {
+  server.once("error", reject);
+  server.listen(listenPort, "127.0.0.1", resolve);
+});
 const calendarStart = new Date(Date.now() + 60 * 60 * 1000);
-const calendarEnd = new Date(calendarStart.getTime() + 60 * 60 * 1000);
+const calendarEvents = Array.from({ length: 7 }, (_, index) => {
+  const startsAt = new Date(calendarStart.getTime() + index * 60 * 60 * 1000);
+  if (index === 1) startsAt.setTime(calendarStart.getTime() + 15 * 60 * 1000);
+  return {
+    uid: `calendar-event-${index + 1}`,
+    startsAt,
+    endsAt: new Date(startsAt.getTime() + 60 * 60 * 1000),
+    title: index === 0 ? "Rental Planning Meeting" : `Integration Event ${index + 1}`,
+    description: index === 0 ? "Rental Event" : `Description ${index + 1}`,
+    privacy: index === 0
+  };
+});
 const calendarServer = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/calendar" });
   res.end([
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
     "PRODID:-//Signage Test//EN",
-    "BEGIN:VEVENT",
-    "UID:private-calendar-event",
-    `DTSTART:${icalDate(calendarStart)}`,
-    `DTEND:${icalDate(calendarEnd)}`,
-    "SUMMARY:Rental Planning Meeting",
-    "DESCRIPTION:Rental Event",
-    "CLASS:PRIVATE",
-    "END:VEVENT",
+    ...calendarEvents.flatMap(event => [
+      "BEGIN:VEVENT",
+      `UID:${event.uid}`,
+      `DTSTART:${icalDate(event.startsAt)}`,
+      `DTEND:${icalDate(event.endsAt)}`,
+      `SUMMARY:${event.title}`,
+      `DESCRIPTION:${event.description}`,
+      event.privacy ? "CLASS:PRIVATE" : "CLASS:PUBLIC",
+      "END:VEVENT"
+    ]),
     "END:VCALENDAR"
   ].join("\r\n"));
 });
-await new Promise(resolve => calendarServer.listen(calendarPort, "127.0.0.1", resolve));
+await listen(calendarServer, calendarPort);
 const smtpMessages = [];
 const smtpServer = net.createServer(socket => {
   let dataMode = false;
@@ -61,7 +78,7 @@ const smtpServer = net.createServer(socket => {
     }
   });
 });
-await new Promise(resolve => smtpServer.listen(smtpPort, "127.0.0.1", resolve));
+await listen(smtpServer, smtpPort);
 const child = spawn(process.execPath, ["src/server.mjs"], {
   cwd: rootDir,
   env: {
@@ -154,7 +171,9 @@ try {
       contactPhone: "555-0100",
       bookingUrl: "https://example.org/center-booking",
       timezone: "America/Chicago",
-      defaultThemeId: "classic-institutional"
+      defaultThemeId: "classic-institutional",
+      upcomingEventCount: 3,
+      showEventDescription: true
     })
   }, 201);
   const campus = await request("/api/campuses", {
@@ -230,10 +249,60 @@ try {
     body: JSON.stringify({ roomId: room.id, accountId: calendarAccount.id, calendarId: calendarAccount.calendars[0].id })
   }, 201);
   const syncResult = await request(`/api/calendar-assignments/${calendarAssignment.id}/sync`, { method: "POST", body: "{}" });
-  assert.equal(syncResult.eventCount, 1);
+  assert.equal(syncResult.eventCount, 7);
   const syncedRoom = await request("/api/rooms/integration-room");
   assert.equal(syncedRoom.upcomingEvents[0].title, "Private Event");
+  assert.equal(syncedRoom.upcomingEvents[0].description, "");
+  assert.equal(syncedRoom.upcomingEvents[1].description, "Description 2");
+  assert.equal(syncedRoom.upcomingEventPageSize, 3);
+  assert.equal(syncedRoom.upcomingEvents.length, 7);
   assert.equal(Boolean(syncedRoom.buildVersion), true);
+  const conflictState = await request("/api/state");
+  const calendarConflict = conflictState.calendarConflicts.find(item => item.roomId === room.id);
+  assert.equal(Boolean(calendarConflict), true);
+  const selectedConflict = await request(`/api/calendar-conflicts/${calendarConflict.id}/select`, {
+    method: "POST",
+    body: JSON.stringify({ externalEventId: calendarConflict.externalEventIds[1] })
+  });
+  assert.equal(selectedConflict.status, "display-selected");
+
+  const qrResponse = await fetch(`${baseUrl}/api/rooms/integration-room/qr.svg`);
+  assert.equal(qrResponse.status, 200);
+  assert.match(qrResponse.headers.get("content-type"), /image\/svg\+xml/);
+  assert.match(await qrResponse.text(), /<svg/);
+
+  const googleOauthAccount = await request("/api/calendar-accounts", {
+    method: "POST",
+    body: JSON.stringify({
+      accountName: "Integration Google OAuth",
+      provider: "google",
+      authMode: "oauth",
+      accessLevel: "read-only",
+      clientId: "integration-google-client.apps.googleusercontent.com",
+      credential: "integration-google-secret",
+      active: true,
+      calendars: []
+    })
+  }, 201);
+  const oauthStart = await request(`/api/calendar-accounts/${googleOauthAccount.id}/oauth/start`);
+  assert.match(oauthStart.authorizationUrl, /^https:\/\/accounts\.google\.com\//);
+
+  const caldavAccount = await request("/api/calendar-accounts", {
+    method: "POST",
+    body: JSON.stringify({
+      accountName: "Integration iCloud",
+      provider: "caldav",
+      authMode: "app-password",
+      accessLevel: "writable",
+      serverUrl: "https://caldav.icloud.com/",
+      username: "calendar@example.org",
+      credential: "app-specific-password",
+      active: true,
+      calendars: []
+    })
+  }, 201);
+  assert.equal(caldavAccount.provider, "caldav");
+  assert.equal(caldavAccount.hasCredential, true);
 
   const user = await request("/api/users", {
     method: "POST",
@@ -344,6 +413,53 @@ try {
   assert.equal(updatedRoom.themeName, "Event Formal");
   assert.equal(updatedRoom.capacity, 30);
   assert.equal(updatedRoom.configuredBookingUrl, "https://example.org/new-booking");
+
+  const kioskRegistration = await request("/api/kiosk-devices/register", {
+    method: "POST",
+    body: JSON.stringify({
+      roomCode: updatedRoom.code,
+      clientDeviceId: "integration-kiosk-device",
+      name: "Integration iPad",
+      browser: "Safari integration test",
+      platform: "iPadOS",
+      viewport: "1024x1366",
+      orientation: "portrait",
+      audioEnabled: true
+    })
+  }, 202);
+  assert.equal(kioskRegistration.status, "pending");
+  assert.equal(Boolean(kioskRegistration.pairingCode), true);
+  assert.equal(Boolean(kioskRegistration.deviceToken), true);
+  const approvedKiosk = await request(`/api/kiosk-devices/${kioskRegistration.id}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ pairingCode: kioskRegistration.pairingCode })
+  });
+  assert.equal(approvedKiosk.status, "active");
+  await request(`/api/kiosk-devices/${kioskRegistration.id}/command`, {
+    method: "POST",
+    body: JSON.stringify({ command: "reload" })
+  });
+  const kioskHeartbeat = await request("/api/kiosk-devices/heartbeat", {
+    method: "POST",
+    body: JSON.stringify({
+      roomCode: updatedRoom.code,
+      clientDeviceId: "integration-kiosk-device",
+      deviceToken: kioskRegistration.deviceToken,
+      browser: "Safari integration test",
+      platform: "iPadOS",
+      viewport: "1024x1366",
+      orientation: "portrait",
+      audioEnabled: true,
+      lastDataAt: new Date().toISOString()
+    })
+  });
+  assert.equal(kioskHeartbeat.status, "active");
+  assert.equal(kioskHeartbeat.pendingCommand, "reload");
+  const refreshResult = await request("/api/kiosks/refresh", {
+    method: "POST",
+    body: JSON.stringify({ centerIds: [center.id], command: "data-refresh" })
+  });
+  assert.equal(refreshResult.sent, 1);
 
   const clone = await request("/api/themes/classic-institutional/clone", {
     method: "POST",
@@ -537,6 +653,9 @@ try {
   assert.equal(stateAfterTemplateDelete.broadcastTemplates.some(item => item.id === broadcastTemplate.id), false);
   await request(`/api/calendar-assignments/${calendarAssignment.id}`, { method: "DELETE" });
   await request(`/api/calendar-accounts/${calendarAccount.id}`, { method: "DELETE" });
+  await request(`/api/calendar-accounts/${googleOauthAccount.id}`, { method: "DELETE" });
+  await request(`/api/calendar-accounts/${caldavAccount.id}`, { method: "DELETE" });
+  await request(`/api/kiosk-devices/${kioskRegistration.id}`, { method: "DELETE" });
   await request(`/api/theme-schedules/${activeSchedule.id}`, { method: "DELETE" });
   await request(`/api/theme-schedules/${pastSchedule.id}`, { method: "DELETE" });
   await request(`/api/theme-schedules/${oldSchedule.id}`, { method: "DELETE" });
@@ -565,6 +684,10 @@ try {
   assert.match(adminHtml, /Active Broadcasts/);
   assert.match(adminHtml, /Room Groups/);
   assert.match(adminHtml, /In-App Notifications/);
+  assert.match(adminHtml, /Kiosk Devices/);
+  const serviceWorkerResponse = await fetch(`${baseUrl}/static/kiosk-sw.js`);
+  assert.equal(serviceWorkerResponse.status, 200);
+  assert.match(await serviceWorkerResponse.text(), /signage-kiosk-runtime/);
   assert.equal(smtpMessages.length >= 3, true);
 
   const finalState = await request("/api/state");

@@ -4,9 +4,19 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
+import QRCode from "qrcode";
 import { createStore } from "./storage.mjs";
-import { encryptCredential, publicEmailSettings, sendEmail, verifySmtp } from "./email.mjs";
-import { inspectCalendarAccount, syncCalendar } from "./calendar.mjs";
+import { decryptCredential, encryptCredential, publicEmailSettings, sendEmail, verifySmtp } from "./email.mjs";
+import {
+  calendarAuthorizationUrl,
+  deleteCalendarEvent,
+  exchangeCalendarAuthorizationCode,
+  inspectCalendarAccount,
+  registerCalendarWebhook,
+  syncCalendar,
+  writeCalendarEvent
+} from "./calendar.mjs";
+import { createCalendarQueue } from "./calendar-queue.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -17,6 +27,7 @@ const assetVersion = process.env.APP_BUILD_VERSION || Date.now().toString(36);
 const themeAssetsDir = process.env.THEME_ASSETS_DIR || path.join(rootDir, "assets", "uploads", "themes");
 
 const clients = new Map();
+const oauthStates = new Map();
 const permissionCatalog = [
   "dashboard.view",
   "center.manage",
@@ -50,6 +61,12 @@ const defaultThemeTokens = {
   upcomingTileBg: "rgba(255, 255, 255, 0.58)",
   upcomingTitleText: "#202020",
   upcomingDetailText: "rgba(32, 32, 32, 0.68)",
+  qrForeground: "#000000",
+  qrBackground: "#ffffff",
+  qrTransparent: "false",
+  qrSize: "132",
+  qrBorder: "0",
+  qrMargin: "2",
   backgroundImage: "",
   headerFont: "Arial, Helvetica, sans-serif",
   footerFont: "Arial, Helvetica, sans-serif",
@@ -91,6 +108,8 @@ const seedData = {
       contactEmail: "",
       contactPhone: "",
       bookingUrl: "https://lamandir.site/erf",
+      upcomingEventCount: 5,
+      showEventDescription: false,
       timezone: "America/Los_Angeles",
       defaultThemeId: "classic-institutional"
     }
@@ -184,9 +203,9 @@ const seedData = {
     }
   ],
   themes: [
-    { id: "classic-institutional", name: "Classic Institutional", builtIn: true, cloneable: true, baseThemeId: "classic-institutional", published: true, cssTokens: defaultThemeTokens },
-    { id: "event-formal", name: "Event Formal", builtIn: true, cloneable: true, baseThemeId: "event-formal", published: true, cssTokens: { ...defaultThemeTokens, footerFont: 'Georgia, "Times New Roman", serif', eventDetailFont: 'Georgia, "Times New Roman", serif' } },
-    { id: "custom-background", name: "Custom Background", builtIn: true, cloneable: true, baseThemeId: "custom-background", published: true, cssTokens: { ...defaultThemeTokens, backgroundImage: "/assets/backgrounds/background.png", upcomingTileBg: "rgba(255, 244, 219, 0.62)", upcomingTitleText: "#261407", upcomingDetailText: "rgba(38, 20, 7, 0.72)", headerFont: 'Georgia, "Times New Roman", serif', footerFont: 'Georgia, "Times New Roman", serif', eventDetailFont: 'Georgia, "Times New Roman", serif' } }
+    { id: "classic-institutional", name: "Classic Institutional", builtIn: true, cloneable: true, baseThemeId: "classic-institutional", published: true, orientationMode: "both", cssTokens: defaultThemeTokens },
+    { id: "event-formal", name: "Event Formal", builtIn: true, cloneable: true, baseThemeId: "event-formal", published: true, orientationMode: "both", cssTokens: { ...defaultThemeTokens, footerFont: 'Georgia, "Times New Roman", serif', eventDetailFont: 'Georgia, "Times New Roman", serif' } },
+    { id: "custom-background", name: "Custom Background", builtIn: true, cloneable: true, baseThemeId: "custom-background", published: true, orientationMode: "both", cssTokens: { ...defaultThemeTokens, backgroundImage: "/assets/backgrounds/background.png", upcomingTileBg: "rgba(255, 244, 219, 0.62)", upcomingTitleText: "#261407", upcomingDetailText: "rgba(38, 20, 7, 0.72)", headerFont: 'Georgia, "Times New Roman", serif', footerFont: 'Georgia, "Times New Roman", serif', eventDetailFont: 'Georgia, "Times New Roman", serif' } }
   ],
   roles: [
     { id: "system-admin", name: "System Admin", builtIn: true, cloneable: true, active: true, permissions: permissionCatalog },
@@ -220,6 +239,7 @@ const seedData = {
   calendarAccounts: [],
   calendarAssignments: [],
   calendarEvents: [],
+  calendarConflicts: [],
   calendarSyncHistory: [],
   themeSchedules: [],
   roomGroups: [],
@@ -286,6 +306,8 @@ const seedData = {
   ],
   emailNotifications: [],
   notifications: [],
+  kioskDevices: [],
+  kioskPairingCodes: [],
   activeBroadcast: null,
   auditLogs: []
 };
@@ -304,7 +326,7 @@ function normalizeData(data) {
       }
     }
   };
-  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "calendarAssignments", "calendarEvents", "calendarSyncHistory", "themeSchedules", "roomGroups", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "notifications", "auditLogs"]) {
+  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "calendarAssignments", "calendarEvents", "calendarConflicts", "calendarSyncHistory", "themeSchedules", "roomGroups", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "notifications", "kioskDevices", "kioskPairingCodes", "auditLogs"]) {
     if (!Array.isArray(normalized[key])) normalized[key] = structuredClone(seedData[key] || []);
   }
   normalized.centers = normalized.centers.map(center => ({
@@ -315,6 +337,8 @@ function normalizeData(data) {
     contactEmail: "",
     contactPhone: "",
     bookingUrl: "",
+    upcomingEventCount: 5,
+    showEventDescription: false,
     ...center
   }));
   normalized.campuses = normalized.campuses.map(campus => ({
@@ -325,6 +349,8 @@ function normalizeData(data) {
     contactPhone: "",
     bookingUrl: "",
     defaultThemeId: "",
+    upcomingEventCount: null,
+    showEventDescription: null,
     ...campus
   }));
   normalized.buildings = normalized.buildings.map(building => ({
@@ -335,6 +361,8 @@ function normalizeData(data) {
     timezone: "",
     bookingUrl: "",
     defaultThemeId: "",
+    upcomingEventCount: null,
+    showEventDescription: null,
     ...building
   }));
   normalized.rooms = normalized.rooms.map(room => ({
@@ -349,12 +377,15 @@ function normalizeData(data) {
     privacyMode: "standard",
     bookingUrl: "",
     themeId: "",
+    upcomingEventCount: null,
+    showEventDescription: null,
     ...room
   }));
   normalized.themes = normalized.themes.map(theme => ({
     baseThemeId: theme.sourceThemeId || theme.id,
     published: true,
     archived: false,
+    orientationMode: "both",
     cssTokens: structuredClone(defaultThemeTokens),
     ...theme,
     cssTokens: { ...defaultThemeTokens, ...theme.cssTokens }
@@ -385,14 +416,23 @@ function normalizeData(data) {
     ...role
   }));
   normalized.calendarAccounts = normalized.calendarAccounts
-    .filter(account => ["google", "microsoft365", "public-url"].includes(account.provider))
+    .filter(account => ["google", "microsoft365", "caldav", "public-url"].includes(account.provider))
     .map(account => ({
       accessLevel: "read-only",
+      authMode: account.provider === "google" ? "service-account" : account.provider === "microsoft365" ? "application" : account.provider === "caldav" ? "app-password" : "public-url",
       active: true,
       encryptedCredential: "",
+      clientId: "",
+      tenantId: "",
+      serverUrl: "",
+      username: "",
       principalEmail: "",
       calendars: [],
       syncIntervalMinutes: 15,
+      ownerUserId: null,
+      webhookStatus: "not-configured",
+      webhookLastAt: null,
+      webhookError: "",
       lastSuccessfulSyncAt: null,
       lastSyncError: "",
       lastVerifiedAt: null,
@@ -404,6 +444,23 @@ function normalizeData(data) {
     lastSuccessfulSyncAt: null,
     lastSyncError: "",
     ...assignment
+  }));
+  normalized.calendarConflicts = normalized.calendarConflicts.map(conflict => ({
+    status: "unresolved",
+    selectedEventId: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    ...conflict
+  }));
+  normalized.kioskDevices = normalized.kioskDevices.map(device => ({
+    status: "pending",
+    approvedBy: null,
+    approvedAt: null,
+    lastSeenAt: null,
+    lastDataAt: null,
+    audioEnabled: false,
+    pendingCommand: null,
+    ...device
   }));
   normalized.themeSchedules = normalized.themeSchedules.map(schedule => ({
     centerIds: [],
@@ -536,11 +593,37 @@ function roomLocation(room) {
 
 function effectiveRoomSettings(room) {
   const { center, campus, building } = roomLocation(room);
+  const inheritedNumber = (roomValue, buildingValue, campusValue, centerValue, fallback) => {
+    for (const value of [roomValue, buildingValue, campusValue, centerValue]) {
+      if (value !== null && value !== undefined && value !== "") return Number(value);
+    }
+    return fallback;
+  };
+  const inheritedBoolean = (roomValue, buildingValue, campusValue, centerValue, fallback) => {
+    for (const value of [roomValue, buildingValue, campusValue, centerValue]) {
+      if (typeof value === "boolean") return value;
+    }
+    return fallback;
+  };
   return {
     bookingUrl: room.bookingUrl || building?.bookingUrl || campus?.bookingUrl || center?.bookingUrl || "",
     themeId: room.themeId || building?.defaultThemeId || campus?.defaultThemeId || center?.defaultThemeId || db.themes[0]?.id || "",
     timezone: building?.timezone || center?.timezone || "UTC",
-    logoUrl: center?.logoUrl || "/assets/branding/aksharderi-small2.png"
+    logoUrl: center?.logoUrl || "/assets/branding/aksharderi-small2.png",
+    upcomingEventCount: Math.max(1, Math.min(10, inheritedNumber(
+      room.upcomingEventCount,
+      building?.upcomingEventCount,
+      campus?.upcomingEventCount,
+      center?.upcomingEventCount,
+      5
+    ))),
+    showEventDescription: inheritedBoolean(
+      room.showEventDescription,
+      building?.showEventDescription,
+      campus?.showEventDescription,
+      center?.showEventDescription,
+      false
+    )
   };
 }
 
@@ -618,7 +701,7 @@ function publicRoom(room, themeOverrideId = "", stateOverride = "") {
     || db.themes[0];
   const events = db.upcomingEvents
     .filter(item => item.roomId === room.id)
-    .slice(0, 4)
+    .slice(0, 100)
     .map(event => room.privacyMode === "hide-details"
       ? { ...event, title: "Private Event", detail: "" }
       : room.privacyMode === "private-title"
@@ -654,7 +737,11 @@ function publicRoom(room, themeOverrideId = "", stateOverride = "") {
     themeCssTokens: theme?.cssTokens || defaultThemeTokens,
     scheduledThemeId: scheduledTheme?.themeId || null,
     activeThemeScheduleId: scheduledTheme?.id || null,
+    themeOrientationMode: theme?.orientationMode || "both",
     buildVersion: assetVersion,
+    upcomingEventPageSize: effective.upcomingEventCount,
+    upcomingEventPageSeconds: 10,
+    showEventDescription: effective.showEventDescription,
     upcomingEvents: events,
     activeBroadcasts,
     activeBroadcast: activeBroadcasts[0] || null
@@ -665,16 +752,32 @@ function publicCalendarAccount(account) {
   return {
     id: account.id,
     provider: account.provider,
+    authMode: account.authMode,
     accountName: account.accountName,
     accessLevel: account.accessLevel,
     active: account.active,
     tenantId: account.tenantId || "",
     clientId: account.clientId || "",
     mailbox: account.mailbox || "",
+    serverUrl: account.serverUrl || "",
+    username: account.username || "",
     principalEmail: account.principalEmail || "",
     hasCredential: Boolean(account.encryptedCredential),
-    calendars: account.calendars || [],
+    calendars: (account.calendars || []).map(calendar => ({
+      id: calendar.id,
+      name: calendar.name,
+      externalId: calendar.externalId,
+      mailbox: calendar.mailbox || "",
+      accessRole: calendar.accessRole || "",
+      webhookStatus: calendar.webhookStatus || "not-configured",
+      webhookExpiration: calendar.webhookExpiration || null
+    })),
     syncIntervalMinutes: account.syncIntervalMinutes || 15,
+    ownerUserId: account.ownerUserId || null,
+    webhookStatus: account.webhookStatus || "not-configured",
+    webhookLastAt: account.webhookLastAt || null,
+    webhookExpiration: account.webhookExpiration || null,
+    webhookError: account.webhookError || "",
     lastSuccessfulSyncAt: account.lastSuccessfulSyncAt || null,
     lastSyncError: account.lastSyncError || "",
     lastVerifiedAt: account.lastVerifiedAt || null
@@ -695,6 +798,29 @@ function publicBroadcast(broadcast) {
     resolvedRoomCodes: targetRooms.map(room => room.code),
     resolvedRoomCount: targetRooms.length,
     endedByName: broadcast.endedAt ? endedBy?.name || "System" : ""
+  };
+}
+
+function publicKioskDevice(device, includePairingCode = false) {
+  const room = db.rooms.find(item => item.id === device.roomId);
+  return {
+    id: device.id,
+    clientDeviceId: device.clientDeviceId,
+    roomId: device.roomId,
+    roomCode: room?.code || "",
+    roomName: room?.name || "Unknown room",
+    name: device.name || "",
+    status: device.status,
+    pairingCode: includePairingCode && device.status === "pending" ? device.pairingCode : "",
+    browser: device.browser || "",
+    platform: device.platform || "",
+    viewport: device.viewport || "",
+    orientation: device.orientation || "",
+    audioEnabled: Boolean(device.audioEnabled),
+    lastSeenAt: device.lastSeenAt || null,
+    lastDataAt: device.lastDataAt || null,
+    approvedAt: device.approvedAt || null,
+    pendingCommand: device.pendingCommand || null
   };
 }
 
@@ -731,6 +857,11 @@ function viewerCanAccessRoom(user, room) {
   );
 }
 
+function viewerCanPairRoom(user, room) {
+  return viewerIsSystemAdmin(user)
+    || (user?.roleIds?.includes("center-admin") && user?.centerIds?.includes(room.centerId));
+}
+
 function requirePermission(req, res, permission) {
   if (viewerHasPermission(req, permission)) return true;
   json(res, 403, { error: `Permission required: ${permission}` });
@@ -755,30 +886,99 @@ function calendarDetailLine(event, timezone) {
   return `${day}, ${time(start)} - ${time(end)}`;
 }
 
+function eventDisplayTitle(event) {
+  return event.privacy === "private" || /(?:private|rental) events?/i.test(event.description || "")
+    ? "Private Event"
+    : event.originalTitle || event.title || "Untitled Event";
+}
+
+function detectRoomConflicts(roomId, events) {
+  const previous = new Map(db.calendarConflicts.filter(item => item.roomId === roomId).map(item => [item.id, item]));
+  const sorted = [...events].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  const clusters = [];
+  let cluster = [];
+  let clusterEnd = 0;
+  for (const event of sorted) {
+    const startsAt = new Date(event.startsAt).getTime();
+    const endsAt = new Date(event.endsAt).getTime();
+    if (cluster.length && startsAt >= clusterEnd) {
+      if (cluster.length > 1) clusters.push(cluster);
+      cluster = [];
+      clusterEnd = 0;
+    }
+    cluster.push(event);
+    clusterEnd = Math.max(clusterEnd, endsAt);
+  }
+  if (cluster.length > 1) clusters.push(cluster);
+  const conflicts = clusters.map(items => {
+    const externalIds = items.map(item => item.externalEventId).sort();
+    const id = `calendar-conflict-${crypto.createHash("sha256").update(`${roomId}:${externalIds.join("|")}`).digest("hex").slice(0, 24)}`;
+    return {
+      id,
+      roomId,
+      eventIds: items.map(item => item.id),
+      externalEventIds: externalIds,
+      startsAt: items.map(item => item.startsAt).sort()[0],
+      endsAt: items.map(item => item.endsAt).sort().at(-1),
+      status: previous.get(id)?.status || "unresolved",
+      selectedExternalEventId: previous.get(id)?.selectedExternalEventId || null,
+      resolvedBy: previous.get(id)?.resolvedBy || null,
+      resolvedAt: previous.get(id)?.resolvedAt || null,
+      updatedAt: new Date().toISOString()
+    };
+  });
+  db.calendarConflicts = [
+    ...db.calendarConflicts.filter(item => item.roomId !== roomId),
+    ...conflicts
+  ];
+  return conflicts;
+}
+
 function refreshRoomEvents(roomId) {
   const room = db.rooms.find(item => item.id === roomId);
   if (!room) return;
-  const center = db.centers.find(item => item.id === room.centerId);
-  const timezone = center?.timezone || "UTC";
+  const effective = effectiveRoomSettings(room);
+  const timezone = effective.timezone;
   const now = new Date();
+  const futureLimit = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
   const events = db.calendarEvents
-    .filter(item => item.roomId === roomId && new Date(item.endsAt) >= now)
+    .filter(item => item.roomId === roomId && new Date(item.endsAt) >= now && new Date(item.startsAt) <= futureLimit)
     .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  const conflicts = detectRoomConflicts(roomId, events);
   db.upcomingEvents = db.upcomingEvents.filter(item => item.roomId !== roomId);
-  db.upcomingEvents.push(...events.slice(0, 4).map(event => ({
+  db.upcomingEvents.push(...events.filter(event => new Date(event.startsAt) > now).slice(0, 100).map(event => ({
     roomId,
-    title: event.title,
-    detail: calendarDetailLine(event, timezone)
+    eventId: event.id,
+    title: eventDisplayTitle(event),
+    detail: calendarDetailLine(event, timezone),
+    startsAt: event.startsAt,
+    endsAt: event.endsAt,
+    description: effective.showEventDescription && eventDisplayTitle(event) !== "Private Event" ? event.description || "" : ""
   })));
-  const current = events.find(event => new Date(event.startsAt) <= now && new Date(event.endsAt) > now);
+  const currentEvents = events.filter(event => new Date(event.startsAt) <= now && new Date(event.endsAt) > now);
+  const currentConflict = conflicts.find(conflict =>
+    new Date(conflict.startsAt) <= now
+    && new Date(conflict.endsAt) > now
+  );
+  const current = currentConflict?.selectedExternalEventId
+    ? currentEvents.find(event => event.externalEventId === currentConflict.selectedExternalEventId) || currentEvents[0]
+    : currentEvents[0];
   if (current) {
     const remainingMinutes = Math.max(0, Math.ceil((new Date(current.endsAt) - now) / 60000));
-    room.currentEventTitle = current.title;
+    room.currentEventTitle = eventDisplayTitle(current);
+    room.currentEventStartsAt = current.startsAt;
+    room.currentEventEndsAt = current.endsAt;
+    room.currentEventTime = calendarDetailLine(current, timezone);
+    room.currentEventDescription = effective.showEventDescription && room.currentEventTitle !== "Private Event" ? current.description || "" : "";
     room.currentEventUntil = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit" }).format(new Date(current.endsAt));
     room.status = remainingMinutes <= (new Date(current.endsAt) - new Date(current.startsAt) > 30 * 60000 ? 10 : 5) ? "warning" : "busy";
   } else {
     room.status = "available";
     room.currentEventTitle = "";
+    room.currentEventStartsAt = null;
+    room.currentEventEndsAt = null;
+    room.currentEventTime = "";
+    room.currentEventDescription = "";
     room.currentEventUntil = events[0]
       ? new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit" }).format(new Date(events[0].startsAt))
       : "";
@@ -793,13 +993,19 @@ async function syncAssignment(assignment) {
   const startedAt = new Date();
   assignment.lastAttemptAt = startedAt.toISOString();
   try {
-    const events = await syncCalendar(account, calendar, new Date(startedAt.getTime() - 24 * 60 * 60 * 1000), new Date(startedAt.getTime() + 90 * 24 * 60 * 60 * 1000));
+    const events = await syncCalendar(
+      account,
+      calendar,
+      new Date(startedAt.getTime() - 30 * 24 * 60 * 60 * 1000),
+      new Date(startedAt.getTime() + 30 * 24 * 60 * 60 * 1000)
+    );
     db.calendarEvents = db.calendarEvents.filter(item => item.roomId !== room.id || item.assignmentId !== assignment.id);
     db.calendarEvents.push(...events.map(event => ({ ...event, id: entityId("calendar-event"), assignmentId: assignment.id, roomId: room.id, provider: account.provider })));
     assignment.lastSuccessfulSyncAt = new Date().toISOString();
     assignment.lastSyncError = "";
     account.lastSuccessfulSyncAt = assignment.lastSuccessfulSyncAt;
     account.lastSyncError = "";
+    account.webhookStatus = account.webhookStatus === "failed" ? "polling-fallback" : account.webhookStatus;
     db.calendarSyncHistory.unshift({
       id: entityId("calendar-sync"),
       assignmentId: assignment.id,
@@ -824,10 +1030,34 @@ async function syncAssignment(assignment) {
       error: assignment.lastSyncError,
       createdAt: new Date().toISOString()
     });
+    await notifyCalendarSyncFailure(account, room, assignment.lastSyncError);
     throw error;
   } finally {
     db.calendarSyncHistory = db.calendarSyncHistory.slice(0, 500);
   }
+}
+
+async function processCalendarAssignment(assignmentId) {
+  const assignment = db.calendarAssignments.find(item => item.id === assignmentId && item.active !== false);
+  if (!assignment) return { skipped: true };
+  const result = await syncAssignment(assignment);
+  await saveData();
+  return result;
+}
+
+let calendarQueue;
+try {
+  calendarQueue = await createCalendarQueue({
+    redisUrl: process.env.REDIS_URL || "",
+    processAssignment: processCalendarAssignment
+  });
+} catch (error) {
+  console.warn(`Redis calendar queue unavailable; using in-process polling: ${error.message}`);
+  calendarQueue = {
+    enabled: false,
+    enqueue: processCalendarAssignment,
+    async close() {}
+  };
 }
 
 function publicUser(user) {
@@ -858,6 +1088,15 @@ function validIds(values, collection) {
   return Array.isArray(values) && values.every(value => allowed.has(value));
 }
 
+function validCalendarAuthMode(provider, authMode) {
+  return {
+    google: ["service-account", "oauth"],
+    microsoft365: ["application", "oauth"],
+    caldav: ["app-password"],
+    "public-url": ["public-url"]
+  }[provider]?.includes(authMode);
+}
+
 function recordEmail({ to, subject, type, status, error = "", userId = null, source = "administrative" }) {
   const notification = {
     id: crypto.randomUUID(),
@@ -884,6 +1123,47 @@ async function deliverTrackedEmail({ to, subject, text, html, type, userId = nul
     recordEmail({ to, subject, type, status: "failed", error: error.message, userId, source });
     throw error;
   }
+}
+
+async function notifyCalendarSyncFailure(account, room, error) {
+  const recipients = db.users.filter(user =>
+    user.status === "active"
+    && (
+      user.id === account.ownerUserId
+      || viewerIsSystemAdmin(user)
+      || (user.roleIds?.includes("center-admin") && user.centerIds?.includes(room.centerId))
+    )
+  );
+  const title = `Calendar sync failed: ${room.name}`;
+  const message = `${account.accountName}: ${error}`;
+  const createdAt = new Date().toISOString();
+  for (const user of recipients) {
+    db.notifications.unshift({
+      id: entityId("notification"),
+      userId: user.id,
+      title,
+      message,
+      severity: "warning",
+      source: "calendar-sync",
+      sourceId: account.id,
+      actionUrl: "/admin#calendars",
+      readAt: null,
+      createdAt
+    });
+  }
+  db.notifications = db.notifications.slice(0, 1000);
+  if (!db.settings.email.enabled) return;
+  await Promise.allSettled(recipients
+    .filter(user => validEmail(user.email))
+    .map(user => deliverTrackedEmail({
+      to: user.email,
+      subject: title,
+      text: message,
+      html: `<p>${escapeHtml(message)}</p>`,
+      type: "calendar-sync-failure",
+      userId: user.id,
+      source: "calendar-sync"
+    })));
 }
 
 function broadcastRecipientUsers(broadcast) {
@@ -1012,8 +1292,55 @@ function validUrl(value) {
   }
 }
 
+function qrColor(value, fallback) {
+  return /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(String(value || "")) ? String(value) : fallback;
+}
+
+function colorLuminance(hex) {
+  const channels = hex.slice(1, 7).match(/.{2}/g).map(value => {
+    const channel = parseInt(value, 16) / 255;
+    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+function contrastRatio(foreground, background) {
+  const values = [colorLuminance(foreground), colorLuminance(background)].sort((a, b) => b - a);
+  return (values[0] + 0.05) / (values[1] + 0.05);
+}
+
+function secureTokenEqual(left, right) {
+  const leftHash = crypto.createHash("sha256").update(String(left || "")).digest();
+  const rightHash = crypto.createHash("sha256").update(String(right || "")).digest();
+  return crypto.timingSafeEqual(leftHash, rightHash);
+}
+
+function calendarWebhookToken(calendar) {
+  if (calendar.encryptedWebhookToken) {
+    try {
+      return decryptCredential(calendar.encryptedWebhookToken);
+    } catch {
+      return "";
+    }
+  }
+  return calendar.webhookToken || "";
+}
+
 function cleanIdArray(value) {
   return Array.isArray(value) ? [...new Set(value.map(item => cleanText(item, 160)).filter(Boolean))] : [];
+}
+
+function nullableInteger(value, minimum = 1, maximum = 10) {
+  if (value === "" || value === null || value === undefined) return null;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= minimum && number <= maximum ? number : null;
+}
+
+function nullableBoolean(value) {
+  if (value === "" || value === null || value === undefined) return null;
+  if (value === true || value === "true") return true;
+  if (value === false || value === "false") return false;
+  return null;
 }
 
 function scheduleFromBody(body, existing = {}) {
@@ -1124,11 +1451,13 @@ function notifyChangedRooms(roomCodes = []) {
   for (const code of new Set(roomCodes)) notifyRoom(code);
 }
 
-function notifyRoom(roomCode) {
+function notifyRoom(roomCode, command = "data-refresh", deviceId = "") {
   const set = clients.get(roomCode);
   if (!set) return;
-  for (const res of set) {
-    res.write(`event: refresh\ndata: ${JSON.stringify({ roomCode, at: new Date().toISOString() })}\n\n`);
+  for (const client of set) {
+    const entry = client?.res ? client : { res: client, deviceId: "" };
+    if (deviceId && entry.deviceId !== deviceId) continue;
+    entry.res.write(`event: refresh\ndata: ${JSON.stringify({ roomCode, command, at: new Date().toISOString() })}\n\n`);
   }
 }
 
@@ -1172,6 +1501,7 @@ function adminPage() {
         <button type="button" data-tab="locations">Locations & Rooms</button>
         <button type="button" data-tab="users">Users</button>
         <button type="button" data-tab="calendars">Calendar Sync</button>
+        <button type="button" data-tab="devices">Kiosk Devices</button>
         <button type="button" data-tab="themes">Theme Editor</button>
         <button type="button" data-tab="theme-scheduler">Theme Scheduler</button>
         <button type="button" data-tab="notifications">Email Notifications</button>
@@ -1292,6 +1622,35 @@ function adminPage() {
             <tbody id="calendarSyncRows"></tbody>
           </table></div>
         </section>
+        <section class="panel">
+          <div class="panel-heading"><div><h2>Event Conflicts</h2><p>Select which external event appears on signage without modifying either source event.</p></div></div>
+          <div id="calendarConflictList" class="entity-list"></div>
+        </section>
+      </section>
+
+      <section class="tab-panel" data-panel="devices">
+        <section class="panel">
+          <div class="panel-heading"><div><h2>Scoped Kiosk Refresh</h2><p>Refresh schedule data or fully reload kiosk application assets.</p></div></div>
+          <form id="kioskRefreshForm">
+            <div class="scheduler-target-grid">
+              <label>Centers <select name="centerIds" id="kioskRefreshCenters" multiple></select></label>
+              <label>Campuses <select name="campusIds" id="kioskRefreshCampuses" multiple></select></label>
+              <label>Buildings <select name="buildingIds" id="kioskRefreshBuildings" multiple></select></label>
+              <label>Room Groups <select name="roomGroupIds" id="kioskRefreshRoomGroups" multiple></select></label>
+              <label>Rooms <select name="roomIds" id="kioskRefreshRooms" multiple></select></label>
+            </div>
+            <label>Refresh Mode <select name="command">
+              <option value="data-refresh">Refresh data only</option>
+              <option value="reload">Reload page, assets, and data</option>
+            </select></label>
+            <button type="submit">Send Refresh</button>
+            <p id="kioskRefreshStatus" class="form-status" role="status"></p>
+          </form>
+        </section>
+        <section class="panel">
+          <div class="panel-heading"><div><h2>Registered Kiosk Devices</h2><p>System Admins and Center Admins approve pairing. Unregistered room URLs continue to work.</p></div></div>
+          <div id="kioskDeviceList" class="entity-list"></div>
+        </section>
       </section>
 
       <section class="tab-panel" data-panel="themes">
@@ -1313,6 +1672,11 @@ function adminPage() {
             <form id="themeEditorForm" hidden>
               <input type="hidden" name="themeId" />
               <label>Theme Name <input name="name" required /></label>
+              <label>Supported Orientation <select name="orientationMode">
+                <option value="both">Landscape and portrait</option>
+                <option value="landscape">Landscape primary</option>
+                <option value="portrait">Portrait primary</option>
+              </select></label>
               <fieldset class="theme-background-field">
                 <legend>Background Image</legend>
                 <img id="themeBackgroundPreview" alt="Theme background preview" hidden />
@@ -1528,6 +1892,8 @@ function kioskPage(roomCode, preview = false, themeOverrideId = "", stateOverrid
     <link rel="stylesheet" href="/static/kiosk.css?v=${assetVersion}" />
   </head>
   <body>
+    <div id="connectionStatus" class="connection-status" role="status" aria-live="polite" hidden></div>
+    <div id="deviceStatus" class="device-status" role="status" aria-live="polite" ${preview ? "hidden" : ""}></div>
     <main id="kiosk" class="kiosk-frame" data-room-code="${escapeHtml(room.code)}" data-preview="${preview ? "true" : "false"}" data-theme-override="${escapeHtml(themeOverrideId)}" data-state-override="${escapeHtml(stateOverride)}" data-build-version="${escapeHtml(assetVersion)}">
       <section class="loading">Loading room signage...</section>
     </main>
@@ -1586,7 +1952,7 @@ async function serveFile(req, res, basePath, prefix) {
 
 async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/health") {
-    return json(res, 200, { status: "healthy", app: "signage", storage: store.type, time: new Date().toISOString() });
+    return json(res, 200, { status: "healthy", app: "signage", storage: store.type, calendarQueue: calendarQueue.enabled ? "redis" : "in-process", time: new Date().toISOString() });
   }
   if (req.method === "GET" && url.pathname === "/api/state") {
     await runBroadcastLifecycle();
@@ -1600,6 +1966,7 @@ async function handleApi(req, res, url) {
         email: publicEmailSettings(db.settings.email)
       },
       storageType: store.type,
+      calendarQueueEnabled: calendarQueue.enabled,
       centers: db.centers,
       campuses: db.campuses,
       buildings: db.buildings,
@@ -1612,7 +1979,19 @@ async function handleApi(req, res, url) {
       broadcastTemplates: db.broadcastTemplates,
       calendarAccounts: db.calendarAccounts.map(publicCalendarAccount),
       calendarAssignments: db.calendarAssignments,
+      calendarEvents: db.calendarEvents.filter(event => {
+        const room = db.rooms.find(item => item.id === event.roomId);
+        return room && viewerCanAccessRoom(viewer, room);
+      }),
+      calendarConflicts: db.calendarConflicts.filter(conflict => {
+        const room = db.rooms.find(item => item.id === conflict.roomId);
+        return room && viewerCanAccessRoom(viewer, room);
+      }),
       calendarSyncHistory: db.calendarSyncHistory.slice(0, 50),
+      kioskDevices: db.kioskDevices.filter(device => {
+        const room = db.rooms.find(item => item.id === device.roomId);
+        return room && viewerCanAccessRoom(viewer, room);
+      }).map(device => publicKioskDevice(device, viewerCanPairRoom(viewer, db.rooms.find(item => item.id === device.roomId)))),
       roomGroups: db.roomGroups.filter(group =>
         group.roomIds.length > 0 && group.roomIds.every(roomId => {
           const room = db.rooms.find(item => item.id === roomId);
@@ -1702,12 +2081,15 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "calendar.manage")) return;
     const body = await readBody(req);
     const provider = cleanText(body.provider, 30);
+    const authMode = cleanText(body.authMode, 40)
+      || (provider === "google" ? "service-account" : provider === "microsoft365" ? "application" : provider === "caldav" ? "app-password" : "public-url");
     const accountName = cleanText(body.accountName);
-    if (!["google", "microsoft365", "public-url"].includes(provider)) return validationError(res, "Select a valid calendar provider.");
+    if (!["google", "microsoft365", "caldav", "public-url"].includes(provider)) return validationError(res, "Select a valid calendar provider.");
+    if (!validCalendarAuthMode(provider, authMode)) return validationError(res, "Select a connection method supported by this calendar provider.");
     if (!accountName) return validationError(res, "Calendar account name is required.");
     let encryptedCredential = "";
     let principalEmail = "";
-    if (provider === "google") {
+    if (provider === "google" && authMode === "service-account") {
       try {
         const credential = JSON.parse(String(body.credential || ""));
         if (!credential.client_email || !credential.private_key) throw new Error("Missing service-account fields");
@@ -1716,12 +2098,25 @@ async function handleApi(req, res, url) {
       } catch {
         return validationError(res, "Enter Google service-account JSON containing client_email and private_key.");
       }
-    } else if (provider === "microsoft365") {
+    } else if (provider === "google" && authMode === "oauth") {
+      if (!cleanText(body.clientId, 255) || !body.credential) return validationError(res, "Google OAuth Client ID and client secret are required.");
+      encryptedCredential = encryptCredential(JSON.stringify({ clientSecret: String(body.credential), tokens: null }));
+    } else if (provider === "microsoft365" && authMode === "application") {
       if (!cleanText(body.tenantId, 255) || !cleanText(body.clientId, 255)) {
         return validationError(res, "Microsoft Tenant ID and Client ID are required.");
       }
       if (!body.credential) return validationError(res, "Microsoft client secret is required.");
       encryptedCredential = encryptCredential(String(body.credential));
+    } else if (provider === "microsoft365" && authMode === "oauth") {
+      if (!cleanText(body.clientId, 255) || !body.credential) return validationError(res, "Microsoft OAuth Client ID and client secret are required.");
+      encryptedCredential = encryptCredential(JSON.stringify({ clientSecret: String(body.credential), tokens: null }));
+    } else if (provider === "caldav") {
+      if (!cleanText(body.serverUrl, 1000) || !cleanText(body.username, 255) || !body.credential) {
+        return validationError(res, "CalDAV server URL, username, and app password are required.");
+      }
+      if (!validUrl(body.serverUrl)) return validationError(res, "Enter a valid CalDAV server URL.");
+      encryptedCredential = encryptCredential(JSON.stringify({ password: String(body.credential) }));
+      principalEmail = cleanText(body.username, 255);
     }
     const calendars = Array.isArray(body.calendars) ? body.calendars.map(item => ({
       id: item.id || entityId("calendar"),
@@ -1740,15 +2135,22 @@ async function handleApi(req, res, url) {
     const account = {
       id: entityId("calendar-account"),
       provider,
+      authMode,
       accountName,
       accessLevel: provider === "public-url" ? "read-only" : (body.accessLevel === "writable" ? "writable" : "read-only"),
       tenantId: cleanText(body.tenantId, 255),
       clientId: cleanText(body.clientId, 255),
       mailbox: cleanText(body.mailbox, 255),
+      serverUrl: cleanText(body.serverUrl, 1000),
+      username: cleanText(body.username, 255),
       principalEmail,
       encryptedCredential,
       calendars,
-      syncIntervalMinutes: Math.max(5, Number(body.syncIntervalMinutes || 15)),
+      syncIntervalMinutes: Math.max(5, Math.min(1440, Number(body.syncIntervalMinutes) || 15)),
+      ownerUserId: currentViewer(req)?.id || null,
+      webhookStatus: ["google", "microsoft365"].includes(provider) ? "not-configured" : "polling",
+      webhookLastAt: null,
+      webhookError: "",
       active: body.active !== false,
       lastSuccessfulSyncAt: null,
       lastSyncError: "",
@@ -1766,8 +2168,11 @@ async function handleApi(req, res, url) {
     if (!account) return json(res, 404, { error: "Calendar account not found" });
     const body = await readBody(req);
     const provider = cleanText(body.provider, 30);
-    const providerChanged = provider !== account.provider;
-    if (!["google", "microsoft365", "public-url"].includes(provider)) return validationError(res, "Select a valid calendar provider.");
+    const authMode = cleanText(body.authMode, 40)
+      || (provider === "google" ? "service-account" : provider === "microsoft365" ? "application" : provider === "caldav" ? "app-password" : "public-url");
+    const providerChanged = provider !== account.provider || authMode !== account.authMode;
+    if (!["google", "microsoft365", "caldav", "public-url"].includes(provider)) return validationError(res, "Select a valid calendar provider.");
+    if (!validCalendarAuthMode(provider, authMode)) return validationError(res, "Select a connection method supported by this calendar provider.");
     const accountName = cleanText(body.accountName);
     if (!accountName) return validationError(res, "Calendar account name is required.");
     const calendars = Array.isArray(body.calendars) ? body.calendars.map(item => ({
@@ -1784,13 +2189,21 @@ async function handleApi(req, res, url) {
         return true;
       }
     })) return validationError(res, "Public calendars require a valid HTTP or HTTPS URL.");
-    if (provider === "microsoft365" && (!cleanText(body.tenantId, 255) || !cleanText(body.clientId, 255))) {
-      return validationError(res, "Microsoft Tenant ID and Client ID are required.");
+    if (provider === "microsoft365" && (
+      !cleanText(body.clientId, 255)
+      || (authMode === "application" && !cleanText(body.tenantId, 255))
+    )) {
+      return validationError(res, authMode === "application"
+        ? "Microsoft Tenant ID and Client ID are required."
+        : "Microsoft OAuth Client ID is required.");
+    }
+    if (provider === "caldav" && (!validUrl(cleanText(body.serverUrl, 1000)) || !cleanText(body.username, 255))) {
+      return validationError(res, "CalDAV server URL and username are required.");
     }
     let encryptedCredential = account.encryptedCredential;
     let principalEmail = account.principalEmail || "";
     if (body.credential) {
-      if (provider === "google") {
+      if (provider === "google" && authMode === "service-account") {
         try {
           const credential = JSON.parse(String(body.credential));
           if (!credential.client_email || !credential.private_key) throw new Error("Missing service-account fields");
@@ -1798,28 +2211,88 @@ async function handleApi(req, res, url) {
         } catch {
           return validationError(res, "Enter Google service-account JSON containing client_email and private_key.");
         }
+        encryptedCredential = encryptCredential(String(body.credential));
+      } else if ((provider === "google" || provider === "microsoft365") && authMode === "oauth") {
+        encryptedCredential = encryptCredential(JSON.stringify({ clientSecret: String(body.credential), tokens: null }));
+        principalEmail = "";
+      } else if (provider === "caldav") {
+        encryptedCredential = encryptCredential(JSON.stringify({ password: String(body.credential) }));
+        principalEmail = cleanText(body.username, 255);
+      } else {
+        encryptedCredential = encryptCredential(String(body.credential));
       }
-      encryptedCredential = encryptCredential(String(body.credential));
     }
     if (provider !== "public-url" && (!encryptedCredential || (providerChanged && !body.credential))) {
       return validationError(res, "Enter a new credential when changing calendar providers.");
     }
     Object.assign(account, {
       provider,
+      authMode,
       accountName,
       accessLevel: provider === "public-url" ? "read-only" : (body.accessLevel === "writable" ? "writable" : "read-only"),
       tenantId: cleanText(body.tenantId, 255),
       clientId: cleanText(body.clientId, 255),
       mailbox: cleanText(body.mailbox, 255),
-      principalEmail: provider === "google" ? principalEmail : "",
+      serverUrl: cleanText(body.serverUrl, 1000),
+      username: cleanText(body.username, 255),
+      principalEmail,
       encryptedCredential,
       calendars,
-      syncIntervalMinutes: Math.max(5, Number(body.syncIntervalMinutes || 15)),
+      syncIntervalMinutes: Math.max(5, Math.min(1440, Number(body.syncIntervalMinutes) || 15)),
       active: body.active !== false
     });
     addAudit("calendar.account.update", { accountId: account.id, provider });
     await saveData();
     return json(res, 200, publicCalendarAccount(account));
+  }
+  const calendarOauthStartMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)\/oauth\/start$/);
+  if (req.method === "GET" && calendarOauthStartMatch) {
+    if (!requirePermission(req, res, "calendar.manage")) return;
+    const account = db.calendarAccounts.find(item => item.id === calendarOauthStartMatch[1]);
+    if (!account) return json(res, 404, { error: "Calendar account not found" });
+    if (account.authMode !== "oauth" || !["google", "microsoft365"].includes(account.provider)) {
+      return validationError(res, "This calendar account is not configured for interactive OAuth.");
+    }
+    const state = crypto.randomBytes(32).toString("hex");
+    oauthStates.set(state, { accountId: account.id, provider: account.provider, expiresAt: Date.now() + 10 * 60 * 1000 });
+    return json(res, 200, {
+      authorizationUrl: calendarAuthorizationUrl(account, account.provider, baseUrl, state)
+    });
+  }
+  const calendarOauthCallbackMatch = url.pathname.match(/^\/api\/calendar-oauth\/(google|microsoft365)\/callback$/);
+  if (req.method === "GET" && calendarOauthCallbackMatch) {
+    const provider = calendarOauthCallbackMatch[1];
+    const state = cleanText(url.searchParams.get("state"), 200);
+    const code = cleanText(url.searchParams.get("code"), 4000);
+    const pending = oauthStates.get(state);
+    oauthStates.delete(state);
+    if (!pending || pending.provider !== provider || pending.expiresAt < Date.now()) return send(res, 400, "OAuth state expired or invalid.");
+    const account = db.calendarAccounts.find(item => item.id === pending.accountId);
+    if (!account || !code) return send(res, 400, "OAuth authorization code was not provided.");
+    try {
+      await exchangeCalendarAuthorizationCode(account, provider, baseUrl, code);
+      account.lastVerifiedAt = new Date().toISOString();
+      account.lastSyncError = "";
+      const inspection = await inspectCalendarAccount(account);
+      account.principalEmail = inspection.principalEmail || account.principalEmail;
+      for (const discovered of inspection.discovered || []) {
+        if (!account.calendars.some(calendar => calendar.externalId === discovered.externalId)) {
+          account.calendars.push({
+            id: entityId("calendar"),
+            name: cleanText(discovered.name),
+            externalId: cleanText(discovered.externalId, 1000),
+            mailbox: cleanText(discovered.mailbox, 255)
+          });
+        }
+      }
+      addAudit("calendar.oauth.connect", { accountId: account.id, provider });
+      await saveData();
+      return redirect(res, "/admin?calendarOAuth=connected#calendars");
+    } catch (error) {
+      account.lastSyncError = cleanText(error.message, 500);
+      await saveData();
+      return redirect(res, `/admin?calendarOAuth=${encodeURIComponent(account.lastSyncError)}#calendars`);
+    }
   }
   const calendarDiscoverMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)\/discover$/);
   if (req.method === "POST" && calendarDiscoverMatch) {
@@ -1864,6 +2337,87 @@ async function handleApi(req, res, url) {
       await saveData();
       return json(res, 502, { error: error.message });
     }
+  }
+  const calendarWebhookRegisterMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)\/calendars\/([^/]+)\/webhook$/);
+  if (req.method === "POST" && calendarWebhookRegisterMatch) {
+    if (!requirePermission(req, res, "calendar.manage")) return;
+    const account = db.calendarAccounts.find(item => item.id === calendarWebhookRegisterMatch[1]);
+    const calendar = account?.calendars?.find(item => item.id === calendarWebhookRegisterMatch[2]);
+    if (!account || !calendar) return json(res, 404, { error: "Calendar connection not found" });
+    try {
+      const providerPath = account.provider === "google" ? "google" : "microsoft";
+      const result = await registerCalendarWebhook(
+        account,
+        calendar,
+        `${baseUrl.replace(/\/+$/, "")}/api/calendar-webhooks/${providerPath}`
+      );
+      Object.assign(calendar, {
+        webhookStatus: "active",
+        webhookChannelId: result.channelId || "",
+        encryptedWebhookToken: result.channelToken ? encryptCredential(result.channelToken) : "",
+        webhookResourceId: result.resourceId || "",
+        webhookSubscriptionId: result.subscriptionId || "",
+        webhookClientState: result.clientState || "",
+        webhookExpiration: result.expiration || null
+      });
+      delete calendar.webhookToken;
+      account.webhookStatus = "active";
+      account.webhookError = "";
+      account.webhookExpiration = result.expiration || null;
+      addAudit("calendar.webhook.register", { accountId: account.id, calendarId: calendar.id, provider: account.provider });
+      await saveData();
+      return json(res, 200, {
+        account: publicCalendarAccount(account),
+        calendar: publicCalendarAccount(account).calendars.find(item => item.id === calendar.id)
+      });
+    } catch (error) {
+      account.webhookStatus = "polling-fallback";
+      account.webhookError = cleanText(error.message, 500);
+      await saveData();
+      return json(res, 502, { error: `${error.message} Polling remains active.` });
+    }
+  }
+  if (req.method === "POST" && url.pathname === "/api/calendar-webhooks/google") {
+    const channelId = String(req.headers["x-goog-channel-id"] || "");
+    const channelToken = String(req.headers["x-goog-channel-token"] || "");
+    const calendarAccount = db.calendarAccounts.find(account =>
+      account.calendars.some(calendar =>
+        calendar.webhookChannelId === channelId
+        && Boolean(calendarWebhookToken(calendar))
+        && secureTokenEqual(calendarWebhookToken(calendar), channelToken)
+      )
+    );
+    if (calendarAccount) {
+      calendarAccount.webhookStatus = "active";
+      calendarAccount.webhookLastAt = new Date().toISOString();
+      for (const assignment of db.calendarAssignments.filter(item => item.accountId === calendarAccount.id && item.active !== false)) {
+        await calendarQueue.enqueue(assignment.id, "google-webhook");
+      }
+      await saveData();
+    }
+    return send(res, 204, "");
+  }
+  if (url.pathname === "/api/calendar-webhooks/microsoft" && url.searchParams.get("validationToken")) {
+    return send(res, 200, url.searchParams.get("validationToken"), "text/plain; charset=utf-8");
+  }
+  if (req.method === "POST" && url.pathname === "/api/calendar-webhooks/microsoft") {
+    const body = await readBody(req);
+    for (const notification of body.value || []) {
+      const account = db.calendarAccounts.find(item =>
+        item.calendars.some(calendar =>
+          calendar.webhookSubscriptionId === notification.subscriptionId
+          && calendar.webhookClientState === notification.clientState
+        )
+      );
+      if (!account) continue;
+      account.webhookStatus = "active";
+      account.webhookLastAt = new Date().toISOString();
+      for (const assignment of db.calendarAssignments.filter(item => item.accountId === account.id && item.active !== false)) {
+        await calendarQueue.enqueue(assignment.id, "microsoft-webhook");
+      }
+    }
+    await saveData();
+    return send(res, 202, "");
   }
   if (req.method === "DELETE" && calendarAccountMatch) {
     if (!requirePermission(req, res, "calendar.manage")) return;
@@ -1930,6 +2484,69 @@ async function handleApi(req, res, url) {
       await saveData();
       return json(res, 502, { error: error.message });
     }
+  }
+  const calendarEventCollectionMatch = url.pathname.match(/^\/api\/calendar-assignments\/([^/]+)\/events$/);
+  if (req.method === "POST" && calendarEventCollectionMatch) {
+    if (!requirePermission(req, res, "calendar.manage")) return;
+    const assignment = db.calendarAssignments.find(item => item.id === calendarEventCollectionMatch[1]);
+    const account = db.calendarAccounts.find(item => item.id === assignment?.accountId);
+    const calendar = account?.calendars.find(item => item.id === assignment?.calendarId);
+    const room = db.rooms.find(item => item.id === assignment?.roomId);
+    if (!assignment || !account || !calendar || !room) return json(res, 404, { error: "Calendar assignment not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
+    const body = await readBody(req);
+    if (!cleanText(body.title) || !Number.isFinite(new Date(body.startsAt).getTime()) || !Number.isFinite(new Date(body.endsAt).getTime())) {
+      return validationError(res, "Title, start time, and end time are required.");
+    }
+    if (new Date(body.endsAt) <= new Date(body.startsAt)) return validationError(res, "Event end time must be after start time.");
+    await writeCalendarEvent(account, calendar, body);
+    const result = await processCalendarAssignment(assignment.id);
+    addAudit("calendar.event.create", { assignmentId: assignment.id, roomId: room.id, title: cleanText(body.title) });
+    return json(res, 201, result);
+  }
+  const calendarEventMatch = url.pathname.match(/^\/api\/calendar-assignments\/([^/]+)\/events\/([^/]+)$/);
+  if ((req.method === "PUT" || req.method === "DELETE") && calendarEventMatch) {
+    if (!requirePermission(req, res, "calendar.manage")) return;
+    const assignment = db.calendarAssignments.find(item => item.id === calendarEventMatch[1]);
+    const account = db.calendarAccounts.find(item => item.id === assignment?.accountId);
+    const calendar = account?.calendars.find(item => item.id === assignment?.calendarId);
+    const room = db.rooms.find(item => item.id === assignment?.roomId);
+    const event = db.calendarEvents.find(item => item.id === calendarEventMatch[2] && item.assignmentId === assignment?.id);
+    if (!assignment || !account || !calendar || !room || !event) return json(res, 404, { error: "Calendar event not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
+    if (req.method === "DELETE") {
+      await deleteCalendarEvent(account, calendar, event);
+      addAudit("calendar.event.delete", { assignmentId: assignment.id, eventId: event.id });
+    } else {
+      const body = await readBody(req);
+      if (!cleanText(body.title) || !Number.isFinite(new Date(body.startsAt).getTime()) || !Number.isFinite(new Date(body.endsAt).getTime())) {
+        return validationError(res, "Title, start time, and end time are required.");
+      }
+      await writeCalendarEvent(account, calendar, body, event);
+      addAudit("calendar.event.update", { assignmentId: assignment.id, eventId: event.id });
+    }
+    const result = await processCalendarAssignment(assignment.id);
+    return json(res, 200, result);
+  }
+  const calendarConflictMatch = url.pathname.match(/^\/api\/calendar-conflicts\/([^/]+)\/select$/);
+  if (req.method === "POST" && calendarConflictMatch) {
+    if (!requirePermission(req, res, "calendar.sync")) return;
+    const conflict = db.calendarConflicts.find(item => item.id === calendarConflictMatch[1]);
+    const room = db.rooms.find(item => item.id === conflict?.roomId);
+    if (!conflict || !room) return json(res, 404, { error: "Calendar conflict not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
+    const body = await readBody(req);
+    const selected = cleanText(body.externalEventId, 1000);
+    if (!conflict.externalEventIds.includes(selected)) return validationError(res, "Select an event included in this conflict.");
+    conflict.selectedExternalEventId = selected;
+    conflict.status = "display-selected";
+    conflict.resolvedBy = currentViewer(req)?.id || null;
+    conflict.resolvedAt = new Date().toISOString();
+    refreshRoomEvents(room.id);
+    addAudit("calendar.conflict.display-select", { conflictId: conflict.id, externalEventId: selected });
+    await saveData();
+    notifyRoom(room.code);
+    return json(res, 200, conflict);
   }
   if (req.method === "PUT" && url.pathname === "/api/settings/email") {
     if (!requirePermission(req, res, "settings.manage")) return;
@@ -2294,6 +2911,8 @@ async function handleApi(req, res, url) {
       contactEmail,
       contactPhone: cleanText(body.contactPhone, 80),
       bookingUrl,
+      upcomingEventCount: nullableInteger(body.upcomingEventCount) || 5,
+      showEventDescription: body.showEventDescription === true || body.showEventDescription === "true",
       timezone,
       defaultThemeId: body.defaultThemeId || db.themes[0]?.id || "",
       active: body.active !== false
@@ -2330,6 +2949,8 @@ async function handleApi(req, res, url) {
       contactEmail,
       contactPhone: cleanText(body.contactPhone, 80),
       bookingUrl,
+      upcomingEventCount: nullableInteger(body.upcomingEventCount) || 5,
+      showEventDescription: body.showEventDescription === true || body.showEventDescription === "true",
       timezone,
       defaultThemeId: body.defaultThemeId || center.defaultThemeId,
       active: body.active !== false
@@ -2373,6 +2994,8 @@ async function handleApi(req, res, url) {
       contactPhone: cleanText(body.contactPhone, 80),
       bookingUrl,
       defaultThemeId: cleanText(body.defaultThemeId, 160),
+      upcomingEventCount: nullableInteger(body.upcomingEventCount),
+      showEventDescription: nullableBoolean(body.showEventDescription),
       active: body.active !== false
     };
     db.campuses.push(campus);
@@ -2406,6 +3029,8 @@ async function handleApi(req, res, url) {
       contactPhone: cleanText(body.contactPhone, 80),
       bookingUrl,
       defaultThemeId: cleanText(body.defaultThemeId, 160),
+      upcomingEventCount: nullableInteger(body.upcomingEventCount),
+      showEventDescription: nullableBoolean(body.showEventDescription),
       active: body.active !== false
     });
     addAudit("campus.update", { campusId: campus.id, name: campus.name });
@@ -2447,6 +3072,8 @@ async function handleApi(req, res, url) {
       timezone,
       bookingUrl,
       defaultThemeId: cleanText(body.defaultThemeId, 160),
+      upcomingEventCount: nullableInteger(body.upcomingEventCount),
+      showEventDescription: nullableBoolean(body.showEventDescription),
       active: body.active !== false
     };
     db.buildings.push(building);
@@ -2480,6 +3107,8 @@ async function handleApi(req, res, url) {
       timezone,
       bookingUrl,
       defaultThemeId: cleanText(body.defaultThemeId, 160),
+      upcomingEventCount: nullableInteger(body.upcomingEventCount),
+      showEventDescription: nullableBoolean(body.showEventDescription),
       active: body.active !== false
     });
     addAudit("building.update", { buildingId: building.id, name: building.name });
@@ -2533,6 +3162,8 @@ async function handleApi(req, res, url) {
       accessibilityNotes: cleanText(body.accessibilityNotes, 2000),
       maintenanceStatus: body.maintenanceStatus || "available",
       privacyMode: body.privacyMode || "standard",
+      upcomingEventCount: nullableInteger(body.upcomingEventCount),
+      showEventDescription: nullableBoolean(body.showEventDescription),
       active: body.active !== false,
       status: "available",
       currentEventTitle: "",
@@ -2544,6 +3175,31 @@ async function handleApi(req, res, url) {
     await saveData();
     notifyRoom(room.code);
     return json(res, 201, publicRoom(room));
+  }
+  const roomQrMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/qr\.svg$/);
+  if (req.method === "GET" && roomQrMatch) {
+    const room = db.rooms.find(item => item.code === roomQrMatch[1]);
+    if (!room) return json(res, 404, { error: "Room not found" });
+    const publicData = publicRoom(room);
+    if (!publicData.bookingUrl) return send(res, 404, "Booking URL is not configured.");
+    const tokens = publicData.themeCssTokens || {};
+    let foreground = qrColor(tokens.qrForeground, "#000000");
+    let background = qrColor(tokens.qrBackground, "#ffffff");
+    const transparent = String(tokens.qrTransparent) === "true";
+    if (transparent && colorLuminance(foreground) > 0.35) foreground = "#000000";
+    if (!transparent && contrastRatio(foreground, background) < 4.5) {
+      foreground = "#000000";
+      background = "#ffffff";
+    }
+    if (transparent) background = "#00000000";
+    const svg = await QRCode.toString(publicData.bookingUrl, {
+      type: "svg",
+      errorCorrectionLevel: "M",
+      margin: Math.max(1, Math.min(8, Number(tokens.qrMargin || 2))),
+      width: Math.max(96, Math.min(512, Number(tokens.qrSize || 132))),
+      color: { dark: foreground, light: background }
+    });
+    return send(res, 200, svg, "image/svg+xml; charset=utf-8");
   }
   const roomMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)$/);
   if (req.method === "GET" && roomMatch) {
@@ -2590,6 +3246,8 @@ async function handleApi(req, res, url) {
       accessibilityNotes: cleanText(body.accessibilityNotes, 2000),
       maintenanceStatus: body.maintenanceStatus || "available",
       privacyMode: body.privacyMode || "standard",
+      upcomingEventCount: nullableInteger(body.upcomingEventCount),
+      showEventDescription: nullableBoolean(body.showEventDescription),
       active: body.active !== false
     });
     addAudit("room.update", { roomId: room.id, roomCode: room.code, previousCode });
@@ -2629,6 +3287,7 @@ async function handleApi(req, res, url) {
   const eventsMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/events$/);
   if (req.method === "GET" && eventsMatch) {
     const roomCode = eventsMatch[1];
+    const deviceId = cleanText(url.searchParams.get("deviceId"), 160);
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-store",
@@ -2636,9 +3295,141 @@ async function handleApi(req, res, url) {
     });
     res.write(`event: connected\ndata: ${JSON.stringify({ roomCode })}\n\n`);
     if (!clients.has(roomCode)) clients.set(roomCode, new Set());
-    clients.get(roomCode).add(res);
-    req.on("close", () => clients.get(roomCode)?.delete(res));
+    const client = { res, deviceId };
+    clients.get(roomCode).add(client);
+    req.on("close", () => clients.get(roomCode)?.delete(client));
     return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/kiosk-devices/register") {
+    const body = await readBody(req);
+    const room = db.rooms.find(item => item.code === body.roomCode);
+    const clientDeviceId = cleanText(body.clientDeviceId, 160);
+    if (!room || !clientDeviceId) return validationError(res, "Room code and device ID are required.");
+    let device = db.kioskDevices.find(item => item.clientDeviceId === clientDeviceId);
+    if (!device) {
+      device = {
+        id: entityId("kiosk-device"),
+        clientDeviceId,
+        deviceToken: crypto.randomBytes(32).toString("hex"),
+        pairingCode: String(crypto.randomInt(100000, 999999)),
+        roomId: room.id,
+        name: cleanText(body.name, 160) || `${room.name} Display`,
+        status: "pending",
+        browser: cleanText(body.browser, 300),
+        platform: cleanText(body.platform, 160),
+        viewport: cleanText(body.viewport, 80),
+        orientation: cleanText(body.orientation, 30),
+        audioEnabled: body.audioEnabled === true,
+        createdAt: new Date().toISOString(),
+        approvedBy: null,
+        approvedAt: null,
+        lastSeenAt: new Date().toISOString(),
+        lastDataAt: null,
+        pendingCommand: null
+      };
+      db.kioskDevices.push(device);
+      addAudit("kiosk.device.register", { deviceId: device.id, roomId: room.id });
+    } else {
+      Object.assign(device, {
+        roomId: room.id,
+        browser: cleanText(body.browser, 300),
+        platform: cleanText(body.platform, 160),
+        viewport: cleanText(body.viewport, 80),
+        orientation: cleanText(body.orientation, 30),
+        audioEnabled: body.audioEnabled === true,
+        lastSeenAt: new Date().toISOString()
+      });
+    }
+    await saveData();
+    return json(res, device.status === "pending" ? 202 : 200, {
+      ...publicKioskDevice(device, true),
+      deviceToken: device.deviceToken
+    });
+  }
+  if (req.method === "POST" && url.pathname === "/api/kiosk-devices/heartbeat") {
+    const body = await readBody(req);
+    const device = db.kioskDevices.find(item =>
+      item.clientDeviceId === body.clientDeviceId
+      && secureTokenEqual(item.deviceToken, body.deviceToken)
+    );
+    if (!device) return json(res, 401, { error: "Device registration is not recognized." });
+    Object.assign(device, {
+      browser: cleanText(body.browser, 300),
+      platform: cleanText(body.platform, 160),
+      viewport: cleanText(body.viewport, 80),
+      orientation: cleanText(body.orientation, 30),
+      audioEnabled: body.audioEnabled === true,
+      lastDataAt: body.lastDataAt ? cleanText(body.lastDataAt, 80) : device.lastDataAt,
+      lastSeenAt: new Date().toISOString()
+    });
+    const pendingCommand = device.pendingCommand;
+    device.pendingCommand = null;
+    await saveData();
+    return json(res, 200, { status: device.status, pendingCommand });
+  }
+  const kioskApproveMatch = url.pathname.match(/^\/api\/kiosk-devices\/([^/]+)\/approve$/);
+  if (req.method === "POST" && kioskApproveMatch) {
+    const device = db.kioskDevices.find(item => item.id === kioskApproveMatch[1]);
+    const room = db.rooms.find(item => item.id === device?.roomId);
+    const viewer = currentViewer(req);
+    if (!device || !room) return json(res, 404, { error: "Kiosk device not found" });
+    if (!viewerCanPairRoom(viewer, room)) return json(res, 403, { error: "System Admin or the room's Center Admin is required." });
+    const body = await readBody(req);
+    if (cleanText(body.pairingCode, 20) !== device.pairingCode) return validationError(res, "Pairing code does not match.");
+    device.status = "active";
+    device.approvedBy = viewer?.id || null;
+    device.approvedAt = new Date().toISOString();
+    addAudit("kiosk.device.approve", { deviceId: device.id, roomId: room.id });
+    await saveData();
+    notifyRoom(room.code, "data-refresh", device.clientDeviceId);
+    return json(res, 200, publicKioskDevice(device));
+  }
+  const kioskCommandMatch = url.pathname.match(/^\/api\/kiosk-devices\/([^/]+)\/command$/);
+  if (req.method === "POST" && kioskCommandMatch) {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const device = db.kioskDevices.find(item => item.id === kioskCommandMatch[1]);
+    const room = db.rooms.find(item => item.id === device?.roomId);
+    if (!device || !room) return json(res, 404, { error: "Kiosk device not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This device is outside your assigned scope." });
+    const body = await readBody(req);
+    const command = body.command === "reload" ? "reload" : "data-refresh";
+    device.pendingCommand = command;
+    notifyRoom(room.code, command, device.clientDeviceId);
+    addAudit("kiosk.device.command", { deviceId: device.id, command });
+    await saveData();
+    return json(res, 200, { sent: true, command });
+  }
+  const kioskDeviceMatch = url.pathname.match(/^\/api\/kiosk-devices\/([^/]+)$/);
+  if (req.method === "DELETE" && kioskDeviceMatch) {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const device = db.kioskDevices.find(item => item.id === kioskDeviceMatch[1]);
+    const room = db.rooms.find(item => item.id === device?.roomId);
+    if (!device || !room) return json(res, 404, { error: "Kiosk device not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This device is outside your assigned scope." });
+    db.kioskDevices = db.kioskDevices.filter(item => item.id !== device.id);
+    addAudit("kiosk.device.delete", { deviceId: device.id, roomId: room.id });
+    await saveData();
+    return json(res, 200, { deleted: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/kiosks/refresh") {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const body = await readBody(req);
+    const target = {
+      centerIds: cleanIdArray(body.centerIds),
+      campusIds: cleanIdArray(body.campusIds),
+      buildingIds: cleanIdArray(body.buildingIds),
+      roomGroupIds: cleanIdArray(body.roomGroupIds),
+      roomIds: cleanIdArray(body.roomIds),
+      targetRoomCodes: []
+    };
+    const rooms = broadcastTargetRooms(target);
+    const viewer = currentViewer(req);
+    if (!rooms.length) return validationError(res, "Select at least one kiosk target.");
+    if (rooms.some(room => !viewerCanAccessRoom(viewer, room))) return json(res, 403, { error: "One or more kiosk targets are outside your scope." });
+    const command = body.command === "reload" ? "reload" : "data-refresh";
+    for (const room of rooms) notifyRoom(room.code, command);
+    addAudit("kiosk.refresh.scope", { command, roomIds: rooms.map(room => room.id) });
+    return json(res, 200, { sent: rooms.length, command });
   }
   if (req.method === "POST" && url.pathname === "/api/room-groups") {
     if (!requirePermission(req, res, "room.manage")) return;
@@ -2995,6 +3786,7 @@ async function handleApi(req, res, url) {
     }
     Object.assign(theme, {
       name: cleanText(body.name) || theme.name,
+      orientationMode: ["both", "landscape", "portrait"].includes(body.orientationMode) ? body.orientationMode : theme.orientationMode || "both",
       cssTokens: { ...defaultThemeTokens, ...theme.cssTokens, ...cssTokens },
       published: body.published === true,
       archived: body.archived === true,
@@ -3051,9 +3843,35 @@ async function runScheduledCalendarSync() {
       const lastAttempt = assignment.lastAttemptAt ? new Date(assignment.lastAttemptAt).getTime() : 0;
       if (Date.now() - lastAttempt < (account.syncIntervalMinutes || 15) * 60000) continue;
       try {
-        await syncAssignment(assignment);
+        await calendarQueue.enqueue(assignment.id, "scheduled-reconciliation");
       } catch (error) {
-        console.error(`Calendar sync failed for ${assignment.id}:`, error.message);
+        console.error(`Calendar sync enqueue failed for ${assignment.id}:`, error.message);
+      }
+    }
+    for (const account of db.calendarAccounts.filter(item => ["google", "microsoft365"].includes(item.provider) && item.active !== false)) {
+      for (const calendar of account.calendars.filter(item =>
+        item.webhookStatus === "active"
+        && item.webhookExpiration
+        && new Date(item.webhookExpiration).getTime() - Date.now() < 24 * 60 * 60 * 1000
+      )) {
+        try {
+          const providerPath = account.provider === "google" ? "google" : "microsoft";
+          const result = await registerCalendarWebhook(
+            account,
+            calendar,
+            `${baseUrl.replace(/\/+$/, "")}/api/calendar-webhooks/${providerPath}`
+          );
+          calendar.webhookExpiration = result.expiration || calendar.webhookExpiration;
+          calendar.webhookChannelId = result.channelId || calendar.webhookChannelId;
+          if (result.channelToken) calendar.encryptedWebhookToken = encryptCredential(result.channelToken);
+          calendar.webhookSubscriptionId = result.subscriptionId || calendar.webhookSubscriptionId;
+          calendar.webhookClientState = result.clientState || calendar.webhookClientState;
+          account.webhookStatus = "active";
+          account.webhookError = "";
+        } catch (error) {
+          account.webhookStatus = "polling-fallback";
+          account.webhookError = cleanText(error.message, 500);
+        }
       }
     }
     await saveData();

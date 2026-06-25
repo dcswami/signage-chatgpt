@@ -28,6 +28,86 @@ body {
   justify-content: center;
 }
 
+.connection-status,
+.device-status {
+  background: rgb(12 27 35 / 92%);
+  color: #fff;
+  font: 700 15px Arial, Helvetica, sans-serif;
+  left: 50%;
+  padding: 8px 14px;
+  position: fixed;
+  transform: translateX(-50%);
+  z-index: 20;
+}
+
+.connection-status {
+  top: 0;
+}
+
+.connection-status[data-state="stale"] {
+  background: #8a6500;
+}
+
+.connection-status[data-state="offline"] {
+  background: #a1272d;
+}
+
+.device-status {
+  bottom: 0;
+  font-size: 12px;
+  opacity: 0.84;
+}
+
+.device-status[data-state="active"] {
+  background: #285f38;
+}
+
+.qr-code.qr-small {
+  background: var(--qr-background, #fff);
+  border: var(--qr-border, 0) solid var(--qr-background, #fff);
+  box-sizing: content-box;
+  display: block;
+  height: min(var(--qr-size, 132px), 9vh);
+  margin: 0;
+  object-fit: contain;
+  width: min(var(--qr-size, 132px), 9vh);
+}
+
+.event-card small {
+  color: var(--upcoming-detail-text);
+  display: -webkit-box;
+  font-family: var(--theme-upcoming-font);
+  font-size: clamp(12px, 0.85vw, 16px);
+  line-height: 1.2;
+  margin-top: 5px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.current-event-description {
+  font-size: clamp(16px, 1.25vw, 24px);
+  line-height: 1.25;
+  margin: 18px 0 0;
+  max-width: 60ch;
+}
+
+.no-events {
+  align-self: center;
+  color: var(--upcoming-detail-text);
+  font-family: var(--theme-upcoming-font);
+  font-size: clamp(20px, 1.5vw, 28px);
+  margin: 0;
+  text-align: center;
+}
+
+.event-page-indicator {
+  color: var(--upcoming-detail-text);
+  font: 700 13px var(--theme-upcoming-font);
+  justify-self: end;
+  padding: 2px 8px;
+}
+
 [data-room-state="broadcast"] {
   background: #b00020;
   color: #fff;
@@ -108,4 +188,106 @@ body {
 
 .sound-gate[data-mode="blocked"] {
   background: rgb(140 0 26 / 96%);
+}
+
+@media (orientation: portrait) {
+  .kiosk-frame {
+    grid-template-rows: 10% minmax(0, 1fr) 10%;
+    padding: clamp(16px, 3vw, 30px);
+  }
+
+  .kiosk-logo {
+    width: clamp(58px, 10vw, 92px);
+  }
+
+  .kiosk-top,
+  .custom-top {
+    gap: 14px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .kiosk-top p,
+  .kiosk-top time,
+  .custom-top p,
+  .custom-top time {
+    font-size: clamp(16px, 3vw, 26px);
+  }
+
+  .classic-main,
+  .formal-content,
+  .custom-content {
+    gap: clamp(18px, 4vh, 44px);
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 0.82fr) minmax(0, 1.18fr);
+    padding: clamp(14px, 3vh, 34px) 0;
+  }
+
+  .classic-left,
+  .formal-current,
+  .custom-status {
+    align-content: center;
+    max-width: none;
+  }
+
+  .theme-classic h3,
+  .theme-formal h3,
+  .theme-custom h3 {
+    font-size: clamp(48px, 9vw, 92px);
+  }
+
+  .theme-classic .kiosk-status-time,
+  .formal-current span,
+  .custom-status span {
+    font-size: clamp(26px, 5vw, 48px);
+  }
+
+  .kiosk-events {
+    align-content: stretch;
+    grid-auto-rows: minmax(0, 1fr);
+    min-height: 0;
+  }
+
+  .event-card {
+    min-height: 0;
+    padding: clamp(10px, 1.5vh, 18px) clamp(14px, 3vw, 24px);
+  }
+
+  .event-card strong {
+    font-size: clamp(17px, 3vw, 25px);
+  }
+
+  .event-card span {
+    font-size: clamp(13px, 2.3vw, 20px);
+  }
+
+  .kiosk-footer,
+  .custom-footer {
+    gap: 14px;
+  }
+
+  .kiosk-footer > strong,
+  .custom-footer > strong {
+    font-size: clamp(24px, 4.6vw, 46px);
+  }
+
+  .footer-booking p {
+    display: none;
+  }
+
+  .qr-code.qr-small {
+    height: min(var(--qr-size, 132px), 8vh);
+    width: min(var(--qr-size, 132px), 8vh);
+  }
+
+  [data-orientation-fallback="true"] .classic-main,
+  [data-orientation-fallback="true"] .formal-content,
+  [data-orientation-fallback="true"] .custom-content {
+    gap: 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto !important;
+  }
 }

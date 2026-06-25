@@ -469,6 +469,31 @@ th {
   white-space: pre-line;
 }
 
+.calendar-webhook-actions {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.conflict-item,
+.kiosk-device-item {
+  align-items: start;
+}
+
+.conflict-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: flex-end;
+}
+
+.pairing-code {
+  color: var(--accent-dark) !important;
+  font-size: 18px !important;
+  font-weight: 800;
+}
+
 .user-filters {
   grid-template-columns: minmax(240px, 2fr) minmax(180px, 1fr);
 }

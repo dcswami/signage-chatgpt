@@ -130,6 +130,47 @@ function renderBroadcastTargets() {
   renderMulti("#targetRooms", rooms, item => `${item.name} - ${item.buildingName}`);
 }
 
+function renderKioskRefreshTargets() {
+  const allowedRoomIds = new Set(state.viewer.accessibleRoomIds || []);
+  const rooms = state.rooms.filter(room => allowedRoomIds.has(room.id));
+  const fullyAccessible = (id, key) => {
+    const targets = state.rooms.filter(room => room[key] === id);
+    return targets.length && targets.every(room => allowedRoomIds.has(room.id));
+  };
+  const renderMulti = (selector, items, label) => {
+    const select = document.querySelector(selector);
+    const selected = new Set(Array.from(select.selectedOptions).map(option => option.value));
+    select.innerHTML = items.map(item => `<option value="${escapeHtml(item.id)}" ${selected.has(item.id) ? "selected" : ""}>${escapeHtml(label(item))}</option>`).join("");
+  };
+  renderMulti("#kioskRefreshCenters", state.centers.filter(item => fullyAccessible(item.id, "centerId")), item => item.name);
+  renderMulti("#kioskRefreshCampuses", state.campuses.filter(item => fullyAccessible(item.id, "campusId")), item => `${item.name} - ${centerName(item.centerId)}`);
+  renderMulti("#kioskRefreshBuildings", state.buildings.filter(item => fullyAccessible(item.id, "buildingId")), item => `${item.name} - ${campusName(item.campusId)}`);
+  renderMulti("#kioskRefreshRoomGroups", state.roomGroups || [], item => `${item.name} (${item.roomIds.length})`);
+  renderMulti("#kioskRefreshRooms", rooms, item => `${item.name} - ${item.buildingName}`);
+}
+
+function renderKioskDevices() {
+  const now = Date.now();
+  document.querySelector("#kioskDeviceList").innerHTML = state.kioskDevices.map(device => {
+    const online = device.lastSeenAt && now - new Date(device.lastSeenAt).getTime() < 2 * 60 * 1000;
+    return `<article class="entity-item kiosk-device-item">
+      <div>
+        <strong>${escapeHtml(device.name || device.roomName)}</strong>
+        <span>${escapeHtml(device.roomName)} / ${escapeHtml(device.status)} / ${online ? "Online" : "Offline"} / ${escapeHtml(device.orientation || "unknown orientation")}</span>
+        <span>${escapeHtml(device.browser || "Browser not reported")} / ${escapeHtml(device.viewport || "Viewport not reported")}</span>
+        <span>Last contact: ${device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleString() : "Never"} / Audio: ${device.audioEnabled ? "Ready" : "Not enabled"}</span>
+        ${device.status === "pending" ? `<span class="pairing-code">Pairing code: ${escapeHtml(device.pairingCode)}</span>` : ""}
+      </div>
+      <div class="entity-actions">
+        ${device.status === "pending" && device.pairingCode ? `<button type="button" data-approve-device="${escapeHtml(device.id)}" data-pairing-code="${escapeHtml(device.pairingCode)}">Approve</button>` : ""}
+        <button type="button" class="secondary" data-device-command="${escapeHtml(device.id)}" data-command="data-refresh">Refresh Data</button>
+        <button type="button" class="secondary" data-device-command="${escapeHtml(device.id)}" data-command="reload">Reload</button>
+        <button type="button" class="danger-text" data-delete-device="${escapeHtml(device.id)}">Unregister</button>
+      </div>
+    </article>`;
+  }).join("") || `<p class="empty-state">No kiosk devices have registered yet.</p>`;
+}
+
 function renderBroadcastTemplates() {
   const activeTemplates = state.broadcastTemplates.filter(template => template.active);
   const templateSelect = document.querySelector("#broadcastTemplateSelect");
@@ -398,18 +439,26 @@ function renderEmailHistory() {
 }
 
 function providerLabel(provider) {
-  return { google: "Google Calendar", microsoft365: "Microsoft 365", "public-url": "Public URL" }[provider] || provider;
+  return { google: "Google Calendar", microsoft365: "Microsoft 365", caldav: "CalDAV / iCloud", "public-url": "Public URL" }[provider] || provider;
 }
 
 function renderCalendars() {
   document.querySelector("#calendarAccountList").innerHTML = state.calendarAccounts.map(account => `
     <article class="entity-item">
-      <div><strong>${escapeHtml(account.accountName)}</strong><span>${escapeHtml(providerLabel(account.provider))} / ${escapeHtml(account.accessLevel)} / ${account.calendars.length} calendars${account.principalEmail ? ` / ${escapeHtml(account.principalEmail)}` : ""}${account.lastSyncError ? ` / Error: ${escapeHtml(account.lastSyncError)}` : ""}</span></div>
+      <div>
+        <strong>${escapeHtml(account.accountName)}</strong>
+        <span>${escapeHtml(providerLabel(account.provider))} / ${escapeHtml(account.authMode)} / ${escapeHtml(account.accessLevel)} / ${account.calendars.length} calendars${account.principalEmail ? ` / ${escapeHtml(account.principalEmail)}` : ""}</span>
+        <span>Sync: every ${account.syncIntervalMinutes} minutes / Webhook: ${escapeHtml(account.webhookStatus)}${account.webhookError ? ` / ${escapeHtml(account.webhookError)}` : ""}</span>
+      </div>
       <div class="entity-actions">
+        ${account.authMode === "oauth" ? `<button type="button" class="secondary" data-connect-calendar="${escapeHtml(account.id)}">Connect OAuth</button>` : ""}
         <button type="button" class="secondary" data-discover-calendar="${escapeHtml(account.id)}">${account.provider === "public-url" ? "Verify" : "Discover / Verify"}</button>
         <button type="button" class="secondary" data-edit="calendarAccount" data-id="${escapeHtml(account.id)}">Edit</button>
         <button type="button" class="danger-text" data-delete="calendarAccount" data-id="${escapeHtml(account.id)}">Delete</button>
       </div>
+      ${["google", "microsoft365"].includes(account.provider) && account.calendars.length ? `<div class="calendar-webhook-actions">${account.calendars.map(calendar =>
+        `<button type="button" class="secondary compact" data-register-webhook="${escapeHtml(account.id)}" data-calendar-id="${escapeHtml(calendar.id)}">Enable webhook: ${escapeHtml(calendar.name)}</button>`
+      ).join("")}</div>` : ""}
     </article>
   `).join("") || `<p class="empty-state">No calendar accounts configured.</p>`;
 
@@ -437,6 +486,18 @@ function renderCalendars() {
     const account = state.calendarAccounts.find(accountItem => accountItem.id === item.accountId);
     return `<tr><td>${new Date(item.createdAt).toLocaleString()}</td><td>${escapeHtml(room?.name || "Unknown")}</td><td>${escapeHtml(account?.accountName || "Unknown")}</td><td><span class="status-pill email-${item.status === "success" ? "sent" : "failed"}">${escapeHtml(item.status)}</span>${item.error ? `<span class="subtle">${escapeHtml(item.error)}</span>` : ""}</td><td>${item.eventCount ?? "-"}</td></tr>`;
   }).join("") || `<tr><td colspan="5" class="empty-state">No calendar sync history yet.</td></tr>`;
+
+  document.querySelector("#calendarConflictList").innerHTML = state.calendarConflicts.map(conflict => {
+    const room = state.rooms.find(item => item.id === conflict.roomId);
+    const events = conflict.eventIds.map(id => state.calendarEvents.find(item => item.id === id)).filter(Boolean);
+    return `<article class="entity-item conflict-item">
+      <div><strong>${escapeHtml(room?.name || "Unknown room")}</strong><span>${new Date(conflict.startsAt).toLocaleString()} / ${events.length} overlapping events / ${escapeHtml(conflict.status)}</span></div>
+      <div class="conflict-options">${events.map(event => `
+        <button type="button" class="${event.externalEventId === conflict.selectedExternalEventId ? "" : "secondary"}" data-select-conflict="${escapeHtml(conflict.id)}" data-external-event-id="${escapeHtml(event.externalEventId)}">
+          Display ${escapeHtml(event.title)}
+        </button>`).join("")}</div>
+    </article>`;
+  }).join("") || `<p class="empty-state">No calendar conflicts detected.</p>`;
 }
 
 function renderCalendarChoices() {
@@ -480,6 +541,7 @@ function fieldsFor(type, entity = {}) {
   }
   if (type === "calendarAccount") {
     const provider = entity.provider || "public-url";
+    const authMode = entity.authMode || (provider === "google" ? "service-account" : provider === "microsoft365" ? "application" : provider === "caldav" ? "app-password" : "public-url");
     const calendarLines = (entity.calendars || []).map(calendar =>
       provider === "microsoft365"
         ? `${calendar.name}|${calendar.externalId}|${calendar.mailbox || ""}`
@@ -492,6 +554,14 @@ function fieldsFor(type, entity = {}) {
           <option value="public-url" ${provider === "public-url" ? "selected" : ""}>Public Calendar URL</option>
           <option value="google" ${provider === "google" ? "selected" : ""}>Google Calendar</option>
           <option value="microsoft365" ${provider === "microsoft365" ? "selected" : ""}>Microsoft 365</option>
+          <option value="caldav" ${provider === "caldav" ? "selected" : ""}>CalDAV / iCloud</option>
+        </select></label>
+        <label>Connection Method <select name="authMode">
+          <option value="public-url" ${authMode === "public-url" ? "selected" : ""}>Public URL</option>
+          <option value="service-account" ${authMode === "service-account" ? "selected" : ""}>Google Service Account</option>
+          <option value="application" ${authMode === "application" ? "selected" : ""}>Microsoft Application</option>
+          <option value="oauth" ${authMode === "oauth" ? "selected" : ""}>Interactive OAuth</option>
+          <option value="app-password" ${authMode === "app-password" ? "selected" : ""}>CalDAV App Password</option>
         </select></label>
         <label>Access Level <select name="accessLevel">
           <option value="read-only" ${entity.accessLevel !== "writable" ? "selected" : ""}>Read-only</option>
@@ -501,12 +571,14 @@ function fieldsFor(type, entity = {}) {
         <label>Microsoft Tenant ID <input name="tenantId" value="${escapeHtml(entity.tenantId)}" /></label>
         <label>Microsoft Client ID <input name="clientId" value="${escapeHtml(entity.clientId)}" /></label>
         <label>Default Microsoft Mailbox <input name="mailbox" value="${escapeHtml(entity.mailbox)}" placeholder="room@example.org" /></label>
+        <label>CalDAV Server URL <input name="serverUrl" type="url" value="${escapeHtml(entity.serverUrl)}" placeholder="https://caldav.icloud.com/" /></label>
+        <label>CalDAV Username <input name="username" value="${escapeHtml(entity.username)}" /></label>
       </div>
       <label>Credential ${entity.hasCredential ? "(stored; leave blank to keep)" : ""}
-        <textarea name="credential" autocomplete="off" placeholder="Google service-account JSON or Microsoft client secret"></textarea>
+        <textarea name="credential" autocomplete="off" placeholder="Service-account JSON, application/OAuth client secret, or CalDAV app password"></textarea>
       </label>
       <label>Calendars <textarea name="calendarLines" placeholder="Name|Calendar ID or public URL&#10;Microsoft: Name|Calendar ID|Mailbox">${escapeHtml(calendarLines)}</textarea></label>
-      <p class="help-text">Google and Microsoft accounts may be saved first, then use Discover / Verify to load accessible calendars. Google calendars must be shared with the service-account email.</p>
+      <p class="help-text">OAuth connections are system-owned. Save the account, select Connect OAuth, then Discover / Verify. Public-feed intervals are configurable, but providers may cache feeds for much longer than the selected interval.</p>
       <label class="check-label"><input name="active" type="checkbox" ${active ? "checked" : ""} /> Active</label>
     `;
   }
@@ -567,6 +639,11 @@ function fieldsFor(type, entity = {}) {
         <label>Default Theme <select name="defaultThemeId" required>${optionList(state.themes, entity.defaultThemeId || state.themes[0]?.id)}</select></label>
         <label>Logo URL / Asset Path <input name="logoUrl" value="${escapeHtml(entity.logoUrl || "/assets/branding/aksharderi-small2.png")}" /></label>
         <label>Default Booking URL <input name="bookingUrl" type="url" value="${escapeHtml(entity.bookingUrl)}" /></label>
+        <label>Upcoming Events Per Page <input name="upcomingEventCount" type="number" min="1" max="10" value="${escapeHtml(entity.upcomingEventCount || 5)}" /></label>
+        <label>Show Event Description <select name="showEventDescription">
+          <option value="false" ${entity.showEventDescription !== true ? "selected" : ""}>No</option>
+          <option value="true" ${entity.showEventDescription === true ? "selected" : ""}>Yes</option>
+        </select></label>
         <label>Contact Name <input name="contactName" value="${escapeHtml(entity.contactName)}" /></label>
         <label>Contact Email <input name="contactEmail" type="email" value="${escapeHtml(entity.contactEmail)}" /></label>
         <label>Contact Phone <input name="contactPhone" value="${escapeHtml(entity.contactPhone)}" /></label>
@@ -582,6 +659,12 @@ function fieldsFor(type, entity = {}) {
       <div class="form-grid">
         <label>Default Theme <select name="defaultThemeId"><option value="">Inherit center theme</option>${optionList(state.themes, entity.defaultThemeId)}</select></label>
         <label>Default Booking URL <input name="bookingUrl" type="url" value="${escapeHtml(entity.bookingUrl)}" placeholder="Inherit center booking URL" /></label>
+        <label>Upcoming Events Per Page <input name="upcomingEventCount" type="number" min="1" max="10" value="${escapeHtml(entity.upcomingEventCount ?? "")}" placeholder="Inherit" /></label>
+        <label>Show Event Description <select name="showEventDescription">
+          <option value="" ${entity.showEventDescription == null ? "selected" : ""}>Inherit center</option>
+          <option value="false" ${entity.showEventDescription === false ? "selected" : ""}>No</option>
+          <option value="true" ${entity.showEventDescription === true ? "selected" : ""}>Yes</option>
+        </select></label>
         <label>Contact Name <input name="contactName" value="${escapeHtml(entity.contactName)}" /></label>
         <label>Contact Email <input name="contactEmail" type="email" value="${escapeHtml(entity.contactEmail)}" /></label>
         <label>Contact Phone <input name="contactPhone" value="${escapeHtml(entity.contactPhone)}" /></label>
@@ -599,6 +682,12 @@ function fieldsFor(type, entity = {}) {
         <label>Timezone Override <input name="timezone" value="${escapeHtml(entity.timezone)}" placeholder="Inherit center timezone" /></label>
         <label>Default Theme <select name="defaultThemeId"><option value="">Inherit campus or center theme</option>${optionList(state.themes, entity.defaultThemeId)}</select></label>
         <label>Default Booking URL <input name="bookingUrl" type="url" value="${escapeHtml(entity.bookingUrl)}" placeholder="Inherit booking URL" /></label>
+        <label>Upcoming Events Per Page <input name="upcomingEventCount" type="number" min="1" max="10" value="${escapeHtml(entity.upcomingEventCount ?? "")}" placeholder="Inherit" /></label>
+        <label>Show Event Description <select name="showEventDescription">
+          <option value="" ${entity.showEventDescription == null ? "selected" : ""}>Inherit campus or center</option>
+          <option value="false" ${entity.showEventDescription === false ? "selected" : ""}>No</option>
+          <option value="true" ${entity.showEventDescription === true ? "selected" : ""}>Yes</option>
+        </select></label>
       </div>
       <label>Address <textarea name="address">${escapeHtml(entity.address)}</textarea></label>
       <label class="check-label"><input name="active" type="checkbox" ${active ? "checked" : ""} /> Active</label>
@@ -628,6 +717,12 @@ function fieldsFor(type, entity = {}) {
         <option value="standard" ${entity.privacyMode === "standard" || !entity.privacyMode ? "selected" : ""}>Standard event details</option>
         <option value="private-title" ${entity.privacyMode === "private-title" ? "selected" : ""}>Show all titles as Private Event</option>
         <option value="hide-details" ${entity.privacyMode === "hide-details" ? "selected" : ""}>Hide titles and time details</option>
+      </select></label>
+      <label>Upcoming Events Per Page <input name="upcomingEventCount" type="number" min="1" max="10" value="${escapeHtml(entity.upcomingEventCount ?? "")}" placeholder="Inherit" /></label>
+      <label>Show Event Description <select name="showEventDescription">
+        <option value="" ${entity.showEventDescription == null ? "selected" : ""}>Inherit location setting</option>
+        <option value="false" ${entity.showEventDescription === false ? "selected" : ""}>No</option>
+        <option value="true" ${entity.showEventDescription === true ? "selected" : ""}>Yes</option>
       </select></label>
     </div>
     <label>Booking URL Override <input name="bookingUrl" type="url" value="${escapeHtml(entity.configuredBookingUrl ?? entity.bookingUrl ?? "")}" placeholder="Inherit building, campus, or center booking URL" /></label>
@@ -673,6 +768,7 @@ function openEntityDialog(type, id = "") {
     Array.from(entityForm.elements.roomIds.options).forEach(option => { option.selected = selectedRooms.has(option.value); });
   }
   document.querySelector("#formError").textContent = "";
+  if (type === "calendarAccount") updateCalendarAuthMode();
   entityDialog.showModal();
 }
 
@@ -687,6 +783,28 @@ function updateRoomHierarchy(changedField) {
   }
   const buildings = state.buildings.filter(building => building.campusId === campusSelect.value);
   buildingSelect.innerHTML = optionList(buildings, buildings[0]?.id);
+}
+
+function updateCalendarAuthMode() {
+  if (entityForm.elements.entityType.value !== "calendarAccount") return;
+  const provider = entityForm.elements.provider.value;
+  const allowed = {
+    google: ["service-account", "oauth"],
+    microsoft365: ["application", "oauth"],
+    caldav: ["app-password"],
+    "public-url": ["public-url"]
+  };
+  const defaults = {
+    google: "service-account",
+    microsoft365: "application",
+    caldav: "app-password",
+    "public-url": "public-url"
+  };
+  if (!allowed[provider].includes(entityForm.elements.authMode.value)) {
+    entityForm.elements.authMode.value = defaults[provider];
+  }
+  entityForm.elements.accessLevel.disabled = provider === "public-url";
+  if (provider === "public-url") entityForm.elements.accessLevel.value = "read-only";
 }
 
 async function saveEntity(event) {
@@ -952,6 +1070,50 @@ async function cancelBroadcast(id) {
   await load();
 }
 
+async function sendKioskRefresh(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const status = document.querySelector("#kioskRefreshStatus");
+  const payload = {
+    centerIds: selectedValues("#kioskRefreshCenters"),
+    campusIds: selectedValues("#kioskRefreshCampuses"),
+    buildingIds: selectedValues("#kioskRefreshBuildings"),
+    roomGroupIds: selectedValues("#kioskRefreshRoomGroups"),
+    roomIds: selectedValues("#kioskRefreshRooms"),
+    command: form.elements.command.value
+  };
+  status.textContent = "Sending kiosk command...";
+  try {
+    const result = await api("/api/kiosks/refresh", { method: "POST", body: JSON.stringify(payload) });
+    status.textContent = `${result.command === "reload" ? "Reload" : "Data refresh"} sent to ${result.sent} room(s).`;
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function approveKioskDevice(deviceId, pairingCode) {
+  if (!confirm(`Approve kiosk pairing code ${pairingCode}?`)) return;
+  await api(`/api/kiosk-devices/${deviceId}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ pairingCode })
+  });
+  await load();
+}
+
+async function sendKioskDeviceCommand(deviceId, command) {
+  await api(`/api/kiosk-devices/${deviceId}/command`, {
+    method: "POST",
+    body: JSON.stringify({ command })
+  });
+  await load();
+}
+
+async function deleteKioskDevice(deviceId) {
+  if (!confirm("Unregister this kiosk device? The room URL will continue to work.")) return;
+  await api(`/api/kiosk-devices/${deviceId}`, { method: "DELETE" });
+  await load();
+}
+
 async function cloneTheme(themeId) {
   const theme = await api(`/api/themes/${themeId}/clone`, { method: "POST", body: "{}" });
   await load();
@@ -1004,6 +1166,37 @@ async function discoverCalendars(accountId) {
   }
 }
 
+async function connectCalendarOauth(accountId) {
+  try {
+    const result = await api(`/api/calendar-accounts/${accountId}/oauth/start`);
+    window.location.href = result.authorizationUrl;
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function registerCalendarWebhook(accountId, calendarId) {
+  try {
+    await api(`/api/calendar-accounts/${accountId}/calendars/${calendarId}/webhook`, {
+      method: "POST",
+      body: "{}"
+    });
+    await load();
+    alert("Webhook enabled. Scheduled polling remains active as reconciliation.");
+  } catch (error) {
+    await load();
+    alert(error.message);
+  }
+}
+
+async function selectConflictEvent(conflictId, externalEventId) {
+  await api(`/api/calendar-conflicts/${conflictId}/select`, {
+    method: "POST",
+    body: JSON.stringify({ externalEventId })
+  });
+  await load();
+}
+
 async function deleteCalendarAssignment(assignmentId) {
   if (!confirm("Remove this room calendar assignment?")) return;
   await api(`/api/calendar-assignments/${assignmentId}`, { method: "DELETE" });
@@ -1023,6 +1216,12 @@ const themeTokenLabels = {
   upcomingTileBg: "Upcoming Event Tile",
   upcomingTitleText: "Upcoming Event Title",
   upcomingDetailText: "Upcoming Event Details",
+  qrForeground: "QR Foreground",
+  qrBackground: "QR Background",
+  qrTransparent: "Transparent QR Background",
+  qrSize: "QR Size (pixels)",
+  qrBorder: "QR Border (pixels)",
+  qrMargin: "QR Quiet-Zone Modules",
   headerFont: "Header Font",
   footerFont: "Footer Font",
   eventDetailFont: "Event Detail Font",
@@ -1041,6 +1240,9 @@ const themeTokenProperties = {
   upcomingTileBg: "--upcoming-tile-bg",
   upcomingTitleText: "--upcoming-title-text",
   upcomingDetailText: "--upcoming-detail-text",
+  qrBackground: "--qr-background",
+  qrSize: "--qr-size",
+  qrBorder: "--qr-border",
   headerFont: "--theme-header-font",
   footerFont: "--theme-footer-font",
   eventDetailFont: "--theme-event-detail-font",
@@ -1056,7 +1258,9 @@ const themeColorTokens = new Set([
   "footerText",
   "ink",
   "upcomingTitleText",
-  "upcomingDetailText"
+  "upcomingDetailText",
+  "qrForeground",
+  "qrBackground"
 ]);
 
 function colorParts(value) {
@@ -1099,6 +1303,17 @@ function themeTokenField(key, label, value) {
       <label>Transparency <input name="${prefix}Transparency" type="range" min="0" max="100" step="5" value="${transparency}" /><output id="${prefix}TransparencyValue">${transparency}%</output></label>
     </fieldset>`;
   }
+  if (key === "qrTransparent") {
+    return `<label class="check-label"><input name="qrTransparent" type="checkbox" ${String(value) === "true" ? "checked" : ""} /> ${escapeHtml(label)}</label>`;
+  }
+  if (key === "qrSize" || key === "qrBorder" || key === "qrMargin") {
+    const limits = key === "qrSize"
+      ? 'min="96" max="512"'
+      : key === "qrBorder"
+        ? 'min="0" max="24"'
+        : 'min="1" max="8"';
+    return `<label>${escapeHtml(label)} <input name="${escapeHtml(key)}" type="number" ${limits} value="${escapeHtml(value || "")}" /></label>`;
+  }
   return `<label>${escapeHtml(label)} <input name="${escapeHtml(key)}" value="${escapeHtml(value || "")}" /></label>`;
 }
 
@@ -1121,6 +1336,7 @@ function editTheme(themeId) {
   form.hidden = false;
   form.elements.themeId.value = theme.id;
   form.elements.name.value = theme.name;
+  form.elements.orientationMode.value = theme.orientationMode || "both";
   form.elements.published.checked = theme.published;
   form.elements.archived.checked = theme.archived;
   const backgroundPreview = document.querySelector("#themeBackgroundPreview");
@@ -1142,12 +1358,14 @@ async function saveTheme(event) {
   for (const key of Object.keys(themeTokenLabels)) {
     if (key === "panel") cssTokens.panel = rgbaValue(values.panelColor, 1 - Number(values.panelTransparency) / 100);
     else if (key === "upcomingTileBg") cssTokens.upcomingTileBg = rgbaValue(values.upcomingTileColor, 1 - Number(values.upcomingTileTransparency) / 100);
+    else if (key === "qrTransparent") cssTokens[key] = form.elements.qrTransparent.checked ? "true" : "false";
     else cssTokens[key] = values[key];
   }
   await api(`/api/themes/${values.themeId}`, {
     method: "PUT",
     body: JSON.stringify({
       name: values.name,
+      orientationMode: values.orientationMode,
       cssTokens,
       published: form.elements.published.checked,
       archived: form.elements.archived.checked
@@ -1301,6 +1519,8 @@ function render() {
   renderDashboardFilters();
   renderDashboardRows();
   renderBroadcastTargets();
+  renderKioskRefreshTargets();
+  renderKioskDevices();
   renderBroadcastTemplates();
   renderBroadcastDashboard();
   renderEntityLists();
@@ -1320,7 +1540,19 @@ async function load() {
   const firstLoad = !state;
   state = await api("/api/state");
   render();
-  if (firstLoad) resetBroadcastForm();
+  if (firstLoad) {
+    resetBroadcastForm();
+    const requestedTab = window.location.hash.slice(1);
+    const tab = requestedTab ? document.querySelector(`[data-tab="${requestedTab}"]`) : null;
+    if (tab) tab.click();
+    const oauthResult = new URLSearchParams(window.location.search).get("calendarOAuth");
+    if (oauthResult) {
+      document.querySelector("#calendarAccountList").insertAdjacentHTML(
+        "beforebegin",
+        `<p class="form-status">${escapeHtml(oauthResult === "connected" ? "Calendar OAuth connected successfully." : oauthResult)}</p>`
+      );
+    }
+  }
 }
 
 document.querySelectorAll("[data-tab]").forEach(button => {
@@ -1340,6 +1572,7 @@ document.querySelector("#smtpForm").addEventListener("submit", saveSmtpSettings)
 document.querySelector("#smtpTestForm").addEventListener("submit", testSmtp);
 document.querySelector("#emailForm").addEventListener("submit", sendAdministrativeEmail);
 document.querySelector("#calendarAssignmentForm").addEventListener("submit", saveCalendarAssignment);
+document.querySelector("#kioskRefreshForm").addEventListener("submit", sendKioskRefresh);
 document.querySelector("#calendarAssignmentAccount").addEventListener("change", renderCalendarChoices);
 document.querySelector("#themePreviewRoom").addEventListener("change", () => {
   const themeId = document.querySelector("#themeEditorForm").elements.themeId.value;
@@ -1367,10 +1600,18 @@ document.querySelector("#themeEditorForm").addEventListener("input", event => {
     const form = event.currentTarget;
     value = rgbaValue(form.elements.upcomingTileColor.value, 1 - Number(form.elements.upcomingTileTransparency.value) / 100);
     document.querySelector("#upcomingTileTransparencyValue").textContent = `${Math.round(Number(form.elements.upcomingTileTransparency.value))}%`;
+  } else if (tokenName === "qrTransparent") {
+    tokenName = "qrBackground";
+    value = event.target.checked
+      ? "transparent"
+      : event.currentTarget.elements.qrBackground.value || "#ffffff";
   }
   const property = themeTokenProperties[tokenName];
   const kiosk = document.querySelector("#themePreviewFrame").contentDocument?.querySelector("#kiosk");
-  if (property && kiosk) kiosk.style.setProperty(property, value);
+  if (property && kiosk) kiosk.style.setProperty(
+    property,
+    tokenName === "qrSize" || tokenName === "qrBorder" ? `${value}px` : value
+  );
 });
 document.querySelector("#broadcastForm").addEventListener("submit", publishBroadcast);
 document.querySelector("#broadcastTemplateSelect").addEventListener("change", event => {
@@ -1388,6 +1629,7 @@ document.querySelector("#cancelDialog").addEventListener("click", () => entityDi
 entityForm.addEventListener("submit", saveEntity);
 entityForm.addEventListener("change", event => {
   if (event.target.name === "centerId" || event.target.name === "campusId") updateRoomHierarchy(event.target.name);
+  if (event.target.name === "provider") updateCalendarAuthMode();
 });
 
 document.addEventListener("click", event => {
@@ -1409,6 +1651,12 @@ document.addEventListener("click", event => {
   if (syncButton) return syncCalendarAssignment(syncButton.dataset.syncCalendar);
   const discoverButton = event.target.closest("[data-discover-calendar]");
   if (discoverButton) return discoverCalendars(discoverButton.dataset.discoverCalendar);
+  const connectCalendarButton = event.target.closest("[data-connect-calendar]");
+  if (connectCalendarButton) return connectCalendarOauth(connectCalendarButton.dataset.connectCalendar);
+  const webhookButton = event.target.closest("[data-register-webhook]");
+  if (webhookButton) return registerCalendarWebhook(webhookButton.dataset.registerWebhook, webhookButton.dataset.calendarId);
+  const conflictButton = event.target.closest("[data-select-conflict]");
+  if (conflictButton) return selectConflictEvent(conflictButton.dataset.selectConflict, conflictButton.dataset.externalEventId);
   const deleteAssignmentButton = event.target.closest("[data-delete-assignment]");
   if (deleteAssignmentButton) return deleteCalendarAssignment(deleteAssignmentButton.dataset.deleteAssignment);
   const editThemeButton = event.target.closest("[data-edit-theme]");
@@ -1423,6 +1671,12 @@ document.addEventListener("click", event => {
   if (endBroadcastButton) return endBroadcast(endBroadcastButton.dataset.endBroadcast);
   const cancelBroadcastButton = event.target.closest("[data-cancel-broadcast]");
   if (cancelBroadcastButton) return cancelBroadcast(cancelBroadcastButton.dataset.cancelBroadcast);
+  const approveDeviceButton = event.target.closest("[data-approve-device]");
+  if (approveDeviceButton) return approveKioskDevice(approveDeviceButton.dataset.approveDevice, approveDeviceButton.dataset.pairingCode);
+  const deviceCommandButton = event.target.closest("[data-device-command]");
+  if (deviceCommandButton) return sendKioskDeviceCommand(deviceCommandButton.dataset.deviceCommand, deviceCommandButton.dataset.command);
+  const deleteDeviceButton = event.target.closest("[data-delete-device]");
+  if (deleteDeviceButton) return deleteKioskDevice(deleteDeviceButton.dataset.deleteDevice);
 });
 
 document.addEventListener("change", event => {

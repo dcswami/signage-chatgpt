@@ -6,9 +6,12 @@ services:
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
@@ -27,6 +30,11 @@ services:
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
       - ./database/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-signage_app} -d ${POSTGRES_DB:-signage}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7
@@ -36,3 +44,8 @@ services:
       - "127.0.0.1:6379:6379"
     volumes:
       - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
