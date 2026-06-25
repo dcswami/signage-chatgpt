@@ -57,14 +57,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_app_rooms_kiosk_identifier
 CREATE INDEX IF NOT EXISTS idx_app_rooms_hierarchy
   ON app_rooms ((data->>'centerId'), (data->>'campusId'), (data->>'buildingId'));
 CREATE INDEX IF NOT EXISTS idx_app_calendar_events_room_time
-  ON app_calendar_events ((data->>'roomId'), ((data->>'startsAt')::timestamptz), ((data->>'endsAt')::timestamptz));
+  ON app_calendar_events ((data->>'roomId'), (data->>'startsAt'), (data->>'endsAt'));
 CREATE INDEX IF NOT EXISTS idx_app_notifications_user_created
-  ON app_notifications ((data->>'userId'), ((data->>'createdAt')::timestamptz) DESC);
+  ON app_notifications ((data->>'userId'), (data->>'createdAt') DESC);
 CREATE INDEX IF NOT EXISTS idx_app_sessions_token_hash
   ON app_sessions ((data->>'tokenHash'));
 CREATE INDEX IF NOT EXISTS idx_app_sessions_expiration
-  ON app_sessions (((data->>'expiresAt')::timestamptz));
+  ON app_sessions ((data->>'expiresAt'));
 CREATE INDEX IF NOT EXISTS idx_app_feature_grants_user_time
-  ON app_feature_grants ((data->>'userId'), ((data->>'startsAt')::timestamptz), ((data->>'endsAt')::timestamptz));
+  ON app_feature_grants ((data->>'userId'), (data->>'startsAt'), (data->>'endsAt'));
 CREATE INDEX IF NOT EXISTS idx_app_audit_created
-  ON app_audit_logs (((data->>'createdAt')::timestamptz) DESC);
+  ON app_audit_logs ((data->>'createdAt') DESC);
