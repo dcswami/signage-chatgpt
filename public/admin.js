@@ -152,22 +152,31 @@ function renderKioskRefreshTargets() {
 }
 
 function renderKioskDevices() {
-  const now = Date.now();
+  const healthCounts = ["online", "stale", "offline", "revoked"].map(status => ({
+    status,
+    count: state.kioskDevices.filter(device => device.healthStatus === status).length
+  }));
+  document.querySelector("#kioskDeviceSummary").innerHTML = healthCounts.map(item => `
+    <article><span>${escapeHtml(item.status)}</span><strong>${item.count}</strong></article>
+  `).join("");
   document.querySelector("#kioskDeviceList").innerHTML = state.kioskDevices.map(device => {
-    const online = device.lastSeenAt && now - new Date(device.lastSeenAt).getTime() < 2 * 60 * 1000;
     return `<article class="entity-item kiosk-device-item">
       <div>
         <strong>${escapeHtml(device.name || device.roomName)}</strong>
-        <span>${escapeHtml(device.roomName)} / ${escapeHtml(device.status)} / ${online ? "Online" : "Offline"} / ${escapeHtml(device.orientation || "unknown orientation")}</span>
+        <span class="device-badges"><span class="status-pill device-${escapeHtml(device.status)}">${escapeHtml(device.status)}</span><span class="status-pill health-${escapeHtml(device.healthStatus)}">${escapeHtml(device.healthStatus)}</span></span>
+        <span>${escapeHtml(device.roomName)} / ${escapeHtml(device.deviceType || "Unknown device")} / ${escapeHtml(device.orientation || "unknown orientation")}</span>
         <span>${escapeHtml(device.browser || "Browser not reported")} / ${escapeHtml(device.viewport || "Viewport not reported")}</span>
-        <span>Last contact: ${device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleString() : "Never"} / Audio: ${device.audioEnabled ? "Ready" : "Not enabled"}</span>
+        <span>IP: ${escapeHtml(device.lastIpAddress || "Not reported")} / Audio: ${device.audioEnabled ? "Ready" : "Not enabled"}</span>
+        <span>Last contact: ${device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleString() : "Never"} / Last data: ${device.lastDataAt ? new Date(device.lastDataAt).toLocaleString() : "Never"}</span>
         ${device.status === "pending" ? `<span class="pairing-code">Pairing code: ${escapeHtml(device.pairingCode)}</span>` : ""}
       </div>
       <div class="entity-actions">
         ${device.status === "pending" && device.pairingCode ? `<button type="button" data-approve-device="${escapeHtml(device.id)}" data-pairing-code="${escapeHtml(device.pairingCode)}">Approve</button>` : ""}
-        <button type="button" class="secondary" data-device-command="${escapeHtml(device.id)}" data-command="data-refresh">Refresh Data</button>
-        <button type="button" class="secondary" data-device-command="${escapeHtml(device.id)}" data-command="reload">Reload</button>
-        <button type="button" class="danger-text" data-delete-device="${escapeHtml(device.id)}">Unregister</button>
+        ${device.status === "active" ? `<button type="button" class="secondary" data-device-command="${escapeHtml(device.id)}" data-command="data-refresh">Refresh Data</button>
+        <button type="button" class="secondary" data-device-command="${escapeHtml(device.id)}" data-command="reload">Reload</button>` : ""}
+        ${device.status !== "revoked" ? `<button type="button" class="secondary" data-reassign-device="${escapeHtml(device.id)}">Reassign</button>
+        <button type="button" class="danger-text" data-revoke-device="${escapeHtml(device.id)}">Revoke</button>` : ""}
+        ${device.status === "revoked" ? `<button type="button" class="danger-text" data-delete-device="${escapeHtml(device.id)}">Remove Record</button>` : ""}
       </div>
     </article>`;
   }).join("") || `<p class="empty-state">No kiosk devices have registered yet.</p>`;
@@ -714,6 +723,15 @@ function renderAudit() {
 
 function fieldsFor(type, entity = {}) {
   const active = entity.active !== false;
+  if (type === "kioskDevice") {
+    const accessibleRooms = state.rooms.filter(room => state.viewer.accessibleRoomIds.includes(room.id));
+    return `
+      <label>Device Name <input name="name" required maxlength="160" value="${escapeHtml(entity.name)}" /></label>
+      <label>Device Type <input name="deviceType" maxlength="80" value="${escapeHtml(entity.deviceType)}" /></label>
+      <label>Assigned Room <select name="roomId" required>${optionList(accessibleRooms, entity.roomId, room => `${room.name} - ${room.buildingName}`)}</select></label>
+      <p class="help-text">An online kiosk will automatically navigate to the destination room after this change.</p>
+    `;
+  }
   if (type === "role") {
     return `
       <label>Role Name <input name="name" required maxlength="160" value="${escapeHtml(entity.name)}" /></label>
@@ -926,14 +944,15 @@ function findEntity(type, id) {
     roomGroup: state.roomGroups,
     broadcastTemplate: state.broadcastTemplates,
     role: state.roles,
-    calendarAccount: state.calendarAccounts
+    calendarAccount: state.calendarAccounts,
+    kioskDevice: state.kioskDevices
   }[type];
   return collection?.find(item => item.id === id);
 }
 
 function openEntityDialog(type, id = "") {
   const entity = id ? findEntity(type, id) : {};
-  const labels = { broadcastTemplate: "Broadcast Template" };
+  const labels = { broadcastTemplate: "Broadcast Template", kioskDevice: "Kiosk Device" };
   document.querySelector("#entityDialogTitle").textContent = `${id ? "Edit" : "New"} ${labels[type] || `${type[0].toUpperCase()}${type.slice(1)}`}`;
   entityForm.elements.entityType.value = type;
   entityForm.elements.entityId.value = id;
@@ -1023,6 +1042,18 @@ async function saveEntity(event) {
   } else if (type === "roomGroup") {
     data.roomIds = Array.from(entityForm.elements.roomIds.selectedOptions).map(option => option.value);
     data.active = entityForm.elements.active.checked;
+  } else if (type === "kioskDevice") {
+    try {
+      await api(`/api/kiosk-devices/${id}/reassign`, {
+        method: "POST",
+        body: JSON.stringify(data)
+      });
+      entityDialog.close();
+      await load();
+    } catch (error) {
+      document.querySelector("#formError").textContent = error.message;
+    }
+    return;
   } else {
     data.active = entityForm.elements.active.checked;
   }
@@ -1293,8 +1324,14 @@ async function sendKioskDeviceCommand(deviceId, command) {
 }
 
 async function deleteKioskDevice(deviceId) {
-  if (!confirm("Unregister this kiosk device? The room URL will continue to work.")) return;
+  if (!confirm("Remove this revoked device record? The physical kiosk can register again afterward.")) return;
   await api(`/api/kiosk-devices/${deviceId}`, { method: "DELETE" });
+  await load();
+}
+
+async function revokeKioskDevice(deviceId) {
+  if (!confirm("Revoke this kiosk device? Its registration token will stop working immediately.")) return;
+  await api(`/api/kiosk-devices/${deviceId}/revoke`, { method: "POST", body: "{}" });
   await load();
 }
 
@@ -1757,6 +1794,7 @@ document.querySelector("#roomSearch").addEventListener("input", renderDashboardR
 document.querySelector("#dashboardCenterFilter").addEventListener("change", renderDashboardRows);
 document.querySelector("#dashboardStatusFilter").addEventListener("change", renderDashboardRows);
 document.querySelector("#refreshDashboard").addEventListener("click", load);
+document.querySelector("#refreshKioskDevices").addEventListener("click", load);
 document.querySelector("#userSearch").addEventListener("input", renderUsers);
 document.querySelector("#userStatusFilter").addEventListener("change", renderUsers);
 document.querySelector("#smtpForm").addEventListener("submit", saveSmtpSettings);
@@ -1875,6 +1913,10 @@ document.addEventListener("click", event => {
   if (approveDeviceButton) return approveKioskDevice(approveDeviceButton.dataset.approveDevice, approveDeviceButton.dataset.pairingCode);
   const deviceCommandButton = event.target.closest("[data-device-command]");
   if (deviceCommandButton) return sendKioskDeviceCommand(deviceCommandButton.dataset.deviceCommand, deviceCommandButton.dataset.command);
+  const reassignDeviceButton = event.target.closest("[data-reassign-device]");
+  if (reassignDeviceButton) return openEntityDialog("kioskDevice", reassignDeviceButton.dataset.reassignDevice);
+  const revokeDeviceButton = event.target.closest("[data-revoke-device]");
+  if (revokeDeviceButton) return revokeKioskDevice(revokeDeviceButton.dataset.revokeDevice);
   const deleteDeviceButton = event.target.closest("[data-delete-device]");
   if (deleteDeviceButton) return deleteKioskDevice(deleteDeviceButton.dataset.deleteDevice);
 });

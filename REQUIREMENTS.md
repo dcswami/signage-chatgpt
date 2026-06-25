@@ -526,10 +526,14 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Platform
 - Viewport and orientation
 - Client device ID
-- Encrypted or secret device token
+- One-time device token returned only to the registering kiosk
+- One-way device-token hash stored by the server; the original token must not be retrievable
 - Six-digit pairing code
-- Pairing status
+- Registration status: pending, active, or revoked
+- Health status: online, stale, offline, or revoked
 - Approved by and approved time
+- Revoked by and revoked time
+- Last reassigned by and reassigned time
 - Last contact time
 - Last successful data time
 - Pending remote command
@@ -627,6 +631,11 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Optional device registration must add health monitoring, orientation, browser/platform details, last contact, last successful data time, audio status, and remote refresh/reload controls.
 - A new device must display a six-digit pairing code and remain pending until approved.
 - System Administrators and Center Administrators responsible for the room's center may approve pairing.
+- Registration must generate a high-entropy device token, return it only to the physical kiosk, store only a one-way token hash, and validate subsequent heartbeats using timing-safe comparison.
+- Device health is online when the last check-in is within two minutes, stale after two minutes, and offline after ten minutes.
+- The management portal must show device name, assigned room, device type, browser, platform, viewport, orientation, last IP address, audio state, last contact, and last successful data time.
+- Authorized administrators may reassign a pending or active device to another room within their permitted scope. An online kiosk must automatically navigate to its newly assigned room.
+- Authorized administrators may revoke a device. Revocation must invalidate its token immediately and prevent silent re-registration until the revoked record is explicitly removed.
 - The supported kiosk test matrix is ChromeOS/Chrome, Windows/Edge, iPad/Safari, Android/Chrome, and Raspberry Pi/Chromium.
 
 ### 10.5 Server Hardware Requirements

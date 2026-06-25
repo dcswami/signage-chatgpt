@@ -457,13 +457,23 @@ function normalizeData(data) {
   }));
   normalized.kioskDevices = normalized.kioskDevices.map(device => ({
     status: "pending",
+    deviceType: "unknown",
     approvedBy: null,
     approvedAt: null,
+    revokedBy: null,
+    revokedAt: null,
+    reassignedBy: null,
+    reassignedAt: null,
     lastSeenAt: null,
     lastDataAt: null,
+    lastIpAddress: "",
     audioEnabled: false,
     pendingCommand: null,
-    ...device
+    ...device,
+    deviceToken: undefined,
+    deviceTokenHash: device.deviceTokenHash || (device.deviceToken
+      ? crypto.createHash("sha256").update(String(device.deviceToken)).digest("hex")
+      : "")
   }));
   normalized.themeSchedules = normalized.themeSchedules.map(schedule => ({
     centerIds: [],
@@ -807,6 +817,14 @@ function publicBroadcast(broadcast) {
 
 function publicKioskDevice(device, includePairingCode = false) {
   const room = db.rooms.find(item => item.id === device.roomId);
+  const age = device.lastSeenAt ? Date.now() - new Date(device.lastSeenAt).getTime() : Infinity;
+  const healthStatus = device.status === "revoked"
+    ? "revoked"
+    : age <= 2 * 60 * 1000
+      ? "online"
+      : age <= 10 * 60 * 1000
+        ? "stale"
+        : "offline";
   return {
     id: device.id,
     clientDeviceId: device.clientDeviceId,
@@ -815,15 +833,20 @@ function publicKioskDevice(device, includePairingCode = false) {
     roomName: room?.name || "Unknown room",
     name: device.name || "",
     status: device.status,
+    healthStatus,
     pairingCode: includePairingCode && device.status === "pending" ? device.pairingCode : "",
+    deviceType: device.deviceType || "unknown",
     browser: device.browser || "",
     platform: device.platform || "",
     viewport: device.viewport || "",
     orientation: device.orientation || "",
     audioEnabled: Boolean(device.audioEnabled),
+    lastIpAddress: device.lastIpAddress || "",
     lastSeenAt: device.lastSeenAt || null,
     lastDataAt: device.lastDataAt || null,
     approvedAt: device.approvedAt || null,
+    revokedAt: device.revokedAt || null,
+    reassignedAt: device.reassignedAt || null,
     pendingCommand: device.pendingCommand || null
   };
 }
@@ -1396,6 +1419,15 @@ function secureTokenEqual(left, right) {
   return crypto.timingSafeEqual(leftHash, rightHash);
 }
 
+function hashDeviceToken(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function requestIp(req) {
+  const forwarded = String(req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return cleanText(forwarded || req.socket.remoteAddress || "", 80);
+}
+
 function calendarWebhookToken(calendar) {
   if (calendar.encryptedWebhookToken) {
     try {
@@ -1737,7 +1769,8 @@ function adminPage() {
           </form>
         </section>
         <section class="panel">
-          <div class="panel-heading"><div><h2>Registered Kiosk Devices</h2><p>System Admins and Center Admins approve pairing. Unregistered room URLs continue to work.</p></div></div>
+          <div class="panel-heading"><div><h2>Registered Kiosk Devices</h2><p>Approve pairing, monitor device health, reassign trusted kiosks, or revoke access. Online means contact within 2 minutes; stale means 2-10 minutes; offline means more than 10 minutes.</p></div><button type="button" class="secondary" id="refreshKioskDevices">Refresh Status</button></div>
+          <div id="kioskDeviceSummary" class="summary-grid compact-summary"></div>
           <div id="kioskDeviceList" class="entity-list"></div>
         </section>
       </section>
@@ -3550,20 +3583,27 @@ async function handleApi(req, res, url) {
     const clientDeviceId = cleanText(body.clientDeviceId, 160);
     if (!room || !clientDeviceId) return validationError(res, "Room code and device ID are required.");
     let device = db.kioskDevices.find(item => item.clientDeviceId === clientDeviceId);
+    if (device?.status === "revoked") {
+      return json(res, 403, { error: "This kiosk registration has been revoked. An administrator must remove the revoked record before it can pair again.", status: "revoked" });
+    }
+    let deviceToken = "";
     if (!device) {
+      deviceToken = crypto.randomBytes(32).toString("hex");
       device = {
         id: entityId("kiosk-device"),
         clientDeviceId,
-        deviceToken: crypto.randomBytes(32).toString("hex"),
+        deviceTokenHash: hashDeviceToken(deviceToken),
         pairingCode: String(crypto.randomInt(100000, 999999)),
         roomId: room.id,
         name: cleanText(body.name, 160) || `${room.name} Display`,
         status: "pending",
+        deviceType: cleanText(body.deviceType, 80) || "unknown",
         browser: cleanText(body.browser, 300),
         platform: cleanText(body.platform, 160),
         viewport: cleanText(body.viewport, 80),
         orientation: cleanText(body.orientation, 30),
         audioEnabled: body.audioEnabled === true,
+        lastIpAddress: requestIp(req),
         createdAt: new Date().toISOString(),
         approvedBy: null,
         approvedAt: null,
@@ -3574,42 +3614,61 @@ async function handleApi(req, res, url) {
       db.kioskDevices.push(device);
       addAudit("kiosk.device.register", { deviceId: device.id, roomId: room.id });
     } else {
+      if (device.status === "active") {
+        return json(res, 409, { error: "This physical kiosk is already registered. Use its existing device token or revoke and remove the device before pairing again." });
+      }
+      deviceToken = crypto.randomBytes(32).toString("hex");
       Object.assign(device, {
         roomId: room.id,
+        deviceTokenHash: hashDeviceToken(deviceToken),
+        pairingCode: String(crypto.randomInt(100000, 999999)),
+        name: cleanText(body.name, 160) || device.name,
+        deviceType: cleanText(body.deviceType, 80) || device.deviceType || "unknown",
         browser: cleanText(body.browser, 300),
         platform: cleanText(body.platform, 160),
         viewport: cleanText(body.viewport, 80),
         orientation: cleanText(body.orientation, 30),
         audioEnabled: body.audioEnabled === true,
+        lastIpAddress: requestIp(req),
         lastSeenAt: new Date().toISOString()
       });
     }
     await saveData();
     return json(res, device.status === "pending" ? 202 : 200, {
       ...publicKioskDevice(device, true),
-      deviceToken: device.deviceToken
+      deviceToken
     });
   }
   if (req.method === "POST" && url.pathname === "/api/kiosk-devices/heartbeat") {
     const body = await readBody(req);
     const device = db.kioskDevices.find(item =>
       item.clientDeviceId === body.clientDeviceId
-      && secureTokenEqual(item.deviceToken, body.deviceToken)
+      && item.status !== "revoked"
+      && secureTokenEqual(item.deviceTokenHash || hashDeviceToken(item.deviceToken), hashDeviceToken(body.deviceToken))
     );
+    const revokedDevice = db.kioskDevices.find(item => item.clientDeviceId === body.clientDeviceId && item.status === "revoked");
+    if (revokedDevice) return json(res, 403, { error: "Device registration has been revoked.", status: "revoked" });
     if (!device) return json(res, 401, { error: "Device registration is not recognized." });
     Object.assign(device, {
+      deviceType: cleanText(body.deviceType, 80) || device.deviceType || "unknown",
       browser: cleanText(body.browser, 300),
       platform: cleanText(body.platform, 160),
       viewport: cleanText(body.viewport, 80),
       orientation: cleanText(body.orientation, 30),
       audioEnabled: body.audioEnabled === true,
+      lastIpAddress: requestIp(req),
       lastDataAt: body.lastDataAt ? cleanText(body.lastDataAt, 80) : device.lastDataAt,
       lastSeenAt: new Date().toISOString()
     });
     const pendingCommand = device.pendingCommand;
     device.pendingCommand = null;
     await saveData();
-    return json(res, 200, { status: device.status, pendingCommand });
+    return json(res, 200, {
+      status: device.status,
+      healthStatus: "online",
+      roomCode: db.rooms.find(item => item.id === device.roomId)?.code || "",
+      pendingCommand
+    });
   }
   const kioskApproveMatch = url.pathname.match(/^\/api\/kiosk-devices\/([^/]+)\/approve$/);
   if (req.method === "POST" && kioskApproveMatch) {
@@ -3618,6 +3677,8 @@ async function handleApi(req, res, url) {
     const viewer = currentViewer(req);
     if (!device || !room) return json(res, 404, { error: "Kiosk device not found" });
     if (!viewerCanPairRoom(viewer, room)) return json(res, 403, { error: "System Admin or the room's Center Admin is required." });
+    if (device.status === "revoked") return json(res, 409, { error: "A revoked device cannot be approved." });
+    if (device.status !== "pending") return json(res, 409, { error: "Only pending devices can be approved." });
     const body = await readBody(req);
     if (cleanText(body.pairingCode, 20) !== device.pairingCode) return validationError(res, "Pairing code does not match.");
     device.status = "active";
@@ -3628,6 +3689,53 @@ async function handleApi(req, res, url) {
     notifyRoom(room.code, "data-refresh", device.clientDeviceId);
     return json(res, 200, publicKioskDevice(device));
   }
+  const kioskRevokeMatch = url.pathname.match(/^\/api\/kiosk-devices\/([^/]+)\/revoke$/);
+  if (req.method === "POST" && kioskRevokeMatch) {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const device = db.kioskDevices.find(item => item.id === kioskRevokeMatch[1]);
+    const room = db.rooms.find(item => item.id === device?.roomId);
+    if (!device || !room) return json(res, 404, { error: "Kiosk device not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This device is outside your assigned scope." });
+    device.status = "revoked";
+    device.deviceTokenHash = hashDeviceToken(crypto.randomBytes(32).toString("hex"));
+    device.pairingCode = "";
+    device.pendingCommand = "revoked";
+    device.revokedBy = currentViewer(req)?.id || null;
+    device.revokedAt = new Date().toISOString();
+    addAudit("kiosk.device.revoke", { deviceId: device.id, roomId: room.id });
+    await saveData();
+    notifyRoom(room.code, "revoked", device.clientDeviceId);
+    return json(res, 200, publicKioskDevice(device));
+  }
+  const kioskReassignMatch = url.pathname.match(/^\/api\/kiosk-devices\/([^/]+)\/reassign$/);
+  if (req.method === "POST" && kioskReassignMatch) {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const device = db.kioskDevices.find(item => item.id === kioskReassignMatch[1]);
+    const previousRoom = db.rooms.find(item => item.id === device?.roomId);
+    const body = await readBody(req);
+    const nextRoom = db.rooms.find(item => item.id === body.roomId);
+    const viewer = currentViewer(req);
+    if (!device || !previousRoom) return json(res, 404, { error: "Kiosk device not found" });
+    if (!nextRoom) return validationError(res, "Select a valid destination room.");
+    if (!viewerCanAccessRoom(viewer, previousRoom) || !viewerCanAccessRoom(viewer, nextRoom)) {
+      return json(res, 403, { error: "Both the current and destination rooms must be inside your assigned scope." });
+    }
+    if (device.status === "revoked") return json(res, 409, { error: "A revoked device cannot be reassigned. Remove it and pair the kiosk again." });
+    device.roomId = nextRoom.id;
+    device.name = cleanText(body.name, 160) || device.name;
+    device.deviceType = cleanText(body.deviceType, 80) || device.deviceType || "unknown";
+    device.pendingCommand = `navigate:${nextRoom.code}`;
+    device.reassignedBy = viewer?.id || null;
+    device.reassignedAt = new Date().toISOString();
+    addAudit("kiosk.device.reassign", {
+      deviceId: device.id,
+      previousRoomId: previousRoom.id,
+      roomId: nextRoom.id
+    });
+    await saveData();
+    notifyRoom(previousRoom.code, device.pendingCommand, device.clientDeviceId);
+    return json(res, 200, publicKioskDevice(device));
+  }
   const kioskCommandMatch = url.pathname.match(/^\/api\/kiosk-devices\/([^/]+)\/command$/);
   if (req.method === "POST" && kioskCommandMatch) {
     if (!requirePermission(req, res, "room.manage")) return;
@@ -3636,6 +3744,7 @@ async function handleApi(req, res, url) {
     if (!device || !room) return json(res, 404, { error: "Kiosk device not found" });
     if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This device is outside your assigned scope." });
     const body = await readBody(req);
+    if (device.status === "revoked") return json(res, 409, { error: "Revoked devices cannot receive commands." });
     const command = body.command === "reload" ? "reload" : "data-refresh";
     device.pendingCommand = command;
     notifyRoom(room.code, command, device.clientDeviceId);

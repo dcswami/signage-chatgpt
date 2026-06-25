@@ -441,10 +441,12 @@ try {
 
   const kioskRegistration = await request("/api/kiosk-devices/register", {
     method: "POST",
+    headers: { "Content-Type": "application/json", "X-Forwarded-For": "203.0.113.42" },
     body: JSON.stringify({
       roomCode: updatedRoom.code,
       clientDeviceId: "integration-kiosk-device",
       name: "Integration iPad",
+      deviceType: "iPad",
       browser: "Safari integration test",
       platform: "iPadOS",
       viewport: "1024x1366",
@@ -455,6 +457,12 @@ try {
   assert.equal(kioskRegistration.status, "pending");
   assert.equal(Boolean(kioskRegistration.pairingCode), true);
   assert.equal(Boolean(kioskRegistration.deviceToken), true);
+  let cleanupKioskId = kioskRegistration.id;
+  const stateAfterKioskRegistration = await request("/api/state");
+  const registeredKioskState = stateAfterKioskRegistration.kioskDevices.find(item => item.id === kioskRegistration.id);
+  assert.equal(registeredKioskState.deviceType, "iPad");
+  assert.equal(registeredKioskState.lastIpAddress, "203.0.113.42");
+  assert.equal("deviceToken" in registeredKioskState, false);
   const approvedKiosk = await request(`/api/kiosk-devices/${kioskRegistration.id}/approve`, {
     method: "POST",
     body: JSON.stringify({ pairingCode: kioskRegistration.pairingCode })
@@ -470,6 +478,7 @@ try {
       roomCode: updatedRoom.code,
       clientDeviceId: "integration-kiosk-device",
       deviceToken: kioskRegistration.deviceToken,
+      deviceType: "iPad",
       browser: "Safari integration test",
       platform: "iPadOS",
       viewport: "1024x1366",
@@ -479,7 +488,68 @@ try {
     })
   });
   assert.equal(kioskHeartbeat.status, "active");
+  assert.equal(kioskHeartbeat.healthStatus, "online");
   assert.equal(kioskHeartbeat.pendingCommand, "reload");
+  const reassignedKiosk = await request(`/api/kiosk-devices/${kioskRegistration.id}/reassign`, {
+    method: "POST",
+    body: JSON.stringify({
+      roomId: initialState.rooms[0].id,
+      name: "Integration iPad Reassigned",
+      deviceType: "iPad"
+    })
+  });
+  assert.equal(reassignedKiosk.roomId, initialState.rooms[0].id);
+  const reassignedHeartbeat = await request("/api/kiosk-devices/heartbeat", {
+    method: "POST",
+    body: JSON.stringify({
+      clientDeviceId: "integration-kiosk-device",
+      deviceToken: kioskRegistration.deviceToken,
+      deviceType: "iPad",
+      browser: "Safari integration test",
+      platform: "iPadOS",
+      viewport: "1024x1366",
+      orientation: "portrait",
+      audioEnabled: true
+    })
+  });
+  assert.equal(reassignedHeartbeat.roomCode, initialState.rooms[0].code);
+  assert.equal(reassignedHeartbeat.pendingCommand, `navigate:${initialState.rooms[0].code}`);
+  await request(`/api/kiosk-devices/${kioskRegistration.id}/reassign`, {
+    method: "POST",
+    body: JSON.stringify({ roomId: updatedRoom.id, name: "Integration iPad", deviceType: "iPad" })
+  });
+  const revokedKiosk = await request(`/api/kiosk-devices/${kioskRegistration.id}/revoke`, {
+    method: "POST",
+    body: "{}"
+  });
+  assert.equal(revokedKiosk.status, "revoked");
+  assert.equal(revokedKiosk.healthStatus, "revoked");
+  await request("/api/kiosk-devices/heartbeat", {
+    method: "POST",
+    body: JSON.stringify({
+      clientDeviceId: "integration-kiosk-device",
+      deviceToken: kioskRegistration.deviceToken
+    })
+  }, 403);
+  await request("/api/kiosk-devices/register", {
+    method: "POST",
+    body: JSON.stringify({
+      roomCode: updatedRoom.code,
+      clientDeviceId: "integration-kiosk-device"
+    })
+  }, 403);
+  await request(`/api/kiosk-devices/${kioskRegistration.id}`, { method: "DELETE" });
+  const repairedKiosk = await request("/api/kiosk-devices/register", {
+    method: "POST",
+    body: JSON.stringify({
+      roomCode: updatedRoom.code,
+      clientDeviceId: "integration-kiosk-device",
+      name: "Integration iPad Repaired",
+      deviceType: "iPad"
+    })
+  }, 202);
+  assert.notEqual(repairedKiosk.deviceToken, kioskRegistration.deviceToken);
+  cleanupKioskId = repairedKiosk.id;
   const refreshResult = await request("/api/kiosks/refresh", {
     method: "POST",
     body: JSON.stringify({ centerIds: [center.id], command: "data-refresh" })
@@ -680,7 +750,7 @@ try {
   await request(`/api/calendar-accounts/${calendarAccount.id}`, { method: "DELETE" });
   await request(`/api/calendar-accounts/${googleOauthAccount.id}`, { method: "DELETE" });
   await request(`/api/calendar-accounts/${caldavAccount.id}`, { method: "DELETE" });
-  await request(`/api/kiosk-devices/${kioskRegistration.id}`, { method: "DELETE" });
+  await request(`/api/kiosk-devices/${cleanupKioskId}`, { method: "DELETE" });
   await request(`/api/theme-schedules/${activeSchedule.id}`, { method: "DELETE" });
   await request(`/api/theme-schedules/${pastSchedule.id}`, { method: "DELETE" });
   await request(`/api/theme-schedules/${oldSchedule.id}`, { method: "DELETE" });

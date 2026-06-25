@@ -34,7 +34,7 @@ The scaffold includes:
 - Kiosk refresh recovery after tablet sleep, browser resume, reconnect, or application rebuild.
 - Genuine theme-configurable booking QR codes, offline schedule/theme caching, five-minute stale indication, and an independent offline clock.
 - Full room-local kiosk date and time including weekday, date, year, and seconds.
-- Responsive portrait/landscape layouts plus optional kiosk pairing, health monitoring, and remote data-refresh/full-reload controls.
+- Responsive portrait/landscape layouts plus secure kiosk pairing, online/stale/offline health monitoring, device inventory details, remote refresh/reload, room reassignment, and token revocation.
 - Built-in themes: Classic Institutional, Event Formal, and Custom Background.
 - Sample HTML/CSS theme gallery in `samples/kiosk-layout-options.html`.
 - PostgreSQL schema in `database/schema.sql`.

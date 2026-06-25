@@ -284,18 +284,23 @@ In the admin portal:
 41. Disconnect the kiosk network for more than five minutes and confirm cached signage continues, the clock advances, and offline/stale status is visible.
 42. Test the kiosk in landscape and portrait orientation.
 43. Pair a kiosk with its six-digit code, approve it as System Admin or the responsible Center Admin, and test remote data refresh and full reload.
-44. Open **Theme Editor**, clone a built-in theme, modify colors and the four font groups, and confirm the live preview updates.
-45. Publish the cloned theme, assign it to a room, and confirm the kiosk updates without rebuilding the container.
-46. Publish and end a test safety broadcast, then confirm the System Admin-only history records its start, targets, status, and end time.
-47. In **Theme Editor**, switch the Preview Room dropdown and confirm the iframe changes rooms without closing the editor.
-48. Change each status color with its color picker and adjust Event Panel transparency; confirm the preview updates before saving.
-49. Leave a tablet kiosk asleep or backgrounded, change its assigned theme, then wake the device and confirm it refreshes within 10 seconds without manually reloading.
-50. Clone a theme, upload a PNG, JPEG, or WebP background image, save the theme, and confirm the image appears in all three preview states.
-51. Rebuild the application container and confirm the uploaded background still loads from the persistent `./data/theme-assets` volume.
-52. Change the upcoming-event tile background, title, and detail colors and confirm the preview updates.
-53. Open **Theme Scheduler**, schedule a published theme for one or more eligible targets, and confirm the owner name appears.
-54. Confirm the scheduled theme overrides Room Management during the active window and automatically returns to the room theme afterward.
-55. Confirm completed schedules appear under **Past Schedules** and records older than two years are not displayed.
+44. Confirm the device record shows its detected device type, browser, viewport, IP address, audio state, last contact, and online health.
+45. Stop the kiosk heartbeat and confirm it becomes stale after two minutes and offline after ten minutes.
+46. Reassign the kiosk to another permitted room and confirm the open device automatically navigates to the new room URL.
+47. Revoke the kiosk and confirm its heartbeat is rejected and the device displays a revoked-registration message.
+48. Remove the revoked record, reload the kiosk, and confirm it receives a new pairing code and can be paired again.
+49. Open **Theme Editor**, clone a built-in theme, modify colors and the four font groups, and confirm the live preview updates.
+50. Publish the cloned theme, assign it to a room, and confirm the kiosk updates without rebuilding the container.
+51. Publish and end a test safety broadcast, then confirm the System Admin-only history records its start, targets, status, and end time.
+52. In **Theme Editor**, switch the Preview Room dropdown and confirm the iframe changes rooms without closing the editor.
+53. Change each status color with its color picker and adjust Event Panel transparency; confirm the preview updates before saving.
+54. Leave a tablet kiosk asleep or backgrounded, change its assigned theme, then wake the device and confirm it refreshes within 10 seconds without manually reloading.
+55. Clone a theme, upload a PNG, JPEG, or WebP background image, save the theme, and confirm the image appears in all three preview states.
+56. Rebuild the application container and confirm the uploaded background still loads from the persistent `./data/theme-assets` volume.
+57. Change the upcoming-event tile background, title, and detail colors and confirm the preview updates.
+58. Open **Theme Scheduler**, schedule a published theme for one or more eligible targets, and confirm the owner name appears.
+59. Confirm the scheduled theme overrides Room Management during the active window and automatically returns to the room theme afterward.
+60. Confirm completed schedules appear under **Past Schedules** and records older than two years are not displayed.
 
 ## 9. Configure SMTP Email
 

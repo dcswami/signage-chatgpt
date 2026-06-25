@@ -62,6 +62,11 @@ body {
   background: #285f38;
 }
 
+.device-status[data-state="revoked"],
+.device-status[data-state="registration-error"] {
+  background: #8f1722;
+}
+
 .kiosk-top time,
 .custom-top time {
   font-size: clamp(14px, 1.35vw, 24px);

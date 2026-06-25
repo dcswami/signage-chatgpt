@@ -22,6 +22,7 @@ let eventPageTimer = null;
 let lastSuccessfulFetchAt = Number(localStorage.getItem(roomCacheTimeKey) || 0);
 let lastFetchFailed = false;
 let deviceRegistration = null;
+let deviceRevoked = false;
 
 function clientDeviceId() {
   let value = localStorage.getItem(clientDeviceIdKey);
@@ -33,9 +34,27 @@ function clientDeviceId() {
 }
 
 function deviceProfile() {
+  const userAgent = navigator.userAgent || "";
+  const deviceType = /iPad/i.test(userAgent) || (/Macintosh/i.test(userAgent) && navigator.maxTouchPoints > 1)
+    ? "iPad"
+    : /iPhone/i.test(userAgent)
+      ? "iPhone"
+      : /Android/i.test(userAgent) && !/Mobile/i.test(userAgent)
+        ? "Android tablet"
+        : /Android/i.test(userAgent)
+          ? "Android phone"
+          : /CrOS/i.test(userAgent)
+            ? "ChromeOS kiosk"
+            : /Windows/i.test(userAgent)
+              ? "Windows signage"
+              : /Raspberry|Linux arm/i.test(userAgent)
+                ? "Raspberry Pi / Linux signage"
+                : "Browser kiosk";
   return {
     clientDeviceId: clientDeviceId(),
     roomCode,
+    name: `${deviceType} - ${roomCode}`,
+    deviceType,
     browser: navigator.userAgent,
     platform: navigator.platform || "",
     viewport: `${window.innerWidth}x${window.innerHeight}`,
@@ -415,6 +434,13 @@ async function fullReload() {
 function executeCommand(command) {
   if (command === "reload") fullReload();
   else if (command === "data-refresh") refresh();
+  else if (command === "revoked") {
+    deviceRevoked = true;
+    updateDeviceStatus({ status: "revoked" });
+  } else if (command?.startsWith("navigate:")) {
+    const destination = command.slice("navigate:".length);
+    if (destination && destination !== roomCode) window.location.assign(`/${encodeURIComponent(destination)}`);
+  }
 }
 
 function updateDeviceStatus(registration) {
@@ -423,18 +449,34 @@ function updateDeviceStatus(registration) {
   deviceStatus.dataset.state = registration.status;
   deviceStatus.textContent = registration.status === "active"
     ? `Kiosk connected${registration.name ? `: ${registration.name}` : ""}`
-    : `Pairing code: ${registration.pairingCode}`;
+    : registration.status === "revoked"
+      ? "Kiosk registration revoked - contact an administrator"
+      : registration.status === "registration-error"
+        ? registration.message
+        : `Pairing code: ${registration.pairingCode}`;
 }
 
 async function registerDevice() {
-  if (isPreview) return;
+  if (isPreview || deviceRevoked) return;
   try {
     const response = await fetch("/api/kiosk-devices/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(deviceProfile())
     });
-    if (!response.ok) return;
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      if (response.status === 403) {
+        deviceRevoked = true;
+        updateDeviceStatus({ status: "revoked" });
+      } else if (response.status === 409) {
+        updateDeviceStatus({
+          status: "registration-error",
+          message: result.error || "This kiosk is already registered. Contact an administrator."
+        });
+      }
+      return;
+    }
     deviceRegistration = await response.json();
     localStorage.setItem(deviceTokenKey, deviceRegistration.deviceToken);
     updateDeviceStatus(deviceRegistration);
@@ -444,7 +486,7 @@ async function registerDevice() {
 }
 
 async function heartbeat() {
-  if (isPreview) return;
+  if (isPreview || deviceRevoked) return;
   const token = localStorage.getItem(deviceTokenKey);
   if (!token) return registerDevice();
   try {
@@ -461,10 +503,16 @@ async function heartbeat() {
       localStorage.removeItem(deviceTokenKey);
       return registerDevice();
     }
+    if (response.status === 403) {
+      deviceRevoked = true;
+      updateDeviceStatus({ status: "revoked" });
+      return;
+    }
     if (!response.ok) return;
     const result = await response.json();
-    deviceRegistration = { ...deviceRegistration, status: result.status };
+    deviceRegistration = { ...deviceRegistration, status: result.status, healthStatus: result.healthStatus };
     updateDeviceStatus(deviceRegistration);
+    if (result.roomCode && result.roomCode !== roomCode) executeCommand(`navigate:${result.roomCode}`);
     if (result.pendingCommand) executeCommand(result.pendingCommand);
   } catch {
     // Heartbeats resume automatically when connectivity returns.
@@ -488,7 +536,7 @@ if ("serviceWorker" in navigator && !isPreview) {
 }
 
 refresh();
-registerDevice();
+heartbeat();
 setInterval(updateClock, 1000);
 setInterval(updateConnectionStatus, 30000);
 setInterval(refresh, 10000);

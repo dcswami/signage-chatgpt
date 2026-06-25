@@ -351,6 +351,32 @@ th {
   color: var(--muted);
 }
 
+.device-badges {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 5px 0;
+}
+
+.status-pill.device-active,
+.status-pill.health-online {
+  background: var(--available-bg);
+  color: var(--available);
+}
+
+.status-pill.device-pending,
+.status-pill.health-stale {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.status-pill.device-revoked,
+.status-pill.health-revoked,
+.status-pill.health-offline {
+  background: #f7dfe1;
+  color: #8f1722;
+}
+
 .row-actions,
 .entity-actions,
 .dialog-actions {
