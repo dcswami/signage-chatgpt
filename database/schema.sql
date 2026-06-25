@@ -269,15 +269,33 @@ CREATE TABLE IF NOT EXISTS calendar_sync_history (
 );
 
 CREATE TABLE IF NOT EXISTS event_conflicts (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  room_id uuid NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-  event_ids uuid[] NOT NULL,
+  id text PRIMARY KEY,
+  room_id text NOT NULL,
+  event_ids text[] NOT NULL,
   external_event_ids text[] NOT NULL DEFAULT '{}',
   status text NOT NULL DEFAULT 'unresolved',
   selected_external_event_id text,
   resolution text,
   resolved_by uuid REFERENCES users(id),
   resolved_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS event_conflict_decisions (
+  id text PRIMARY KEY,
+  conflict_id text,
+  room_id text NOT NULL,
+  action text NOT NULL CHECK (action IN ('ignore', 'resolve', 'cancel', 'replace', 'move')),
+  actor_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  selected_external_event_id text,
+  target_external_event_id text,
+  previous_starts_at timestamptz,
+  previous_ends_at timestamptz,
+  new_starts_at timestamptz,
+  new_ends_at timestamptz,
+  source_write boolean NOT NULL DEFAULT false,
+  event_snapshots jsonb NOT NULL DEFAULT '[]'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -415,6 +433,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_rooms_code ON rooms(code);
 CREATE INDEX IF NOT EXISTS idx_calendar_events_room_time ON calendar_events(room_id, starts_at, ends_at);
 CREATE INDEX IF NOT EXISTS idx_calendar_sync_history_created_at ON calendar_sync_history(created_at);
+CREATE INDEX IF NOT EXISTS idx_event_conflict_decisions_created_at ON event_conflict_decisions(created_at);
 CREATE INDEX IF NOT EXISTS idx_theme_schedules_time ON theme_schedules(starts_at, ends_at);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at);

@@ -2,6 +2,8 @@ let state = null;
 
 const entityDialog = document.querySelector("#entityDialog");
 const entityForm = document.querySelector("#entityForm");
+const conflictDialog = document.querySelector("#conflictDialog");
+const conflictActionForm = document.querySelector("#conflictActionForm");
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -490,17 +492,196 @@ function renderCalendars() {
     return `<tr><td>${new Date(item.createdAt).toLocaleString()}</td><td>${escapeHtml(room?.name || "Unknown")}</td><td>${escapeHtml(account?.accountName || "Unknown")}</td><td><span class="status-pill email-${item.status === "success" ? "sent" : "failed"}">${escapeHtml(item.status)}</span>${item.error ? `<span class="subtle">${escapeHtml(item.error)}</span>` : ""}</td><td>${eventSummary}</td></tr>`;
   }).join("") || `<tr><td colspan="5" class="empty-state">No calendar sync history yet.</td></tr>`;
 
+  const conflictCounts = state.calendarConflicts.reduce((counts, conflict) => {
+    counts.total += 1;
+    counts[conflict.status] = (counts[conflict.status] || 0) + 1;
+    return counts;
+  }, { total: 0 });
+  document.querySelector("#calendarConflictSummary").innerHTML = [
+    ["Active Overlap Groups", conflictCounts.total],
+    ["Unresolved", conflictCounts.unresolved || 0],
+    ["Ignored", conflictCounts.ignored || 0],
+    ["Resolved Display", conflictCounts.resolved || 0]
+  ].map(([label, value]) => `<article class="summary-card"><span>${escapeHtml(label)}</span><strong>${value}</strong></article>`).join("");
+
   document.querySelector("#calendarConflictList").innerHTML = state.calendarConflicts.map(conflict => {
     const room = state.rooms.find(item => item.id === conflict.roomId);
     const events = conflict.eventIds.map(id => state.calendarEvents.find(item => item.id === id)).filter(Boolean);
+    const selected = events.find(event => event.externalEventId === conflict.selectedExternalEventId);
     return `<article class="entity-item conflict-item">
-      <div><strong>${escapeHtml(room?.name || "Unknown room")}</strong><span>${new Date(conflict.startsAt).toLocaleString()} / ${events.length} overlapping events / ${escapeHtml(conflict.status)}</span></div>
-      <div class="conflict-options">${events.map(event => `
-        <button type="button" class="${event.externalEventId === conflict.selectedExternalEventId ? "" : "secondary"}" data-select-conflict="${escapeHtml(conflict.id)}" data-external-event-id="${escapeHtml(event.externalEventId)}">
-          Display ${escapeHtml(event.title)}
-        </button>`).join("")}</div>
+      <div><strong>${escapeHtml(room?.name || "Unknown room")}</strong><span>${formatDateTime(conflict.startsAt, room?.timezone)} - ${formatDateTime(conflict.endsAt, room?.timezone)}</span><span>${events.length} overlapping events · ${escapeHtml(conflict.status)}${selected ? ` · Displaying ${escapeHtml(selected.title)}` : " · Deterministic earliest event"}</span></div>
+      <div class="conflict-options"><button type="button" data-review-conflict="${escapeHtml(conflict.id)}">Review Conflict</button></div>
     </article>`;
   }).join("") || `<p class="empty-state">No calendar conflicts detected.</p>`;
+
+  document.querySelector("#calendarConflictHistoryRows").innerHTML = (state.calendarConflictHistory || []).map(decision => {
+    const externalId = decision.selectedExternalEventId || decision.targetExternalEventId;
+    const snapshot = decision.eventSnapshots?.find(event => event.externalEventId === externalId);
+    const room = state.rooms.find(item => item.id === decision.roomId);
+    return `<tr>
+      <td>${new Date(decision.createdAt).toLocaleString()}</td>
+      <td>${escapeHtml(decision.roomName || state.rooms.find(room => room.id === decision.roomId)?.name || "Unknown")}</td>
+      <td>${escapeHtml(decision.actorName || "System")}</td>
+      <td>${escapeHtml(decision.action)}</td>
+      <td>${decision.sourceWrite ? "Yes" : "No"}</td>
+      <td>${escapeHtml(snapshot?.title || externalId || "-")}${decision.newStartsAt ? `<span class="subtle">Moved to ${escapeHtml(formatDateTime(decision.newStartsAt, room?.timezone))}</span>` : ""}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="6" class="empty-state">No conflict decisions recorded.</td></tr>`;
+}
+
+function calendarContextForEvent(event) {
+  const assignment = state.calendarAssignments.find(item => item.id === event.assignmentId);
+  const account = state.calendarAccounts.find(item => item.id === assignment?.accountId);
+  const calendar = account?.calendars.find(item => item.id === assignment?.calendarId);
+  return { assignment, account, calendar };
+}
+
+function formatDateTime(value, timeZone) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: timeZone || undefined,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(new Date(value));
+}
+
+function zonedDateTimeInput(value, timeZone) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(new Date(value)).filter(part => part.type !== "literal").map(part => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+function zonedLocalToIso(value, timeZone) {
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (!match) return null;
+  const desired = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]));
+  let guess = desired;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23"
+    }).formatToParts(new Date(guess)).filter(part => part.type !== "literal").map(part => [part.type, part.value]));
+    const represented = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute));
+    guess += desired - represented;
+  }
+  return new Date(guess).toISOString();
+}
+
+function selectedConflictEvent() {
+  const selected = conflictActionForm.querySelector('input[name="selectedExternalEventId"]:checked');
+  const conflict = state.calendarConflicts.find(item => item.id === conflictActionForm.elements.conflictId.value);
+  return conflict?.eventIds
+    .map(id => state.calendarEvents.find(event => event.id === id))
+    .find(event => event?.externalEventId === selected?.value);
+}
+
+function updateConflictActionAvailability() {
+  const conflict = state.calendarConflicts.find(item => item.id === conflictActionForm.elements.conflictId.value);
+  const events = conflict?.eventIds.map(id => state.calendarEvents.find(event => event.id === id)).filter(Boolean) || [];
+  const selected = selectedConflictEvent();
+  if (!selected) return;
+  const selectedContext = calendarContextForEvent(selected);
+  const room = state.rooms.find(item => item.id === conflict?.roomId);
+  const timezone = room?.timezone || "UTC";
+  const selectedWritable = selectedContext.account?.accessLevel === "writable"
+    && ["google", "microsoft365"].includes(selectedContext.account?.provider);
+  const replaceWritable = events
+    .filter(event => event.id !== selected.id)
+    .every(event => {
+      const context = calendarContextForEvent(event);
+      return context.account?.accessLevel === "writable"
+        && ["google", "microsoft365"].includes(context.account?.provider);
+    });
+  conflictActionForm.querySelector('[data-conflict-action="cancel"]').disabled = !selectedWritable;
+  conflictActionForm.querySelector('[data-conflict-action="move"]').disabled = !selectedWritable;
+  conflictActionForm.querySelector('[data-conflict-action="replace"]').disabled = !replaceWritable;
+  conflictActionForm.elements.startsAt.value = zonedDateTimeInput(selected.startsAt, timezone);
+  conflictActionForm.elements.endsAt.value = zonedDateTimeInput(selected.endsAt, timezone);
+}
+
+function reviewConflict(conflictId) {
+  const conflict = state.calendarConflicts.find(item => item.id === conflictId);
+  const room = state.rooms.find(item => item.id === conflict?.roomId);
+  const events = conflict?.eventIds
+    .map(id => state.calendarEvents.find(event => event.id === id))
+    .filter(Boolean)
+    .sort((left, right) => left.startsAt.localeCompare(right.startsAt) || left.externalEventId.localeCompare(right.externalEventId)) || [];
+  if (!conflict || !events.length) return;
+  const selectedId = conflict.selectedExternalEventId || events[0].externalEventId;
+  const timezone = room?.timezone || "UTC";
+  document.querySelector("#conflictDialogTitle").textContent = `${room?.name || "Room"} Calendar Conflict`;
+  conflictActionForm.elements.conflictId.value = conflict.id;
+  conflictActionForm.dataset.timezone = timezone;
+  document.querySelector("#conflictReviewBody").innerHTML = `
+    <p class="help-text">Unresolved and ignored conflicts display one deterministic event: earliest start, earliest end, then source event ID. Select an event below to override that choice or apply a source action.</p>
+    <div class="conflict-review-list">${events.map(event => {
+      const context = calendarContextForEvent(event);
+      const writable = context.account?.accessLevel === "writable" && ["google", "microsoft365"].includes(context.account?.provider);
+      return `<label class="conflict-review-event">
+        <input type="radio" name="selectedExternalEventId" value="${escapeHtml(event.externalEventId)}" ${event.externalEventId === selectedId ? "checked" : ""} />
+        <span><strong>${escapeHtml(event.title)}</strong><small>${escapeHtml(formatDateTime(event.startsAt, timezone))} - ${escapeHtml(formatDateTime(event.endsAt, timezone))} (${escapeHtml(timezone)})</small><small>${escapeHtml(context.account?.accountName || event.provider || "Unknown source")} · ${escapeHtml(context.calendar?.name || "Calendar")} · ${writable ? "Writable" : "Read-only"}</small>${event.description ? `<small>${escapeHtml(event.description)}</small>` : ""}</span>
+      </label>`;
+    }).join("")}</div>`;
+  document.querySelector("#conflictFormStatus").textContent = "";
+  updateConflictActionAvailability();
+  conflictDialog.showModal();
+}
+
+async function applyConflictAction(action) {
+  const conflictId = conflictActionForm.elements.conflictId.value;
+  const selected = selectedConflictEvent();
+  if (!selected) return;
+  const body = {
+    action,
+    selectedExternalEventId: selected.externalEventId,
+    targetExternalEventId: selected.externalEventId
+  };
+  if (action === "move") {
+    const startsAt = zonedLocalToIso(conflictActionForm.elements.startsAt.value, conflictActionForm.dataset.timezone || "UTC");
+    const endsAt = zonedLocalToIso(conflictActionForm.elements.endsAt.value, conflictActionForm.dataset.timezone || "UTC");
+    if (!startsAt || !endsAt || new Date(endsAt) <= new Date(startsAt)) {
+      document.querySelector("#conflictFormStatus").textContent = "Enter a valid new start and end time.";
+      return;
+    }
+    body.startsAt = startsAt;
+    body.endsAt = endsAt;
+  }
+  if (["cancel", "replace", "move"].includes(action)) {
+    const wording = {
+      cancel: `cancel "${selected.title}" in its source calendar`,
+      replace: `keep "${selected.title}" and cancel the other overlapping source events`,
+      move: `change "${selected.title}" in its source calendar`
+    }[action];
+    if (!confirm(`This will ${wording}. Continue?`)) return;
+  }
+  const status = document.querySelector("#conflictFormStatus");
+  status.textContent = "Applying conflict action...";
+  try {
+    const result = await api(`/api/calendar-conflicts/${conflictId}/action`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+    conflictDialog.close();
+    await load();
+    if (result.syncWarnings?.length) alert(`Source calendar updated, but refresh reported:\n\n${result.syncWarnings.join("\n")}`);
+  } catch (error) {
+    status.textContent = error.message;
+  }
 }
 
 function renderCalendarChoices() {
@@ -1636,6 +1817,11 @@ document.querySelector("#broadcastTemplateSelect").addEventListener("change", ev
 document.querySelector("#cancelBroadcastEdit").addEventListener("click", resetBroadcastForm);
 document.querySelector("#closeDialog").addEventListener("click", () => entityDialog.close());
 document.querySelector("#cancelDialog").addEventListener("click", () => entityDialog.close());
+document.querySelector("#closeConflictDialog").addEventListener("click", () => conflictDialog.close());
+conflictActionForm.addEventListener("change", event => {
+  if (event.target.name === "selectedExternalEventId") updateConflictActionAvailability();
+});
+conflictActionForm.addEventListener("submit", event => event.preventDefault());
 entityForm.addEventListener("submit", saveEntity);
 entityForm.addEventListener("change", event => {
   if (event.target.name === "centerId" || event.target.name === "campusId") updateRoomHierarchy(event.target.name);
@@ -1667,6 +1853,10 @@ document.addEventListener("click", event => {
   if (webhookButton) return registerCalendarWebhook(webhookButton.dataset.registerWebhook, webhookButton.dataset.calendarId);
   const conflictButton = event.target.closest("[data-select-conflict]");
   if (conflictButton) return selectConflictEvent(conflictButton.dataset.selectConflict, conflictButton.dataset.externalEventId);
+  const reviewConflictButton = event.target.closest("[data-review-conflict]");
+  if (reviewConflictButton) return reviewConflict(reviewConflictButton.dataset.reviewConflict);
+  const conflictActionButton = event.target.closest("[data-conflict-action]");
+  if (conflictActionButton) return applyConflictAction(conflictActionButton.dataset.conflictAction);
   const deleteAssignmentButton = event.target.closest("[data-delete-assignment]");
   if (deleteAssignmentButton) return deleteCalendarAssignment(deleteAssignmentButton.dataset.deleteAssignment);
   const editThemeButton = event.target.closest("[data-edit-theme]");

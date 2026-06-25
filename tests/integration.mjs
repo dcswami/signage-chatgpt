@@ -253,23 +253,43 @@ try {
   assert.equal(syncResult.futureEventCount, 7);
   assert.equal(syncResult.currentEventCount, 0);
   assert.equal(syncResult.pastEventCount, 0);
-  assert.equal(syncResult.displayedUpcomingEventCount, 7);
+  assert.equal(syncResult.displayedUpcomingEventCount, 6);
   assert.equal(Boolean(syncResult.nextEventAt), true);
   const syncedRoom = await request("/api/rooms/integration-room");
   assert.equal(syncedRoom.upcomingEvents[0].title, "Private Event");
   assert.equal(syncedRoom.upcomingEvents[0].description, "");
   assert.equal(syncedRoom.upcomingEvents[1].description, "Description 2");
   assert.equal(syncedRoom.upcomingEventPageSize, 3);
-  assert.equal(syncedRoom.upcomingEvents.length, 7);
+  assert.equal(syncedRoom.upcomingEvents.length, 6);
   assert.equal(Boolean(syncedRoom.buildVersion), true);
   const conflictState = await request("/api/state");
   const calendarConflict = conflictState.calendarConflicts.find(item => item.roomId === room.id);
   assert.equal(Boolean(calendarConflict), true);
+  const ignoredConflict = await request(`/api/calendar-conflicts/${calendarConflict.id}/action`, {
+    method: "POST",
+    body: JSON.stringify({
+      action: "ignore",
+      selectedExternalEventId: calendarConflict.externalEventIds[1]
+    })
+  });
+  assert.equal(ignoredConflict.conflict.status, "ignored");
+  const ignoredRoom = await request("/api/rooms/integration-room");
+  assert.equal(ignoredRoom.upcomingEvents[0].title, "Integration Event 2");
+  await request(`/api/calendar-conflicts/${calendarConflict.id}/action`, {
+    method: "POST",
+    body: JSON.stringify({
+      action: "cancel",
+      targetExternalEventId: calendarConflict.externalEventIds[1]
+    })
+  }, 409);
   const selectedConflict = await request(`/api/calendar-conflicts/${calendarConflict.id}/select`, {
     method: "POST",
     body: JSON.stringify({ externalEventId: calendarConflict.externalEventIds[1] })
   });
-  assert.equal(selectedConflict.status, "display-selected");
+  assert.equal(selectedConflict.status, "resolved");
+  const conflictHistoryState = await request("/api/state");
+  assert.equal(conflictHistoryState.calendarConflictHistory.some(item => item.action === "ignore" && item.actorName === "System Administrator"), true);
+  assert.equal(conflictHistoryState.calendarConflictHistory.some(item => item.action === "resolve"), true);
 
   const qrResponse = await fetch(`${baseUrl}/api/rooms/integration-room/qr.svg`);
   assert.equal(qrResponse.status, 200);
@@ -681,6 +701,9 @@ try {
   assert.match(adminHtml, /Emergency Broadcast/);
   assert.match(adminHtml, /Permission & Role Editor/);
   assert.match(adminHtml, /Calendar Accounts/);
+  assert.match(adminHtml, /Calendar Conflict Dashboard/);
+  assert.match(adminHtml, /Conflict Decision History/);
+  assert.match(adminHtml, /Replace Others/);
   assert.match(adminHtml, /Live Theme Preview/);
   assert.match(adminHtml, /themePreviewRoom/);
   assert.match(adminHtml, /Theme Scheduler/);

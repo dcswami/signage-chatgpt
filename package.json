@@ -7,8 +7,8 @@
   "scripts": {
     "start": "node src/server.mjs",
     "dev": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/storage.mjs && node --check src/email.mjs && node --check src/calendar.mjs && node --check src/calendar-queue.mjs && node --check public/admin.js && node --check public/kiosk.js && node --check public/kiosk-sw.js",
-    "test": "node tests/integration.mjs"
+    "check": "node --check src/server.mjs && node --check src/storage.mjs && node --check src/email.mjs && node --check src/calendar.mjs && node --check src/calendar-queue.mjs && node --check src/conflicts.mjs && node --check public/admin.js && node --check public/kiosk.js && node --check public/kiosk-sw.js",
+    "test": "node tests/calendar-normalization.mjs && node tests/conflicts.mjs && node tests/integration.mjs"
   },
   "engines": {
     "node": ">=20"

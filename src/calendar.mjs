@@ -134,6 +134,10 @@ async function fetchGoogle(account, calendar, start, end) {
     else url.searchParams.delete("pageToken");
     if (!body.nextPageToken) break;
   } while (true);
+  return normalizeGoogleCalendarItems(items);
+}
+
+export function normalizeGoogleCalendarItems(items) {
   return items
     .filter(item => item.status !== "cancelled")
     .map(item => normalizedEvent({
@@ -254,6 +258,10 @@ async function fetchMicrosoft(account, calendar, start, end) {
     items.push(...(body.value || []));
     nextUrl = body["@odata.nextLink"] || "";
   }
+  return normalizeMicrosoftCalendarItems(items);
+}
+
+export function normalizeMicrosoftCalendarItems(items) {
   return items.filter(item => !item.isCancelled).map(item => normalizedEvent({
     externalEventId: item.id,
     title: item.subject,
@@ -373,6 +381,10 @@ function parseIcsData(data, start, end, source = {}) {
     }
   }
   return events;
+}
+
+export function parseIcsCalendarData(data, start, end, source = {}) {
+  return parseIcsData(data, start, end, source);
 }
 
 async function caldavClient(account) {

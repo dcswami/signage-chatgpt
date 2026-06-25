@@ -198,7 +198,7 @@ function headerHtml(room, headerClass = "kiosk-top") {
     <header class="${headerClass}">
       <img class="kiosk-logo" src="${escapeHtml(room.logoUrl || "/assets/branding/aksharderi-small2.png")}" alt="${escapeHtml(room.centerName)} logo" />
       <div><p class="center-name">${escapeHtml(room.centerName)}</p><p class="building-name">${escapeHtml(room.buildingName)}</p></div>
-      <time data-kiosk-clock aria-label="Current local time"></time>
+      <time data-kiosk-clock aria-label="Current local date and time"></time>
     </header>`;
 }
 
@@ -315,15 +315,24 @@ function startAlert(room) {
 
 function updateClock() {
   if (!latestRoom) return;
+  const now = new Date();
+  const timezone = latestRoom.timezone || "UTC";
+  const date = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  }).format(now);
   const time = new Intl.DateTimeFormat("en-US", {
-    timeZone: latestRoom.timezone || "UTC",
+    timeZone: timezone,
     hour: "numeric",
     minute: "2-digit",
     second: "2-digit"
-  }).format(new Date());
+  }).format(now);
   document.querySelectorAll("[data-kiosk-clock]").forEach(element => {
-    element.textContent = time;
-    element.dateTime = new Date().toISOString();
+    element.textContent = `${date} ${time}`;
+    element.dateTime = now.toISOString();
   });
 }
 

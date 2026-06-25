@@ -70,7 +70,7 @@ The kiosk display must show:
 - "Available" when no current event is active.
 - QR code for booking.
 - Human-readable booking link.
-- Current local time.
+- Current local weekday, date, year, and time including seconds, such as `Thu, Jun 25, 2026 1:01:01 AM`.
 - Upcoming events.
 
 ### 4.2 Current Event and Room Status Behavior
@@ -111,7 +111,7 @@ The kiosk display must show:
 
 ### 4.5 Time and Time Zone
 
-- The kiosk display must show the current local time for the room.
+- The kiosk display must show the current local weekday, date, year, and time with seconds for the room.
 - Time zone must be configured at the center level because a center is the primary physical geographic entity.
 - Campuses, buildings, and rooms must inherit the center time zone by default.
 - Event times must display in the center's local time zone unless an approved override is configured.
@@ -282,14 +282,17 @@ The management portal must provide secure administrative access to configure the
 ### 6.2 Calendar Event Conflict Resolution
 
 - The system must detect overlapping events for the same room.
-- Conflicts must be visible in the management portal.
-- Authorized users must be able to review conflict details.
-- Authorized users must be able to select which overlapping external event is displayed on signage.
-- Display selection must not require a separate approval step and must not alter the source calendar.
-- Source event changes should be made in the external calendar during the initial release.
-- Public URL conflicts must be resolved externally or by selecting the event displayed on signage.
-- The system should preserve an audit trail of conflict decisions.
-- The kiosk display must use configured conflict handling rules to decide which event appears.
+- The management portal must provide a conflict dashboard and detailed review screen showing room, source account, calendar, access level, event title, description, start, end, and selected display event.
+- Authorized users must be able to ignore a conflict, resolve the signage display selection, cancel an event, replace other overlapping events with the selected event, or move an event.
+- Ignore and Resolve must not alter source calendars.
+- Cancel, Replace, and Move must write changes back only when every affected event is on a writable Google Calendar or Microsoft 365 connection.
+- Read-only Google, Microsoft, CalDAV, and public URL sources must reject source-changing conflict actions and continue to support Ignore or Resolve.
+- Source-changing actions must require confirmation in the management portal.
+- Every conflict decision must record the acting user, action, room, selected and target events, before/after times when applicable, event snapshots, source-write status, and decision time.
+- Conflict decision history and related audit records must be retained for no more than six months.
+- Unresolved and ignored conflicts must use deterministic kiosk behavior: selected event when configured, otherwise earliest start time, then earliest end time, then external event ID.
+- Only the deterministic winning event from an overlapping conflict group may appear in current or upcoming kiosk event data.
+- Recurrence exceptions and cancelled instances must be tested for Google Calendar, Microsoft 365, and ICS/public calendar feeds.
 
 ### 6.3 Front-End Theme and Style Management
 
@@ -763,9 +766,9 @@ The initial release should include:
 - Each connected calendar account may provide access to multiple calendars.
 - System Administrators assign calendars to rooms.
 - Recurring events and recurrence exceptions must be loaded from the source calendar.
-- Writable connections support calendar event create, update, and delete operations, but the initial portal workflow keeps normal event editing in the external calendar.
-- Conflict resolution selects the event displayed on signage and does not modify the source calendar.
-- Display-event selection does not require a separate approval step.
+- Writable Google and Microsoft 365 connections support Cancel, Replace, and Move conflict actions that update source events.
+- Ignore and Resolve select deterministic signage behavior without modifying source calendars.
+- Conflict display selection does not require a separate approval step.
 - Private and rental events must display as "Private Event" on kiosk displays.
 - Rental and private events may be identified by the phrases "Rental Event" or "Private Event" in the event description.
 - Emergency broadcast ability is granted by System Admin through feature access and limited by the user's assigned role and scope.
@@ -829,7 +832,9 @@ The initial release should include:
 - Recurring events and recurrence exceptions load from connected calendars.
 - Private and rental events display as "Private Event" on kiosk displays.
 - Conflicting events are detected and visible to authorized users.
-- An authorized user can select which conflicting event is displayed without changing the source calendar.
+- An authorized user can open detailed conflict review and apply Ignore, Resolve, Cancel, Replace, or Move according to source access.
+- Unresolved conflicts display one deterministic event on kiosks.
+- Conflict decision history identifies the acting user and is retained for six months.
 - An administrator can grant and revoke a user's access to Calendar Sync, Calendar Event Conflict Resolution, Front End Theme and Style Management, Notifications, and Emergency & Safety Broadcast.
 - A System Administrator can clone and modify roles.
 - A user can belong to multiple centers.

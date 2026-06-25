@@ -488,6 +488,61 @@ th {
   justify-content: flex-end;
 }
 
+.compact-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 16px;
+}
+
+.wide-dialog {
+  max-width: 980px;
+}
+
+.conflict-review-list {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.conflict-review-event {
+  align-items: start;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 14px;
+}
+
+.conflict-review-event:has(input:checked) {
+  background: #eef5f7;
+  border-color: var(--ink);
+}
+
+.conflict-review-event span {
+  display: grid;
+  gap: 4px;
+}
+
+.conflict-review-event small {
+  color: var(--muted);
+}
+
+.conflict-move-fields {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin: 16px 0;
+}
+
+.conflict-dialog-actions {
+  flex-wrap: wrap;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .pairing-code {
   color: var(--accent-dark) !important;
   font-size: 18px !important;

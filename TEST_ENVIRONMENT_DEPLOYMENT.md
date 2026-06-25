@@ -270,29 +270,32 @@ In the admin portal:
 27. Open **Calendar Sync**, add a public iCalendar URL account, select **Verify**, assign one calendar to a temporary room, and select **Assign & Sync**.
 28. Confirm the sync imports events inside the previous 30 days and next 30 days and that deleted source events disappear after another sync.
 29. Confirm the room kiosk shows synchronized events and that private or rental events display as **Private Event** without a description.
-30. Create overlapping events, confirm a conflict appears, select the event to display, and verify the source calendar is unchanged.
-31. Confirm Calendar Sync History records the result, then remove the room assignment before deleting the account.
-32. For Google, test service-account discovery and OAuth authorization URL generation. Confirm the connected account has access to each required calendar.
-33. For Microsoft 365, test application credentials and OAuth authorization URL generation using the tenant/client configuration.
-34. Add an iCloud CalDAV account using an app-specific password and verify calendar discovery.
-35. Confirm `/api/health` reports `"calendarQueue": "redis"`.
-36. Stop Redis briefly and confirm the app remains healthy with `"calendarQueue": "in-process"`, then restart Redis, trigger a calendar sync, and confirm the health response returns to `"calendarQueue": "redis"`.
-37. Open a kiosk and scan its generated booking QR code.
-38. Disconnect the kiosk network for more than five minutes and confirm cached signage continues, the clock advances, and offline/stale status is visible.
-39. Test the kiosk in landscape and portrait orientation.
-40. Pair a kiosk with its six-digit code, approve it as System Admin or the responsible Center Admin, and test remote data refresh and full reload.
-41. Open **Theme Editor**, clone a built-in theme, modify colors and the four font groups, and confirm the live preview updates.
-42. Publish the cloned theme, assign it to a room, and confirm the kiosk updates without rebuilding the container.
-43. Publish and end a test safety broadcast, then confirm the System Admin-only history records its start, targets, status, and end time.
-44. In **Theme Editor**, switch the Preview Room dropdown and confirm the iframe changes rooms without closing the editor.
-45. Change each status color with its color picker and adjust Event Panel transparency; confirm the preview updates before saving.
-46. Leave a tablet kiosk asleep or backgrounded, change its assigned theme, then wake the device and confirm it refreshes within 10 seconds without manually reloading.
-47. Clone a theme, upload a PNG, JPEG, or WebP background image, save the theme, and confirm the image appears in all three preview states.
-48. Rebuild the application container and confirm the uploaded background still loads from the persistent `./data/theme-assets` volume.
-49. Change the upcoming-event tile background, title, and detail colors and confirm the preview updates.
-50. Open **Theme Scheduler**, schedule a published theme for one or more eligible targets, and confirm the owner name appears.
-51. Confirm the scheduled theme overrides Room Management during the active window and automatically returns to the room theme afterward.
-52. Confirm completed schedules appear under **Past Schedules** and records older than two years are not displayed.
+30. Create overlapping events and confirm the conflict dashboard shows one overlap group while the kiosk displays only one deterministic event.
+31. Open detailed conflict review. Test **Ignore** and **Resolve Display** on a read-only source, then confirm **Cancel**, **Replace Others**, and **Move Selected** are disabled.
+32. Repeat with writable Google and Microsoft test calendars. Confirm Cancel deletes the selected source event, Replace keeps the selected event and deletes the other overlap, and Move writes the room-timezone start/end values back correctly.
+33. Confirm Conflict Decision History records user, action, source-change status, selection, and move time, and that Calendar Sync History records the resulting sync.
+34. Remove the room assignment before deleting the account.
+35. For Google, test service-account discovery and OAuth authorization URL generation. Confirm the connected account has access to each required calendar.
+36. For Microsoft 365, test application credentials and OAuth authorization URL generation using the tenant/client configuration.
+37. Add an iCloud CalDAV account using an app-specific password and verify calendar discovery.
+38. Confirm `/api/health` reports `"calendarQueue": "redis"`.
+39. Stop Redis briefly and confirm the app remains healthy with `"calendarQueue": "in-process"`, then restart Redis, trigger a calendar sync, and confirm the health response returns to `"calendarQueue": "redis"`.
+40. Open a kiosk and scan its generated booking QR code.
+41. Disconnect the kiosk network for more than five minutes and confirm cached signage continues, the clock advances, and offline/stale status is visible.
+42. Test the kiosk in landscape and portrait orientation.
+43. Pair a kiosk with its six-digit code, approve it as System Admin or the responsible Center Admin, and test remote data refresh and full reload.
+44. Open **Theme Editor**, clone a built-in theme, modify colors and the four font groups, and confirm the live preview updates.
+45. Publish the cloned theme, assign it to a room, and confirm the kiosk updates without rebuilding the container.
+46. Publish and end a test safety broadcast, then confirm the System Admin-only history records its start, targets, status, and end time.
+47. In **Theme Editor**, switch the Preview Room dropdown and confirm the iframe changes rooms without closing the editor.
+48. Change each status color with its color picker and adjust Event Panel transparency; confirm the preview updates before saving.
+49. Leave a tablet kiosk asleep or backgrounded, change its assigned theme, then wake the device and confirm it refreshes within 10 seconds without manually reloading.
+50. Clone a theme, upload a PNG, JPEG, or WebP background image, save the theme, and confirm the image appears in all three preview states.
+51. Rebuild the application container and confirm the uploaded background still loads from the persistent `./data/theme-assets` volume.
+52. Change the upcoming-event tile background, title, and detail colors and confirm the preview updates.
+53. Open **Theme Scheduler**, schedule a published theme for one or more eligible targets, and confirm the owner name appears.
+54. Confirm the scheduled theme overrides Room Management during the active window and automatically returns to the room theme afterward.
+55. Confirm completed schedules appear under **Past Schedules** and records older than two years are not displayed.
 
 ## 9. Configure SMTP Email
 

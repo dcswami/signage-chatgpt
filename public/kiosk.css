@@ -62,6 +62,13 @@ body {
   background: #285f38;
 }
 
+.kiosk-top time,
+.custom-top time {
+  font-size: clamp(14px, 1.35vw, 24px);
+  text-align: right;
+  white-space: nowrap;
+}
+
 .qr-code.qr-small {
   background: var(--qr-background, #fff);
   border: var(--qr-border, 0) solid var(--qr-background, #fff);

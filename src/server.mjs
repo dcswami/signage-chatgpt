@@ -17,6 +17,7 @@ import {
   writeCalendarEvent
 } from "./calendar.mjs";
 import { createCalendarQueue } from "./calendar-queue.mjs";
+import { deterministicConflictEvent, eventsForKiosk } from "./conflicts.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -240,6 +241,7 @@ const seedData = {
   calendarAssignments: [],
   calendarEvents: [],
   calendarConflicts: [],
+  calendarConflictHistory: [],
   calendarSyncHistory: [],
   themeSchedules: [],
   roomGroups: [],
@@ -326,7 +328,7 @@ function normalizeData(data) {
       }
     }
   };
-  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "calendarAssignments", "calendarEvents", "calendarConflicts", "calendarSyncHistory", "themeSchedules", "roomGroups", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "notifications", "kioskDevices", "kioskPairingCodes", "auditLogs"]) {
+  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "calendarAssignments", "calendarEvents", "calendarConflicts", "calendarConflictHistory", "calendarSyncHistory", "themeSchedules", "roomGroups", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "notifications", "kioskDevices", "kioskPairingCodes", "auditLogs"]) {
     if (!Array.isArray(normalized[key])) normalized[key] = structuredClone(seedData[key] || []);
   }
   normalized.centers = normalized.centers.map(center => ({
@@ -446,11 +448,12 @@ function normalizeData(data) {
     ...assignment
   }));
   normalized.calendarConflicts = normalized.calendarConflicts.map(conflict => ({
-    status: "unresolved",
-    selectedEventId: null,
+    resolution: null,
     resolvedBy: null,
     resolvedAt: null,
-    ...conflict
+    ...conflict,
+    status: conflict.status === "display-selected" ? "resolved" : conflict.status || "unresolved",
+    selectedExternalEventId: conflict.selectedExternalEventId || conflict.selectedEventId || null
   }));
   normalized.kioskDevices = normalized.kioskDevices.map(device => ({
     status: "pending",
@@ -527,6 +530,7 @@ function normalizeData(data) {
   normalized.activeBroadcast = null;
   const cutoff = Date.now() - 183 * 24 * 60 * 60 * 1000;
   normalized.calendarSyncHistory = normalized.calendarSyncHistory.filter(item => new Date(item.createdAt).getTime() >= cutoff);
+  normalized.calendarConflictHistory = normalized.calendarConflictHistory.filter(item => new Date(item.createdAt).getTime() >= cutoff);
   normalized.auditLogs = normalized.auditLogs.filter(item => new Date(item.createdAt).getTime() >= cutoff);
   return normalized;
 }
@@ -936,6 +940,7 @@ function detectRoomConflicts(roomId, events) {
   const conflicts = clusters.map(items => {
     const externalIds = items.map(item => item.externalEventId).sort();
     const id = `calendar-conflict-${crypto.createHash("sha256").update(`${roomId}:${externalIds.join("|")}`).digest("hex").slice(0, 24)}`;
+    const prior = previous.get(id);
     return {
       id,
       roomId,
@@ -943,10 +948,12 @@ function detectRoomConflicts(roomId, events) {
       externalEventIds: externalIds,
       startsAt: items.map(item => item.startsAt).sort()[0],
       endsAt: items.map(item => item.endsAt).sort().at(-1),
-      status: previous.get(id)?.status || "unresolved",
-      selectedExternalEventId: previous.get(id)?.selectedExternalEventId || null,
-      resolvedBy: previous.get(id)?.resolvedBy || null,
-      resolvedAt: previous.get(id)?.resolvedAt || null,
+      status: prior?.status || "unresolved",
+      selectedExternalEventId: prior?.selectedExternalEventId || null,
+      resolution: prior?.resolution || null,
+      resolvedBy: prior?.resolvedBy || null,
+      resolvedAt: prior?.resolvedAt || null,
+      createdAt: prior?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
   });
@@ -955,6 +962,53 @@ function detectRoomConflicts(roomId, events) {
     ...conflicts
   ];
   return conflicts;
+}
+
+function conflictEvents(conflict) {
+  return conflict.eventIds.map(id => db.calendarEvents.find(event => event.id === id)).filter(Boolean);
+}
+
+function conflictWriteContext(event) {
+  const assignment = db.calendarAssignments.find(item => item.id === event.assignmentId);
+  const account = db.calendarAccounts.find(item => item.id === assignment?.accountId);
+  const calendar = account?.calendars?.find(item => item.id === assignment?.calendarId);
+  if (!assignment || !account || !calendar) throw new Error("The source calendar assignment is unavailable.");
+  if (account.accessLevel !== "writable" || !["google", "microsoft365"].includes(account.provider)) {
+    throw new Error("This action requires a writable Google or Microsoft 365 calendar.");
+  }
+  return { assignment, account, calendar };
+}
+
+function recordConflictDecision(conflict, action, viewer, details = {}) {
+  const room = db.rooms.find(item => item.id === conflict.roomId);
+  const decision = {
+    id: entityId("calendar-conflict-decision"),
+    conflictId: conflict.id,
+    roomId: conflict.roomId,
+    roomName: room?.name || "",
+    action,
+    actorUserId: viewer?.id || null,
+    actorName: viewer?.name || "System",
+    selectedExternalEventId: details.selectedExternalEventId || null,
+    targetExternalEventId: details.targetExternalEventId || null,
+    previousStartsAt: details.previousStartsAt || null,
+    previousEndsAt: details.previousEndsAt || null,
+    newStartsAt: details.newStartsAt || null,
+    newEndsAt: details.newEndsAt || null,
+    sourceWrite: Boolean(details.sourceWrite),
+    eventSnapshots: conflictEvents(conflict).map(event => ({
+      externalEventId: event.externalEventId,
+      title: eventDisplayTitle(event),
+      startsAt: event.startsAt,
+      endsAt: event.endsAt,
+      provider: event.provider
+    })),
+    createdAt: new Date().toISOString()
+  };
+  db.calendarConflictHistory.unshift(decision);
+  const cutoff = Date.now() - 183 * 24 * 60 * 60 * 1000;
+  db.calendarConflictHistory = db.calendarConflictHistory.filter(item => new Date(item.createdAt).getTime() >= cutoff);
+  return decision;
 }
 
 function refreshRoomEvents(roomId) {
@@ -968,8 +1022,9 @@ function refreshRoomEvents(roomId) {
     .filter(item => item.roomId === roomId && new Date(item.endsAt) >= now && new Date(item.startsAt) <= futureLimit)
     .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
   const conflicts = detectRoomConflicts(roomId, events);
+  const displayEvents = eventsForKiosk(events, conflicts);
   db.upcomingEvents = db.upcomingEvents.filter(item => item.roomId !== roomId);
-  db.upcomingEvents.push(...events.filter(event => new Date(event.startsAt) > now).slice(0, 100).map(event => ({
+  db.upcomingEvents.push(...displayEvents.filter(event => new Date(event.startsAt) > now).slice(0, 100).map(event => ({
     roomId,
     eventId: event.id,
     title: eventDisplayTitle(event),
@@ -979,12 +1034,12 @@ function refreshRoomEvents(roomId) {
     description: effective.showEventDescription && eventDisplayTitle(event) !== "Private Event" ? event.description || "" : ""
   })));
   const currentEvents = events.filter(event => new Date(event.startsAt) <= now && new Date(event.endsAt) > now);
-  const currentConflict = conflicts.find(conflict =>
-    new Date(conflict.startsAt) <= now
-    && new Date(conflict.endsAt) > now
-  );
-  const current = currentConflict?.selectedExternalEventId
-    ? currentEvents.find(event => event.externalEventId === currentConflict.selectedExternalEventId) || currentEvents[0]
+  const currentConflict = conflicts.find(conflict => currentEvents.some(event => conflict.eventIds.includes(event.id)));
+  const current = currentConflict
+    ? deterministicConflictEvent(
+      currentEvents.filter(event => currentConflict.eventIds.includes(event.id)),
+      currentConflict.selectedExternalEventId
+    )
     : currentEvents[0];
   if (current) {
     const remainingMinutes = Math.max(0, Math.ceil((new Date(current.endsAt) - now) / 60000));
@@ -1002,8 +1057,8 @@ function refreshRoomEvents(roomId) {
     room.currentEventEndsAt = null;
     room.currentEventTime = "";
     room.currentEventDescription = "";
-    room.currentEventUntil = events[0]
-      ? new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit" }).format(new Date(events[0].startsAt))
+    room.currentEventUntil = displayEvents[0]
+      ? new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit" }).format(new Date(displayEvents[0].startsAt))
       : "";
   }
 }
@@ -1649,8 +1704,16 @@ function adminPage() {
           </table></div>
         </section>
         <section class="panel">
-          <div class="panel-heading"><div><h2>Event Conflicts</h2><p>Select which external event appears on signage without modifying either source event.</p></div></div>
+          <div class="panel-heading"><div><h2>Calendar Conflict Dashboard</h2><p>Review overlaps, choose deterministic signage behavior, or update writable Google and Microsoft calendars.</p></div></div>
+          <div id="calendarConflictSummary" class="summary-grid compact-summary"></div>
           <div id="calendarConflictList" class="entity-list"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-heading"><div><h2>Conflict Decision History</h2><p>Ignore, resolve, cancel, replace, and move decisions retained for six months.</p></div></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Time</th><th>Room</th><th>User</th><th>Action</th><th>Source Change</th><th>Selection</th></tr></thead>
+            <tbody id="calendarConflictHistoryRows"></tbody>
+          </table></div>
         </section>
       </section>
 
@@ -1900,6 +1963,28 @@ function adminPage() {
         <div class="dialog-actions"><button type="button" class="secondary" id="cancelDialog">Cancel</button><button type="submit">Save</button></div>
       </form>
     </dialog>
+    <dialog id="conflictDialog" class="wide-dialog">
+      <form id="conflictActionForm">
+        <div class="dialog-heading"><h2 id="conflictDialogTitle">Review Calendar Conflict</h2><button type="button" class="icon-button" id="closeConflictDialog" aria-label="Close">&times;</button></div>
+        <input type="hidden" name="conflictId" />
+        <div id="conflictReviewBody"></div>
+        <fieldset class="conflict-move-fields">
+          <legend>Move selected event</legend>
+          <div class="form-grid">
+            <label>New Start <input name="startsAt" type="datetime-local" /></label>
+            <label>New End <input name="endsAt" type="datetime-local" /></label>
+          </div>
+        </fieldset>
+        <p id="conflictFormStatus" class="form-status" role="status"></p>
+        <div class="dialog-actions conflict-dialog-actions">
+          <button type="button" class="secondary" data-conflict-action="ignore">Ignore</button>
+          <button type="button" data-conflict-action="resolve">Resolve Display</button>
+          <button type="button" class="danger-text source-conflict-action" data-conflict-action="cancel">Cancel Selected</button>
+          <button type="button" class="danger-text source-conflict-action" data-conflict-action="replace">Replace Others</button>
+          <button type="button" class="secondary source-conflict-action" data-conflict-action="move">Move Selected</button>
+        </div>
+      </form>
+    </dialog>
 
     <script src="/static/admin.js?v=${assetVersion}"></script>
   </body>
@@ -2013,6 +2098,10 @@ async function handleApi(req, res, url) {
         const room = db.rooms.find(item => item.id === conflict.roomId);
         return room && viewerCanAccessRoom(viewer, room);
       }),
+      calendarConflictHistory: db.calendarConflictHistory.filter(decision => {
+        const room = db.rooms.find(item => item.id === decision.roomId);
+        return room && viewerCanAccessRoom(viewer, room);
+      }).slice(0, 200),
       calendarSyncHistory: db.calendarSyncHistory.slice(0, 50),
       kioskDevices: db.kioskDevices.filter(device => {
         const room = db.rooms.find(item => item.id === device.roomId);
@@ -2565,14 +2654,143 @@ async function handleApi(req, res, url) {
     const selected = cleanText(body.externalEventId, 1000);
     if (!conflict.externalEventIds.includes(selected)) return validationError(res, "Select an event included in this conflict.");
     conflict.selectedExternalEventId = selected;
-    conflict.status = "display-selected";
+    conflict.status = "resolved";
+    conflict.resolution = "resolve";
     conflict.resolvedBy = currentViewer(req)?.id || null;
     conflict.resolvedAt = new Date().toISOString();
+    recordConflictDecision(conflict, "resolve", currentViewer(req), { selectedExternalEventId: selected });
     refreshRoomEvents(room.id);
     addAudit("calendar.conflict.display-select", { conflictId: conflict.id, externalEventId: selected });
     await saveData();
     notifyRoom(room.code);
     return json(res, 200, conflict);
+  }
+  const calendarConflictActionMatch = url.pathname.match(/^\/api\/calendar-conflicts\/([^/]+)\/action$/);
+  if (req.method === "POST" && calendarConflictActionMatch) {
+    const conflict = db.calendarConflicts.find(item => item.id === calendarConflictActionMatch[1]);
+    const room = db.rooms.find(item => item.id === conflict?.roomId);
+    if (!conflict || !room) return json(res, 404, { error: "Calendar conflict not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
+    const body = await readBody(req);
+    const action = cleanText(body.action, 30);
+    if (!["ignore", "resolve", "cancel", "replace", "move"].includes(action)) {
+      return validationError(res, "Select a valid conflict action.");
+    }
+    if (!requirePermission(req, res, ["cancel", "replace", "move"].includes(action) ? "calendar.manage" : "calendar.sync")) return;
+    const events = conflictEvents(conflict);
+    if (events.length < 2) return validationError(res, "This conflict no longer contains overlapping events. Sync the calendar and try again.");
+    const selectedExternalEventId = cleanText(body.selectedExternalEventId, 1000);
+    const targetExternalEventId = cleanText(body.targetExternalEventId, 1000);
+    const selectedEvent = events.find(event => event.externalEventId === selectedExternalEventId);
+    const targetEvent = events.find(event => event.externalEventId === targetExternalEventId);
+    const viewer = currentViewer(req);
+
+    if (action === "ignore" || action === "resolve") {
+      const winner = action === "resolve"
+        ? selectedEvent
+        : deterministicConflictEvent(events, selectedExternalEventId);
+      if (!winner) return validationError(res, "Select an event included in this conflict.");
+      conflict.selectedExternalEventId = winner.externalEventId;
+      conflict.status = action === "ignore" ? "ignored" : "resolved";
+      conflict.resolution = action;
+      conflict.resolvedBy = viewer?.id || null;
+      conflict.resolvedAt = new Date().toISOString();
+      const decision = recordConflictDecision(conflict, action, viewer, {
+        selectedExternalEventId: winner.externalEventId
+      });
+      refreshRoomEvents(room.id);
+      addAudit(`calendar.conflict.${action}`, {
+        conflictId: conflict.id,
+        roomId: room.id,
+        selectedExternalEventId: winner.externalEventId,
+        actorUserId: viewer?.id || null
+      });
+      await saveData();
+      notifyRoom(room.code);
+      return json(res, 200, { conflict, decision });
+    }
+
+    let affectedEvents = [];
+    if (action === "cancel") {
+      if (!targetEvent) return validationError(res, "Select the event to cancel.");
+      affectedEvents = [targetEvent];
+    } else if (action === "replace") {
+      if (!selectedEvent) return validationError(res, "Select the event that should replace the other overlapping events.");
+      affectedEvents = events.filter(event => event.id !== selectedEvent.id);
+    } else if (action === "move") {
+      if (!targetEvent) return validationError(res, "Select the event to move.");
+      const startsAt = new Date(body.startsAt);
+      const endsAt = new Date(body.endsAt);
+      if (!Number.isFinite(startsAt.getTime()) || !Number.isFinite(endsAt.getTime()) || endsAt <= startsAt) {
+        return validationError(res, "Enter a valid new start and end time.");
+      }
+      affectedEvents = [targetEvent];
+    }
+
+    let contexts;
+    try {
+      contexts = affectedEvents.map(event => ({ event, ...conflictWriteContext(event) }));
+    } catch (error) {
+      return json(res, 409, { error: error.message });
+    }
+
+    try {
+      if (action === "move") {
+        const context = contexts[0];
+        await writeCalendarEvent(context.account, context.calendar, {
+          ...context.event,
+          title: context.event.originalTitle || context.event.title,
+          startsAt: new Date(body.startsAt).toISOString(),
+          endsAt: new Date(body.endsAt).toISOString()
+        }, context.event);
+      } else {
+        for (const context of contexts) {
+          await deleteCalendarEvent(context.account, context.calendar, context.event);
+        }
+      }
+    } catch (error) {
+      return json(res, 502, { error: `The source update failed and may be partially applied. Sync and review the calendar before retrying: ${error.message}` });
+    }
+
+    conflict.selectedExternalEventId = selectedEvent?.externalEventId || null;
+    conflict.status = action;
+    conflict.resolution = action;
+    conflict.resolvedBy = viewer?.id || null;
+    conflict.resolvedAt = new Date().toISOString();
+    const decision = recordConflictDecision(conflict, action, viewer, {
+      selectedExternalEventId: selectedEvent?.externalEventId || null,
+      targetExternalEventId: targetEvent?.externalEventId || null,
+      previousStartsAt: targetEvent?.startsAt || null,
+      previousEndsAt: targetEvent?.endsAt || null,
+      newStartsAt: action === "move" ? new Date(body.startsAt).toISOString() : null,
+      newEndsAt: action === "move" ? new Date(body.endsAt).toISOString() : null,
+      sourceWrite: true
+    });
+    addAudit(`calendar.conflict.${action}`, {
+      conflictId: conflict.id,
+      roomId: room.id,
+      selectedExternalEventId: selectedEvent?.externalEventId || null,
+      targetExternalEventId: targetEvent?.externalEventId || null,
+      actorUserId: viewer?.id || null
+    });
+
+    const syncWarnings = [];
+    for (const assignmentId of new Set(contexts.map(context => context.assignment.id))) {
+      const assignment = db.calendarAssignments.find(item => item.id === assignmentId);
+      if (!assignment) continue;
+      try {
+        await syncAssignment(assignment);
+      } catch (error) {
+        syncWarnings.push(error.message);
+      }
+    }
+    await saveData();
+    notifyRoom(room.code);
+    return json(res, 200, {
+      decision,
+      sourceUpdated: true,
+      syncWarnings
+    });
   }
   if (req.method === "PUT" && url.pathname === "/api/settings/email") {
     if (!requirePermission(req, res, "settings.manage")) return;
