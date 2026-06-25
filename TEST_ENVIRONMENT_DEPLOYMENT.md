@@ -97,6 +97,9 @@ REDIS_URL=redis://redis:6379
 SESSION_SECRET=CHANGE_ME_LONG_RANDOM_TEST_SECRET
 CREDENTIAL_ENCRYPTION_KEY=CHANGE_ME_SEPARATE_LONG_RANDOM_CREDENTIAL_KEY
 TWO_FACTOR_ISSUER=BAPS Signage Test
+BOOTSTRAP_ADMIN_PASSWORD=CHANGE_ME_STRONG_INITIAL_ADMIN_PASSWORD
+POSTGRES_POOL_SIZE=15
+BACKGROUND_WORKER_CONCURRENCY=5
 ```
 
 Use strong random values for passwords and secrets.
@@ -119,7 +122,11 @@ docker compose -f docker-compose.test.yml -p signage-test up -d --force-recreate
 docker compose -f docker-compose.test.yml -p signage-test ps
 ```
 
-On first startup, the application creates its PostgreSQL state table and imports the existing `data/app-data.json`. Room codes and kiosk URLs remain unchanged. PostgreSQL becomes the primary data store, and the JSON file remains an automatically updated compatibility mirror.
+On first startup, the application runs the ordered migrations in `database/migrations`, creates per-domain PostgreSQL tables, and transactionally imports the legacy `application_state` record or `data/app-data.json`. Room codes, entity IDs, and kiosk URLs remain unchanged. Runtime writes then use the normalized tables. The JSON compatibility mirror is disabled by default so password hashes and two-factor secrets are not copied to disk.
+
+`BOOTSTRAP_ADMIN_PASSWORD` is used only when the first System Administrator does not yet have a password hash. Set a strong temporary value before the first secure startup, sign in as `admin@example.org`, enroll two-factor authentication, and then remove `BOOTSTRAP_ADMIN_PASSWORD` from `.env`.
+
+The health response should report `"storage": "postgresql-normalized"`, `"calendarQueue": "redis"`, `"backgroundQueue": "redis"`, and `"authentication": "ready"`.
 
 The test app listens locally on:
 
@@ -239,7 +246,14 @@ Check alert audio directly from the kiosk device:
 https://signage-test.bapswest.org/assets/audio/alarm.mp3
 ```
 
-In the admin portal:
+Authentication readiness:
+
+1. Open `https://signage-test.bapswest.org/admin` and confirm it redirects to `/login`.
+2. Sign in as `admin@example.org` using the temporary `BOOTSTRAP_ADMIN_PASSWORD`.
+3. Open **Configuration**, enroll an authenticator app, log out, and confirm the next login requires its six-digit code.
+4. Remove `BOOTSTRAP_ADMIN_PASSWORD` from `.env` and recreate the app container.
+
+Functional readiness in the admin portal:
 
 1. Confirm the Dashboard lists all three existing test rooms.
 2. Open **Locations & Rooms** and confirm the center, campus, building, and rooms were imported.

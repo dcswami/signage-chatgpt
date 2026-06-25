@@ -1,5 +1,7 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+-- Legacy import source only. Runtime persistence is created by the ordered
+-- migrations in database/migrations and no longer writes this shared document.
 CREATE TABLE IF NOT EXISTS application_state (
   id text PRIMARY KEY,
   data jsonb NOT NULL,

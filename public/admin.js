@@ -6,10 +6,19 @@ const conflictDialog = document.querySelector("#conflictDialog");
 const conflictActionForm = document.querySelector("#conflictActionForm");
 
 async function api(path, options = {}) {
+  const csrfToken = state?.viewer?.csrfToken || "";
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+      ...(options.headers || {})
+    }
   });
+  if (response.status === 401) {
+    window.location.assign("/login");
+    throw new Error("Your session has expired.");
+  }
   const body = await response.json().catch(() => ({ error: response.statusText }));
   if (!response.ok) throw new Error(body.error || "Request failed");
   return body;
@@ -45,6 +54,10 @@ function campusName(id) {
 
 function buildingName(id) {
   return state.buildings.find(item => item.id === id)?.name || "Unknown building";
+}
+
+function roomName(id) {
+  return state.rooms.find(item => item.id === id)?.name || "Unknown room";
 }
 
 function roleName(id) {
@@ -395,9 +408,12 @@ function renderUsers() {
       <td>${[
         ...user.centerIds.map(centerName),
         ...user.campusIds.map(campusName),
-        ...user.buildingIds.map(buildingName)
+        ...user.buildingIds.map(buildingName),
+        ...(user.roomIds || []).map(roomName)
       ].map(escapeHtml).join(", ") || "None"}</td>
-      <td><span class="feature-summary">${user.features.map(escapeHtml).join(", ") || "None"}</span></td>
+      <td><span class="feature-summary">${user.features.map(escapeHtml).join(", ") || "None"}</span>
+        ${(user.featureGrants || []).map(grant => `<span class="subtle">${escapeHtml(grant.featureName)}: ${new Date(grant.startsAt).toLocaleString()} - ${new Date(grant.endsAt).toLocaleString()} <button type="button" class="danger-text compact-button" data-delete-feature-grant="${escapeHtml(grant.id)}">Remove</button></span>`).join("")}
+      </td>
       <td><div class="row-actions">
         <button type="button" class="secondary" data-edit="user" data-id="${escapeHtml(user.id)}">Edit</button>
         <button type="button" class="secondary" data-invite-user="${escapeHtml(user.id)}">Send Invite</button>
@@ -721,6 +737,32 @@ function renderAudit() {
   `).join("") || `<p class="empty-state">No audit activity yet.</p>`}</div>`;
 }
 
+function renderLoginAudit() {
+  const panel = document.querySelector("#loginAuditPanel");
+  panel.hidden = !state.viewer.isSystemAdmin;
+  document.querySelector("#loginAuditRows").innerHTML = (state.loginAudit || []).map(item => `
+    <tr>
+      <td>${new Date(item.createdAt).toLocaleString()}</td>
+      <td>${escapeHtml(item.email || "-")}</td>
+      <td>${escapeHtml(item.outcome)}</td>
+      <td>${escapeHtml(item.ipAddress || "-")}</td>
+      <td>${escapeHtml(item.userAgent || "-")}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="5" class="empty-state">No login activity recorded.</td></tr>`;
+}
+
+function renderSessions() {
+  document.querySelector("#sessionList").innerHTML = (state.sessions || []).filter(item => !item.revokedAt).map(item => `
+    <article class="entity-item">
+      <div><strong>${item.current ? "Current session" : escapeHtml(item.ipAddress || "Session")}</strong>
+        <span>${escapeHtml(item.userAgent || "Browser not reported")}</span>
+        <span>Expires ${new Date(item.expiresAt).toLocaleString()}</span>
+      </div>
+      <div class="entity-actions">${item.current ? "" : `<button type="button" class="danger-text" data-revoke-session="${escapeHtml(item.id)}">Revoke</button>`}</div>
+    </article>
+  `).join("") || `<p class="empty-state">No active sessions.</p>`;
+}
+
 function fieldsFor(type, entity = {}) {
   const active = entity.active !== false;
   if (type === "kioskDevice") {
@@ -798,8 +840,16 @@ function fieldsFor(type, entity = {}) {
       <label>Centers <select name="centerIds" multiple>${optionList(state.centers, "", item => item.name)}</select></label>
       <label>Campuses <select name="campusIds" multiple>${optionList(state.campuses, "", item => `${item.name} - ${centerName(item.centerId)}`)}</select></label>
       <label>Buildings <select name="buildingIds" multiple>${optionList(state.buildings, "", item => `${item.name} - ${campusName(item.campusId)}`)}</select></label>
+      <label>Individual Rooms <select name="roomIds" multiple>${optionList(state.rooms, "", item => `${item.name} - ${item.buildingName}`)}</select></label>
       <fieldset class="feature-fieldset"><legend>Feature Access Grants</legend>
         ${state.features.map(feature => `<label class="check-label"><input type="checkbox" name="features" value="${escapeHtml(feature)}" ${entity.features?.includes(feature) ? "checked" : ""} /> ${escapeHtml(feature)}</label>`).join("")}
+      </fieldset>
+      <fieldset class="feature-fieldset"><legend>Add Temporary Feature Grant</legend>
+        <label>Feature <select name="temporaryFeatureName"><option value="">No new temporary grant</option>${state.features.map(feature => `<option value="${escapeHtml(feature)}">${escapeHtml(feature)}</option>`).join("")}</select></label>
+        <div class="form-grid">
+          <label>Starts <input name="temporaryFeatureStartsAt" type="datetime-local" /></label>
+          <label>Ends <input name="temporaryFeatureEndsAt" type="datetime-local" /></label>
+        </div>
       </fieldset>
       ${entity.id ? "" : `<label class="check-label"><input name="sendInvitation" type="checkbox" /> Send invitation email after creating user</label>`}
     `;
@@ -962,10 +1012,12 @@ function openEntityDialog(type, id = "") {
     const selectedCenters = new Set(entity.centerIds || []);
     const selectedCampuses = new Set(entity.campusIds || []);
     const selectedBuildings = new Set(entity.buildingIds || []);
+    const selectedRooms = new Set(entity.roomIds || []);
     Array.from(entityForm.elements.roleIds.options).forEach(option => { option.selected = selectedRoles.has(option.value); });
     Array.from(entityForm.elements.centerIds.options).forEach(option => { option.selected = selectedCenters.has(option.value); });
     Array.from(entityForm.elements.campusIds.options).forEach(option => { option.selected = selectedCampuses.has(option.value); });
     Array.from(entityForm.elements.buildingIds.options).forEach(option => { option.selected = selectedBuildings.has(option.value); });
+    Array.from(entityForm.elements.roomIds.options).forEach(option => { option.selected = selectedRooms.has(option.value); });
   } else if (type === "roomGroup") {
     const selectedRooms = new Set(entity.roomIds || []);
     Array.from(entityForm.elements.roomIds.options).forEach(option => { option.selected = selectedRooms.has(option.value); });
@@ -1015,13 +1067,24 @@ async function saveEntity(event) {
   const data = Object.fromEntries(new FormData(entityForm));
   const type = data.entityType;
   const id = data.entityId;
+  const temporaryGrant = type === "user" && data.temporaryFeatureName
+    ? {
+        featureName: data.temporaryFeatureName,
+        startsAt: data.temporaryFeatureStartsAt ? new Date(data.temporaryFeatureStartsAt).toISOString() : "",
+        endsAt: data.temporaryFeatureEndsAt ? new Date(data.temporaryFeatureEndsAt).toISOString() : ""
+      }
+    : null;
   delete data.entityType;
   delete data.entityId;
+  delete data.temporaryFeatureName;
+  delete data.temporaryFeatureStartsAt;
+  delete data.temporaryFeatureEndsAt;
   if (type === "user") {
     data.roleIds = Array.from(entityForm.elements.roleIds.selectedOptions).map(option => option.value);
     data.centerIds = Array.from(entityForm.elements.centerIds.selectedOptions).map(option => option.value);
     data.campusIds = Array.from(entityForm.elements.campusIds.selectedOptions).map(option => option.value);
     data.buildingIds = Array.from(entityForm.elements.buildingIds.selectedOptions).map(option => option.value);
+    data.roomIds = Array.from(entityForm.elements.roomIds.selectedOptions).map(option => option.value);
     data.features = Array.from(entityForm.querySelectorAll('input[name="features"]:checked')).map(input => input.value);
     data.sendInvitation = Boolean(entityForm.elements.sendInvitation?.checked);
   } else if (type === "broadcastTemplate") {
@@ -1071,6 +1134,12 @@ async function saveEntity(event) {
       method: id ? "PUT" : "POST",
       body: JSON.stringify(data)
     });
+    if (temporaryGrant) {
+      await api(`/api/users/${result.id}/feature-grants`, {
+        method: "POST",
+        body: JSON.stringify(temporaryGrant)
+      });
+    }
     entityDialog.close();
     await load();
     if (result.invitationError) {
@@ -1090,6 +1159,47 @@ async function inviteUser(userId) {
     alert(`Invitation sent to ${user.email}.`);
   } catch (error) {
     alert(error.message);
+  }
+}
+
+async function deleteFeatureGrant(grantId) {
+  if (!confirm("Remove this temporary feature grant?")) return;
+  await api(`/api/feature-grants/${grantId}`, { method: "DELETE" });
+  await load();
+}
+
+async function revokeSession(sessionId) {
+  if (!confirm("Revoke this signed-in session?")) return;
+  await api(`/api/auth/sessions/${sessionId}`, { method: "DELETE" });
+  await load();
+}
+
+async function setupTwoFactor() {
+  const status = document.querySelector("#twoFactorStatus");
+  try {
+    const result = await api("/api/auth/2fa/setup", { method: "POST", body: "{}" });
+    document.querySelector("#twoFactorSecret").value = result.secret;
+    document.querySelector("#twoFactorUri").value = result.otpauthUri;
+    document.querySelector("#twoFactorSetup").hidden = false;
+    status.textContent = "Add the account to your authenticator app, then enter its current code.";
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function confirmTwoFactor(event) {
+  event.preventDefault();
+  const status = document.querySelector("#twoFactorStatus");
+  try {
+    await api("/api/auth/2fa/confirm", {
+      method: "POST",
+      body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))
+    });
+    document.querySelector("#twoFactorSetup").hidden = true;
+    status.textContent = "Two-factor authentication is enabled.";
+    await load();
+  } catch (error) {
+    status.textContent = error.message;
   }
 }
 
@@ -1518,8 +1628,9 @@ function rgbaValue(hex, opacity) {
 }
 
 function themeTokenField(key, label, value) {
+  const statusColorLocked = !state.viewer.isSystemAdmin && ["availableBg", "availableText", "busyBg", "busyText", "warningBg", "warningText"].includes(key);
   if (themeColorTokens.has(key)) {
-    return `<label>${escapeHtml(label)} <input name="${escapeHtml(key)}" type="color" value="${escapeHtml(colorParts(value).hex)}" /></label>`;
+    return `<label>${escapeHtml(label)} <input name="${escapeHtml(key)}" type="color" value="${escapeHtml(colorParts(value).hex)}" ${statusColorLocked ? "disabled" : ""} />${statusColorLocked ? '<span class="subtle">System Admin controlled</span>' : ""}</label>`;
   }
   if (key === "panel" || key === "upcomingTileBg") {
     const parts = colorParts(value);
@@ -1742,7 +1853,7 @@ async function deleteThemeSchedule(scheduleId) {
 }
 
 function render() {
-  document.querySelector("#storageBadge").textContent = state.storageType === "postgresql" ? "PostgreSQL" : "Local JSON";
+  document.querySelector("#storageBadge").textContent = state.storageType === "postgresql-normalized" ? "PostgreSQL" : "Local JSON";
   renderSummary();
   renderDashboardFilters();
   renderDashboardRows();
@@ -1762,6 +1873,8 @@ function render() {
   renderCalendars();
   renderBroadcastHistory();
   renderAudit();
+  renderLoginAudit();
+  renderSessions();
 }
 
 async function load() {
@@ -1794,6 +1907,12 @@ document.querySelector("#roomSearch").addEventListener("input", renderDashboardR
 document.querySelector("#dashboardCenterFilter").addEventListener("change", renderDashboardRows);
 document.querySelector("#dashboardStatusFilter").addEventListener("change", renderDashboardRows);
 document.querySelector("#refreshDashboard").addEventListener("click", load);
+document.querySelector("#setupTwoFactor").addEventListener("click", setupTwoFactor);
+document.querySelector("#confirmTwoFactorForm").addEventListener("submit", confirmTwoFactor);
+document.querySelector("#logoutButton").addEventListener("click", async () => {
+  await api("/api/auth/logout", { method: "POST", body: "{}" });
+  window.location.assign("/login");
+});
 document.querySelector("#refreshKioskDevices").addEventListener("click", load);
 document.querySelector("#userSearch").addEventListener("input", renderUsers);
 document.querySelector("#userStatusFilter").addEventListener("change", renderUsers);
@@ -1879,6 +1998,10 @@ document.addEventListener("click", event => {
   if (cloneButton) return cloneTheme(cloneButton.dataset.cloneTheme);
   const inviteButton = event.target.closest("[data-invite-user]");
   if (inviteButton) return inviteUser(inviteButton.dataset.inviteUser);
+  const deleteFeatureGrantButton = event.target.closest("[data-delete-feature-grant]");
+  if (deleteFeatureGrantButton) return deleteFeatureGrant(deleteFeatureGrantButton.dataset.deleteFeatureGrant);
+  const revokeSessionButton = event.target.closest("[data-revoke-session]");
+  if (revokeSessionButton) return revokeSession(revokeSessionButton.dataset.revokeSession);
   const cloneRoleButton = event.target.closest("[data-clone-role]");
   if (cloneRoleButton) return cloneRole(cloneRoleButton.dataset.cloneRole);
   const syncButton = event.target.closest("[data-sync-calendar]");

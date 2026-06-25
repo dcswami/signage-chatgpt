@@ -7,7 +7,7 @@ The deployment has two separate server environments:
 - Test server: `signage-test.bapswest.org`
 - Production server: `signage.bapswest.org`
 
-The current application includes the admin portal, kiosk pages, preview pages, live kiosk refresh, emergency broadcast display, location and room management, calendar synchronization, optional kiosk pairing, offline kiosk caching, dashboard controls, sample themes, and deployment files. PostgreSQL is the primary application data store. Redis runs BullMQ calendar synchronization jobs; if Redis is temporarily unavailable, the application falls back to in-process polling.
+The current application includes the authenticated admin portal, kiosk pages, protected preview pages, live kiosk refresh, emergency broadcast display, location and room management, calendar synchronization, device management, offline kiosk caching, dashboard controls, sample themes, and deployment files. PostgreSQL uses versioned per-domain runtime tables with transactional migration from the former shared state record. Redis runs BullMQ workers and distributes kiosk events across application instances; if Redis is temporarily unavailable, the application falls back to in-process operation.
 
 ## 1. Route Structure
 
@@ -272,7 +272,11 @@ POSTGRES_USER=signage_app
 POSTGRES_PASSWORD=CHANGE_ME_STRONG_TEST_DATABASE_PASSWORD
 REDIS_URL=redis://redis:6379
 SESSION_SECRET=CHANGE_ME_LONG_RANDOM_TEST_SESSION_SECRET
+CREDENTIAL_ENCRYPTION_KEY=CHANGE_ME_SEPARATE_LONG_RANDOM_TEST_CREDENTIAL_KEY
 TWO_FACTOR_ISSUER=BAPS Signage Test
+BOOTSTRAP_ADMIN_PASSWORD=CHANGE_ME_STRONG_INITIAL_TEST_ADMIN_PASSWORD
+POSTGRES_POOL_SIZE=15
+BACKGROUND_WORKER_CONCURRENCY=5
 ```
 
 Use these values on the production server:
@@ -287,10 +291,14 @@ POSTGRES_USER=signage_app
 POSTGRES_PASSWORD=CHANGE_ME_STRONG_DATABASE_PASSWORD
 REDIS_URL=redis://redis:6379
 SESSION_SECRET=CHANGE_ME_LONG_RANDOM_SESSION_SECRET
+CREDENTIAL_ENCRYPTION_KEY=CHANGE_ME_SEPARATE_LONG_RANDOM_CREDENTIAL_KEY
 TWO_FACTOR_ISSUER=BAPS Signage
+BOOTSTRAP_ADMIN_PASSWORD=CHANGE_ME_STRONG_INITIAL_ADMIN_PASSWORD
+POSTGRES_POOL_SIZE=15
+BACKGROUND_WORKER_CONCURRENCY=5
 ```
 
-Use strong random values for `POSTGRES_PASSWORD` and `SESSION_SECRET`.
+Use strong random values for `POSTGRES_PASSWORD`, `SESSION_SECRET`, `CREDENTIAL_ENCRYPTION_KEY`, and `BOOTSTRAP_ADMIN_PASSWORD`. After the first administrator signs in and enrolls two-factor authentication, remove `BOOTSTRAP_ADMIN_PASSWORD` from `.env` and recreate the app container.
 
 ## 8. Start the Application
 
@@ -330,11 +338,11 @@ Important current behavior:
 
 - The app container serves the admin portal, kiosk pages, previews, and APIs.
 - Live kiosk updates use Server-Sent Events.
-- PostgreSQL stores the primary application state.
+- PostgreSQL stores normalized per-domain application records with migration and revision metadata.
 - `/opt/signage/source/data/app-data.json` is maintained as a compatibility mirror and first-run migration source.
 - Uploaded theme backgrounds are persisted under `/opt/signage/source/data/theme-assets` and mounted into the app container.
 - On the first database-backed startup, existing JSON state is imported automatically without changing room codes.
-- Redis queues calendar synchronization and remains available for future multi-instance broadcast fan-out.
+- Redis queues calendar, notification, conflict, lifecycle, and scheduling work and distributes multi-instance kiosk commands.
 
 Check local health:
 
@@ -351,7 +359,7 @@ docker compose -f docker-compose.test.yml -p signage-test exec postgres \
   pg_isready -U "${POSTGRES_USER:-signage_app}" -d "${POSTGRES_DB:-signage}"
 ```
 
-The health response reports `"calendarQueue": "redis"` when Redis/BullMQ is active. If it reports `"in-process"`, review the app and Redis logs; calendar synchronization continues through the fallback.
+The health response should report `"storage": "postgresql-normalized"`, `"calendarQueue": "redis"`, `"backgroundQueue": "redis"`, and `"authentication": "ready"`. If either queue reports `"in-process"`, review the app and Redis logs; the single-server fallback remains operational.
 
 ## 9. Configure Nginx
 

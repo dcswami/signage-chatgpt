@@ -573,13 +573,36 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 ## 8. Security Requirements
 
 - All management portal access must require authentication.
+- Users must sign in with email and password. Passwords must be stored using a memory-hard salted hash.
+- Password-reset links must be single-use, expire after 30 minutes, and revoke existing sessions when used.
+- Authenticator-app two-factor authentication must use standard TOTP enrollment and verification.
+- Authenticated sessions must use high-entropy server-tracked tokens, secure HTTP-only same-site cookies, an eight-hour expiration, explicit logout, and revocation.
+- Management write operations must require a per-session CSRF token.
+- Login attempts must be rate limited and recorded with outcome, IP address, user agent, and time.
+- The application must send content-security, anti-framing, MIME-sniffing, referrer, permissions-policy, and HTTPS transport-security headers.
 - Administrative actions must require role-based authorization.
 - User permissions must respect location scope.
+- Center, campus, building, room, individual-room, calendar, user, and theme data must be filtered to the signed-in user's scope.
+- Individual feature grants must be enforced in addition to role permissions.
+- Feature grants may be permanent or scheduled with an effective start and end time.
+- Only System Administrators may change standardized Available, Busy, and Buffer/Warning status colors.
 - Sensitive calendar event details must be protected.
 - Private events must not expose title, organizer, or description unless allowed by policy.
 - All create, update, delete, login, role assignment, broadcast, and conflict resolution actions must be logged.
 - Kiosk display URLs should use non-guessable identifiers or another approved access control method.
 - The system must protect against unauthorized broadcast creation.
+- The application must not accept an identity from `X-User-Id` or fall back to an implicit administrator.
+
+### 8.1 Data Architecture and Concurrency
+
+- Runtime PostgreSQL persistence must use versioned, per-domain normalized tables rather than one shared `application_state` JSONB row.
+- First startup after upgrade must transactionally import the legacy `application_state` record or JSON file without changing existing entity IDs or kiosk routes.
+- Database migrations must be ordered, recorded in `schema_migrations`, and executed transactionally.
+- Writes must use PostgreSQL transactions, advisory locking, and revision checks to prevent silent lost updates across application instances.
+- Frequently queried room codes, user emails, hierarchy fields, calendar times, sessions, notifications, feature grants, and audit times must be indexed.
+- Large management collections must expose paginated API access with bounded page sizes.
+- Calendar synchronization, conflict processing, notifications, broadcast lifecycle, and schedule reconciliation must run through workers.
+- Redis/BullMQ must distribute jobs and kiosk refresh/broadcast events across multiple application instances, with in-process fallback for a single-server outage mode.
 
 ## 9. Audit and Reporting Requirements
 

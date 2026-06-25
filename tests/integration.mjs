@@ -86,16 +86,27 @@ const child = spawn(process.execPath, ["src/server.mjs"], {
     DATA_DIR: dataDir,
     HOST: "127.0.0.1",
     PORT: String(port),
+    APP_BASE_URL: baseUrl,
+    BOOTSTRAP_ADMIN_PASSWORD: "Integration-Admin-Password-2026!",
     THEME_ASSETS_DIR: path.join(dataDir, "theme-assets"),
     CREDENTIAL_ENCRYPTION_KEY: "integration-test-credential-key-123456789"
   },
   stdio: ["ignore", "pipe", "pipe"]
 });
 
+let authCookie = "";
+let csrfToken = "";
+
 async function request(route, options = {}, expectedStatus = 200) {
+  const method = options.method || "GET";
   const response = await fetch(`${baseUrl}${route}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(authCookie ? { Cookie: authCookie } : {}),
+      ...(!["GET", "HEAD"].includes(method) && csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+      ...(options.headers || {})
+    }
   });
   const body = await response.json().catch(() => ({}));
   assert.equal(response.status, expectedStatus, `${route}: ${JSON.stringify(body)}`);
@@ -116,8 +127,23 @@ async function waitForServer() {
 try {
   const health = await waitForServer();
   assert.equal(health.storage, "json");
+  assert.equal(health.authentication, "ready");
 
+  await request("/api/state", {}, 401);
+  await request("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email: "admin@example.org", password: "wrong-password" })
+  }, 401);
+  const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: "admin@example.org", password: "Integration-Admin-Password-2026!" })
+  });
+  assert.equal(loginResponse.status, 200);
+  authCookie = loginResponse.headers.get("set-cookie").split(";")[0];
   const initialState = await request("/api/state");
+  csrfToken = initialState.viewer.csrfToken;
+  assert.equal(initialState.viewer.isSystemAdmin, true);
   assert.equal(initialState.rooms.length, 3);
   assert.equal(initialState.settings.email.hasPassword, false);
   assert.equal(initialState.roles.some(role => role.id === "campus-manager"), true);
@@ -349,9 +375,43 @@ try {
   assert.deepEqual(user.buildingIds, [building.id]);
   assert.deepEqual(user.features, ["Notifications"]);
   assert.equal(user.invitedAt !== null, true);
-  await request("/api/broadcasts/history", {
-    headers: { "Content-Type": "application/json", "X-User-Id": user.id }
-  }, 403);
+  await request("/api/auth/request-reset", {
+    method: "POST",
+    body: JSON.stringify({ email: user.email })
+  });
+  const resetMessage = smtpMessages.findLast(message => message.includes("Reset your Signage Management password"));
+  const resetToken = resetMessage?.match(/reset-password\?token=([A-Za-z0-9_-]+)/)?.[1];
+  assert.equal(Boolean(resetToken), true);
+  await request("/api/auth/reset-password", {
+    method: "POST",
+    body: JSON.stringify({ token: resetToken, password: "Integration-User-Password-2026!" })
+  });
+  const scopedLogin = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: user.email, password: "Integration-User-Password-2026!" })
+  });
+  assert.equal(scopedLogin.status, 200);
+  const scopedCookie = scopedLogin.headers.get("set-cookie").split(";")[0];
+  const scopedStateResponse = await fetch(`${baseUrl}/api/state`, { headers: { Cookie: scopedCookie } });
+  const scopedState = await scopedStateResponse.json();
+  assert.equal(scopedState.rooms.every(item => item.centerId === center.id), true);
+  const scopedCenterCreate = await fetch(`${baseUrl}/api/centers`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: scopedCookie,
+      "X-CSRF-Token": scopedState.viewer.csrfToken
+    },
+    body: JSON.stringify({ name: "Unauthorized Center", timezone: "America/Chicago" })
+  });
+  assert.equal(scopedCenterCreate.status, 403);
+  const scopedHistory = await fetch(`${baseUrl}/api/broadcasts/history`, { headers: { Cookie: scopedCookie } });
+  assert.equal(scopedHistory.status, 403);
+  const ignoredIdentityHeader = await request("/api/state", {
+    headers: { "X-User-Id": user.id }
+  });
+  assert.equal(ignoredIdentityHeader.viewer.id, initialState.viewer.id);
 
   const updatedUser = await request(`/api/users/${user.id}`, {
     method: "PUT",
@@ -369,22 +429,6 @@ try {
   assert.equal(updatedUser.status, "suspended");
   assert.deepEqual(updatedUser.roleIds, ["building-manager"]);
   assert.deepEqual(updatedUser.buildingIds, [building.id]);
-  await request("/api/centers", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-User-Id": user.id },
-    body: JSON.stringify({ name: "Unauthorized Center", timezone: "America/Chicago" })
-  }, 403);
-  await request("/api/broadcasts", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-User-Id": user.id },
-    body: JSON.stringify({
-      title: "OUTSIDE SCOPE",
-      message: "This must be rejected.",
-      targetRoomCodes: ["room-108-shishu"],
-      confirm: true
-    })
-  }, 403);
-
   const manualEmail = await request("/api/email/send", {
     method: "POST",
     body: JSON.stringify({
@@ -438,12 +482,15 @@ try {
   assert.equal(updatedRoom.themeName, "Event Formal");
   assert.equal(updatedRoom.capacity, 30);
   assert.equal(updatedRoom.configuredBookingUrl, "https://example.org/new-booking");
+  const publicRoomPayload = await request(`/api/rooms/${updatedRoom.code}`);
+  assert.equal("kioskIdentifier" in publicRoomPayload, false);
 
   const kioskRegistration = await request("/api/kiosk-devices/register", {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Forwarded-For": "203.0.113.42" },
     body: JSON.stringify({
       roomCode: updatedRoom.code,
+      kioskIdentifier: updatedRoom.kioskIdentifier,
       clientDeviceId: "integration-kiosk-device",
       name: "Integration iPad",
       deviceType: "iPad",
@@ -535,6 +582,7 @@ try {
     method: "POST",
     body: JSON.stringify({
       roomCode: updatedRoom.code,
+      kioskIdentifier: updatedRoom.kioskIdentifier,
       clientDeviceId: "integration-kiosk-device"
     })
   }, 403);
@@ -543,6 +591,7 @@ try {
     method: "POST",
     body: JSON.stringify({
       roomCode: updatedRoom.code,
+      kioskIdentifier: updatedRoom.kioskIdentifier,
       clientDeviceId: "integration-kiosk-device",
       name: "Integration iPad Repaired",
       deviceType: "iPad"
@@ -763,7 +812,7 @@ try {
   await request(`/api/roles/${clonedRole.id}`, { method: "DELETE" });
   await request(`/api/roles/${customRole.id}`, { method: "DELETE" });
 
-  const adminResponse = await fetch(`${baseUrl}/admin`);
+  const adminResponse = await fetch(`${baseUrl}/admin`, { headers: { Cookie: authCookie } });
   const adminHtml = await adminResponse.text();
   assert.match(adminHtml, /Locations & Rooms/);
   assert.match(adminHtml, /User Management/);

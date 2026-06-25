@@ -17,7 +17,20 @@ import {
   writeCalendarEvent
 } from "./calendar.mjs";
 import { createCalendarQueue } from "./calendar-queue.mjs";
+import { createBackgroundQueue } from "./background-queue.mjs";
 import { deterministicConflictEvent, eventsForKiosk } from "./conflicts.mjs";
+import {
+  clearSessionCookie,
+  generateTotpSecret,
+  hashPassword,
+  otpauthUri,
+  parseCookies,
+  randomToken,
+  sessionCookie,
+  tokenHash,
+  verifyPassword,
+  verifyTotp
+} from "./auth.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -28,7 +41,8 @@ const assetVersion = process.env.APP_BUILD_VERSION || Date.now().toString(36);
 const themeAssetsDir = process.env.THEME_ASSETS_DIR || path.join(rootDir, "assets", "uploads", "themes");
 
 const clients = new Map();
-const oauthStates = new Map();
+const instanceId = crypto.randomUUID();
+let backgroundQueue = null;
 const permissionCatalog = [
   "dashboard.view",
   "center.manage",
@@ -328,7 +342,7 @@ function normalizeData(data) {
       }
     }
   };
-  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "calendarAssignments", "calendarEvents", "calendarConflicts", "calendarConflictHistory", "calendarSyncHistory", "themeSchedules", "roomGroups", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "notifications", "kioskDevices", "kioskPairingCodes", "auditLogs"]) {
+  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "sessions", "passwordResetTokens", "oauthStates", "featureGrants", "calendarAccounts", "calendarAssignments", "calendarEvents", "calendarConflicts", "calendarConflictHistory", "calendarSyncHistory", "themeSchedules", "roomGroups", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "notifications", "kioskDevices", "kioskPairingCodes", "auditLogs", "loginAudit"]) {
     if (!Array.isArray(normalized[key])) normalized[key] = structuredClone(seedData[key] || []);
   }
   normalized.centers = normalized.centers.map(center => ({
@@ -369,6 +383,7 @@ function normalizeData(data) {
   }));
   normalized.rooms = normalized.rooms.map(room => ({
     active: true,
+    kioskIdentifier: randomToken(18),
     roomType: "Classroom",
     capacity: null,
     roomNumber: "",
@@ -398,8 +413,12 @@ function normalizeData(data) {
     centerIds: [],
     campusIds: [],
     buildingIds: [],
+    roomIds: [],
     features: [],
+    passwordHash: "",
     twoFactorEnabled: false,
+    encryptedTwoFactorSecret: "",
+    encryptedPendingTwoFactorSecret: "",
     invitedAt: null,
     lastEmailAt: null,
     ...user,
@@ -542,11 +561,40 @@ function normalizeData(data) {
   normalized.calendarSyncHistory = normalized.calendarSyncHistory.filter(item => new Date(item.createdAt).getTime() >= cutoff);
   normalized.calendarConflictHistory = normalized.calendarConflictHistory.filter(item => new Date(item.createdAt).getTime() >= cutoff);
   normalized.auditLogs = normalized.auditLogs.filter(item => new Date(item.createdAt).getTime() >= cutoff);
+  normalized.loginAudit = normalized.loginAudit.filter(item => new Date(item.createdAt).getTime() >= cutoff);
+  normalized.sessions = normalized.sessions.filter(item =>
+    new Date(item.expiresAt).getTime() > Date.now() - 24 * 60 * 60 * 1000
+    && (!item.revokedAt || new Date(item.revokedAt).getTime() > Date.now() - 24 * 60 * 60 * 1000)
+  );
+  normalized.passwordResetTokens = normalized.passwordResetTokens.filter(item =>
+    new Date(item.expiresAt).getTime() > Date.now() - 24 * 60 * 60 * 1000
+  );
+  normalized.oauthStates = normalized.oauthStates.filter(item => new Date(item.expiresAt).getTime() > Date.now());
   return normalized;
 }
 
 const store = await createStore({ rootDir, seedData, normalize: normalizeData });
 let db = store.state;
+
+const bootstrapAdminPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD || "";
+if (bootstrapAdminPassword) {
+  const bootstrapAdmin = db.users.find(user => user.roleIds?.includes("system-admin") && !user.passwordHash);
+  if (bootstrapAdmin) {
+    bootstrapAdmin.passwordHash = await hashPassword(bootstrapAdminPassword);
+    bootstrapAdmin.updatedAt = new Date().toISOString();
+    await store.save(db);
+  }
+}
+function authenticationIsReady() {
+  return db.users.some(user =>
+    user.status === "active"
+    && user.roleIds?.includes("system-admin")
+    && user.passwordHash
+  );
+}
+if (!authenticationIsReady()) {
+  console.warn("No active System Administrator has a password. Set BOOTSTRAP_ADMIN_PASSWORD and restart before using the management portal.");
+}
 
 async function saveData(nextDb = db) {
   await store.save(nextDb);
@@ -705,7 +753,7 @@ function publicThemeSchedule(schedule) {
   };
 }
 
-function publicRoom(room, themeOverrideId = "", stateOverride = "") {
+function publicRoom(room, themeOverrideId = "", stateOverride = "", includeManagement = true) {
   const { center, campus, building } = roomLocation(room);
   const effective = effectiveRoomSettings(room);
   const scheduledTheme = themeOverrideId ? null : activeThemeSchedule(room);
@@ -732,6 +780,7 @@ function publicRoom(room, themeOverrideId = "", stateOverride = "") {
   const activeBroadcasts = activeBroadcastsForRoom(room).map(publicBroadcast);
   return {
     ...room,
+    kioskIdentifier: includeManagement ? room.kioskIdentifier : undefined,
     ...previewValues,
     centerName: center?.name || "Center",
     campusName: campus?.name || "Campus",
@@ -851,10 +900,22 @@ function publicKioskDevice(device, includePairingCode = false) {
   };
 }
 
+function currentSession(req) {
+  const token = parseCookies(req).signage_session;
+  if (!token) return null;
+  const hash = tokenHash(token);
+  const now = Date.now();
+  return db.sessions.find(session =>
+    session.tokenHash === hash
+    && !session.revokedAt
+    && new Date(session.expiresAt).getTime() > now
+  ) || null;
+}
+
 function currentViewer(req) {
-  const requestedId = String(req.headers["x-user-id"] || "");
-  if (requestedId) return db.users.find(user => user.id === requestedId) || null;
-  return db.users.find(user => user.roleIds.includes("system-admin")) || db.users[0] || null;
+  const session = currentSession(req);
+  if (!session) return null;
+  return db.users.find(user => user.id === session.userId && user.status === "active") || null;
 }
 
 function viewerPermissions(user) {
@@ -870,9 +931,33 @@ function viewerIsSystemAdmin(user) {
   return Boolean(user?.roleIds?.includes("system-admin"));
 }
 
+const permissionFeatures = {
+  "calendar.manage": "Calendar Sync",
+  "calendar.sync": "Calendar Sync",
+  "theme.manage": "Front End Theme and Style Management",
+  "notification.manage": "Notifications",
+  "broadcast.publish": "Emergency & Safety Broadcast",
+  "broadcast.template.manage": "Emergency & Safety Broadcast",
+  "broadcast.history.view": "Emergency & Safety Broadcast"
+};
+
+function activeFeatureNames(user, now = Date.now()) {
+  const names = new Set(user?.features || []);
+  for (const grant of db.featureGrants || []) {
+    if (grant.userId !== user?.id || grant.active === false) continue;
+    if (grant.startsAt && new Date(grant.startsAt).getTime() > now) continue;
+    if (grant.endsAt && new Date(grant.endsAt).getTime() <= now) continue;
+    names.add(grant.featureName);
+  }
+  return names;
+}
+
 function viewerHasPermission(req, permission) {
   const viewer = currentViewer(req);
-  return viewerIsSystemAdmin(viewer) || viewerPermissions(viewer).has(permission);
+  if (viewerIsSystemAdmin(viewer)) return true;
+  if (!viewerPermissions(viewer).has(permission)) return false;
+  const requiredFeature = permissionFeatures[permission];
+  return !requiredFeature || activeFeatureNames(viewer).has(requiredFeature);
 }
 
 function viewerCanAccessRoom(user, room) {
@@ -881,7 +966,48 @@ function viewerCanAccessRoom(user, room) {
     user?.centerIds?.includes(room.centerId)
     || user?.campusIds?.includes(room.campusId)
     || user?.buildingIds?.includes(room.buildingId)
+    || user?.roomIds?.includes(room.id)
   );
+}
+
+function viewerCanAccessCenter(user, center) {
+  return viewerIsSystemAdmin(user)
+    || user?.centerIds?.includes(center.id)
+    || db.campuses.some(campus => campus.centerId === center.id && user?.campusIds?.includes(campus.id))
+    || db.buildings.some(building => {
+      const campus = db.campuses.find(item => item.id === building.campusId);
+      return campus?.centerId === center.id && user?.buildingIds?.includes(building.id);
+    })
+    || db.rooms.some(room => room.centerId === center.id && user?.roomIds?.includes(room.id));
+}
+
+function viewerCanAccessCampus(user, campus) {
+  return viewerIsSystemAdmin(user)
+    || user?.centerIds?.includes(campus.centerId)
+    || user?.campusIds?.includes(campus.id)
+    || db.buildings.some(building => building.campusId === campus.id && user?.buildingIds?.includes(building.id))
+    || db.rooms.some(room => room.campusId === campus.id && user?.roomIds?.includes(room.id));
+}
+
+function viewerCanAccessBuilding(user, building) {
+  const campus = db.campuses.find(item => item.id === building.campusId);
+  return viewerIsSystemAdmin(user)
+    || user?.centerIds?.includes(campus?.centerId)
+    || user?.campusIds?.includes(building.campusId)
+    || user?.buildingIds?.includes(building.id)
+    || db.rooms.some(room => room.buildingId === building.id && user?.roomIds?.includes(room.id));
+}
+
+function viewerCanManageUser(viewer, target) {
+  if (viewerIsSystemAdmin(viewer)) return true;
+  if (viewerIsSystemAdmin(target)) return false;
+  const targetRooms = db.rooms.filter(room => viewerCanAccessRoom(target, room));
+  return targetRooms.length > 0 && targetRooms.every(room => viewerCanAccessRoom(viewer, room));
+}
+
+function viewerCanAccessTheme(user, theme) {
+  if (viewerIsSystemAdmin(user) || theme.builtIn || theme.createdBy === user?.id) return true;
+  return db.rooms.some(room => effectiveRoomSettings(room).themeId === theme.id && viewerCanAccessRoom(user, room));
 }
 
 function viewerCanPairRoom(user, room) {
@@ -890,17 +1016,23 @@ function viewerCanPairRoom(user, room) {
 }
 
 function requirePermission(req, res, permission) {
+  if (!currentViewer(req)) {
+    json(res, 401, { error: "Authentication required." });
+    return false;
+  }
   if (viewerHasPermission(req, permission)) return true;
   json(res, 403, { error: `Permission required: ${permission}` });
   return false;
 }
 
-function publicViewer(user) {
+function publicViewer(user, session = null) {
   return {
     id: user?.id || "",
     name: user?.name || "",
     isSystemAdmin: viewerIsSystemAdmin(user),
     permissions: [...viewerPermissions(user)],
+    features: [...activeFeatureNames(user)],
+    csrfToken: session?.csrfToken || "",
     accessibleRoomIds: db.rooms.filter(room => viewerCanAccessRoom(user, room)).map(room => room.id)
   };
 }
@@ -1142,10 +1274,13 @@ async function syncAssignment(assignment) {
 }
 
 async function processCalendarAssignment(assignmentId) {
+  if (store.type === "postgresql-normalized") db = await store.refresh();
   const assignment = db.calendarAssignments.find(item => item.id === assignmentId && item.active !== false);
   if (!assignment) return { skipped: true };
   const result = await syncAssignment(assignment);
   await saveData();
+  const room = db.rooms.find(item => item.id === assignment.roomId);
+  if (room) notifyRoom(room.code, "data-refresh");
   return result;
 }
 
@@ -1164,6 +1299,40 @@ try {
   };
 }
 
+backgroundQueue = await createBackgroundQueue({
+  redisUrl: process.env.REDIS_URL || "",
+  handlers: {
+    async "broadcast-lifecycle"() {
+      if (store.type === "postgresql-normalized") db = await store.refresh();
+      await runBroadcastLifecycle();
+      return { completed: true };
+    },
+    async "scheduled-calendar-sync"() {
+      if (store.type === "postgresql-normalized") db = await store.refresh();
+      await runScheduledCalendarSync();
+      return { completed: true };
+    },
+    async "broadcast-notification"({ broadcast, eventType }) {
+      if (store.type === "postgresql-normalized") db = await store.refresh();
+      await notifyBroadcastEvent(broadcast, eventType);
+      await saveData();
+      return { completed: true };
+    },
+    async "schedule-reconciliation"() {
+      if (store.type === "postgresql-normalized") db = await store.refresh();
+      return { distributedEvent: { type: "all-rooms-command", command: "data-refresh" } };
+    }
+  },
+  async onDistributedEvent(event) {
+    if (event?.origin === instanceId) return;
+    if (store.type === "postgresql-normalized") db = await store.refresh();
+    if (event?.type === "room-command") notifyLocalRoom(event.roomCode, event.command, event.deviceId);
+    if (event?.type === "all-rooms-command") {
+      for (const room of db.rooms) notifyLocalRoom(room.code, event.command || "data-refresh");
+    }
+  }
+});
+
 function publicUser(user) {
   return {
     id: user.id,
@@ -1174,10 +1343,13 @@ function publicUser(user) {
     centerIds: user.centerIds,
     campusIds: user.campusIds,
     buildingIds: user.buildingIds,
+    roomIds: user.roomIds,
     features: user.features,
+    featureGrants: db.featureGrants.filter(grant => grant.userId === user.id),
     twoFactorEnabled: Boolean(user.twoFactorEnabled),
     invitedAt: user.invitedAt || null,
     lastEmailAt: user.lastEmailAt || null,
+    lastLoginAt: user.lastLoginAt || null,
     createdAt: user.createdAt || null,
     updatedAt: user.updatedAt || null
   };
@@ -1190,6 +1362,40 @@ function validEmail(value) {
 function validIds(values, collection) {
   const allowed = new Set(collection.map(item => item.id));
   return Array.isArray(values) && values.every(value => allowed.has(value));
+}
+
+function assignmentsWithinViewerScope(viewer, body) {
+  if (viewerIsSystemAdmin(viewer)) return true;
+  const centers = (body.centerIds || []).map(id => db.centers.find(item => item.id === id));
+  const campuses = (body.campusIds || []).map(id => db.campuses.find(item => item.id === id));
+  const buildings = (body.buildingIds || []).map(id => db.buildings.find(item => item.id === id));
+  const rooms = (body.roomIds || []).map(id => db.rooms.find(item => item.id === id));
+  return centers.every(item => item && viewerCanAccessCenter(viewer, item))
+    && campuses.every(item => item && viewerCanAccessCampus(viewer, item))
+    && buildings.every(item => item && viewerCanAccessBuilding(viewer, item))
+    && rooms.every(item => item && viewerCanAccessRoom(viewer, item));
+}
+
+function roleAssignmentsAllowed(viewer, roleIds) {
+  if (viewerIsSystemAdmin(viewer)) return true;
+  const viewerPermissionSet = viewerPermissions(viewer);
+  return roleIds.every(roleId => {
+    if (roleId === "system-admin") return false;
+    const role = db.roles.find(item => item.id === roleId);
+    return role && role.permissions.every(permission => viewerPermissionSet.has(permission));
+  });
+}
+
+function rolePermissionsAllowed(viewer, permissions) {
+  if (viewerIsSystemAdmin(viewer)) return true;
+  const allowed = viewerPermissions(viewer);
+  return permissions.every(permission => allowed.has(permission));
+}
+
+function featureAssignmentsAllowed(viewer, features) {
+  if (viewerIsSystemAdmin(viewer)) return true;
+  const allowed = activeFeatureNames(viewer);
+  return features.every(feature => allowed.has(feature));
 }
 
 function validCalendarAuthMode(provider, authMode) {
@@ -1362,11 +1568,12 @@ async function runBroadcastLifecycle() {
 }
 
 function invitationMessage(user) {
-  const portalUrl = `${baseUrl.replace(/\/+$/, "")}/admin`;
+  const portalUrl = `${baseUrl.replace(/\/+$/, "")}/login`;
+  const resetUrl = `${baseUrl.replace(/\/+$/, "")}/forgot-password`;
   return {
     subject: "Your Signage Management System account",
-    text: `Hello ${user.name},\n\nAn account has been provisioned for ${user.email} in the Signage Management System.\n\nManagement portal: ${portalUrl}\n\nYour administrator will provide login activation instructions when authentication enrollment is enabled.\n`,
-    html: `<p>Hello ${escapeHtml(user.name)},</p><p>An account has been provisioned for <strong>${escapeHtml(user.email)}</strong> in the Signage Management System.</p><p><a href="${escapeHtml(portalUrl)}">Open management portal</a></p><p>Your administrator will provide login activation instructions when authentication enrollment is enabled.</p>`
+    text: `Hello ${user.name},\n\nAn account has been provisioned for ${user.email} in the Signage Management System.\n\nSet your password: ${resetUrl}\nSign in: ${portalUrl}\n`,
+    html: `<p>Hello ${escapeHtml(user.name)},</p><p>An account has been provisioned for <strong>${escapeHtml(user.email)}</strong> in the Signage Management System.</p><p><a href="${escapeHtml(resetUrl)}">Set your password</a></p><p><a href="${escapeHtml(portalUrl)}">Open management portal</a></p>`
   };
 }
 
@@ -1516,6 +1723,7 @@ function validateBroadcast(broadcast, viewer) {
 function validateThemeSchedule(schedule, viewer) {
   const theme = db.themes.find(item => item.id === schedule.themeId && item.published !== false && item.archived !== true);
   if (!theme) return "Select an available published theme.";
+  if (!viewerCanAccessTheme(viewer, theme)) return "The selected theme is outside your assigned scope.";
   if (!Number.isFinite(new Date(schedule.startsAt).getTime()) || !Number.isFinite(new Date(schedule.endsAt).getTime())) {
     return "Enter valid schedule start and end times.";
   }
@@ -1564,13 +1772,20 @@ function notifyChangedRooms(roomCodes = []) {
   for (const code of new Set(roomCodes)) notifyRoom(code);
 }
 
-function notifyRoom(roomCode, command = "data-refresh", deviceId = "") {
+function notifyLocalRoom(roomCode, command = "data-refresh", deviceId = "") {
   const set = clients.get(roomCode);
   if (!set) return;
   for (const client of set) {
     const entry = client?.res ? client : { res: client, deviceId: "" };
     if (deviceId && entry.deviceId !== deviceId) continue;
     entry.res.write(`event: refresh\ndata: ${JSON.stringify({ roomCode, command, at: new Date().toISOString() })}\n\n`);
+  }
+}
+
+function notifyRoom(roomCode, command = "data-refresh", deviceId = "") {
+  notifyLocalRoom(roomCode, command, deviceId);
+  if (backgroundQueue?.enabled) {
+    backgroundQueue.distribute({ type: "room-command", roomCode, command, deviceId, origin: instanceId }).catch(() => {});
   }
 }
 
@@ -1607,6 +1822,7 @@ function adminPage() {
         <div class="header-actions">
           <span id="storageBadge" class="storage-badge"></span>
           <a href="/room-108-shishu" target="_blank">Open Kiosk</a>
+          <button type="button" class="secondary" id="logoutButton">Log Out</button>
         </div>
       </header>
       <nav class="admin-tabs" aria-label="Management sections">
@@ -1977,9 +2193,28 @@ function adminPage() {
 
       <section class="tab-panel" data-panel="configuration">
         <section class="admin-grid">
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Account Security</h2><p>Enroll an authenticator app and protect this management account.</p></div></div>
+            <button type="button" id="setupTwoFactor">Set Up Authenticator App</button>
+            <div id="twoFactorSetup" hidden>
+              <label>Authenticator Secret <input id="twoFactorSecret" readonly /></label>
+              <label>Authenticator URI <textarea id="twoFactorUri" readonly></textarea></label>
+              <form id="confirmTwoFactorForm">
+                <label>Six-Digit Code <input name="code" inputmode="numeric" pattern="[0-9]{6}" required /></label>
+                <button type="submit">Confirm Two-Factor Authentication</button>
+              </form>
+            </div>
+            <p id="twoFactorStatus" class="form-status" role="status"></p>
+            <h3>Active Sessions</h3>
+            <div id="sessionList" class="entity-list"></div>
+          </section>
           <section class="panel span-2">
             <div class="panel-heading"><div><h2>Permission & Role Editor</h2><p>Configure module and action permissions, clone roles, and protect assignments.</p></div><button type="button" data-new="role">New Role</button></div>
             <div id="roleManagerList" class="entity-list"></div>
+          </section>
+          <section class="panel span-2" id="loginAuditPanel">
+            <div class="panel-heading"><div><h2>Login Audit</h2><p>Recent successful, failed, rate-limited, reset, and two-factor authentication activity.</p></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Time</th><th>Email</th><th>Outcome</th><th>IP Address</th><th>Browser</th></tr></thead><tbody id="loginAuditRows"></tbody></table></div>
           </section>
           <section class="panel"><h2>Recent Audit Activity</h2><div id="auditList"></div></section>
         </section>
@@ -2038,7 +2273,7 @@ function kioskPage(roomCode, preview = false, themeOverrideId = "", stateOverrid
   <body>
     <div id="connectionStatus" class="connection-status" role="status" aria-live="polite" hidden></div>
     <div id="deviceStatus" class="device-status" role="status" aria-live="polite" ${preview ? "hidden" : ""}></div>
-    <main id="kiosk" class="kiosk-frame" data-room-code="${escapeHtml(room.code)}" data-preview="${preview ? "true" : "false"}" data-theme-override="${escapeHtml(themeOverrideId)}" data-state-override="${escapeHtml(stateOverride)}" data-build-version="${escapeHtml(assetVersion)}">
+    <main id="kiosk" class="kiosk-frame" data-room-code="${escapeHtml(room.code)}" data-kiosk-identifier="${escapeHtml(room.kioskIdentifier)}" data-preview="${preview ? "true" : "false"}" data-theme-override="${escapeHtml(themeOverrideId)}" data-state-override="${escapeHtml(stateOverride)}" data-build-version="${escapeHtml(assetVersion)}">
       <section class="loading">Loading room signage...</section>
     </main>
     <section id="soundGate" class="sound-gate" ${preview ? "hidden" : ""}>
@@ -2094,13 +2329,382 @@ async function serveFile(req, res, basePath, prefix) {
   }
 }
 
+function clientIp(req) {
+  return cleanText(String(req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim(), 80);
+}
+
+function recordLoginAudit({ email = "", userId = null, outcome, req, details = {} }) {
+  db.loginAudit.unshift({
+    id: entityId("login-audit"),
+    email: cleanText(email, 255).toLowerCase(),
+    userId,
+    outcome,
+    ipAddress: clientIp(req),
+    userAgent: cleanText(req.headers["user-agent"], 500),
+    details,
+    createdAt: new Date().toISOString()
+  });
+  db.loginAudit = db.loginAudit.slice(0, 2000);
+}
+
+function loginRateLimited(req, email) {
+  const cutoff = Date.now() - 15 * 60 * 1000;
+  const normalizedEmail = String(email || "").toLowerCase();
+  const ipAddress = clientIp(req);
+  return db.loginAudit.filter(item =>
+    item.email === normalizedEmail
+    && item.ipAddress === ipAddress
+    && ["failed", "two-factor-failed", "rate-limited"].includes(item.outcome)
+    && new Date(item.createdAt).getTime() >= cutoff
+  ).length >= 8;
+}
+
+function createAuthenticatedSession(user, req) {
+  const token = randomToken();
+  const now = Date.now();
+  const session = {
+    id: entityId("session"),
+    userId: user.id,
+    tokenHash: tokenHash(token),
+    csrfToken: randomToken(24),
+    ipAddress: clientIp(req),
+    userAgent: cleanText(req.headers["user-agent"], 500),
+    createdAt: new Date(now).toISOString(),
+    lastSeenAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + 8 * 60 * 60 * 1000).toISOString(),
+    revokedAt: null
+  };
+  db.sessions.push(session);
+  user.lastLoginAt = new Date(now).toISOString();
+  return { token, session };
+}
+
+function loginPage(message = "") {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Signage Management Login</title>
+    <style>
+      :root { color-scheme: light; font-family: Arial, Helvetica, sans-serif; }
+      body { align-items: center; background: #edf2f3; color: #173848; display: grid; min-height: 100vh; margin: 0; padding: 24px; }
+      main { background: #fff; border: 1px solid #cad7db; border-radius: 8px; box-shadow: 0 18px 55px rgb(23 56 72 / 14%); margin: auto; max-width: 420px; padding: 32px; width: 100%; }
+      h1 { font-size: 28px; margin: 0 0 8px; }
+      p { color: #58717c; line-height: 1.45; }
+      form { display: grid; gap: 16px; margin-top: 24px; }
+      label { display: grid; font-size: 14px; font-weight: 700; gap: 7px; }
+      input { border: 1px solid #9eb2ba; border-radius: 4px; font: inherit; padding: 12px; }
+      button { background: #173848; border: 0; border-radius: 4px; color: #fff; font: 700 15px inherit; padding: 12px; }
+      a { color: #28657e; }
+      #status { color: #9b2430; min-height: 20px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Signage Management</h1>
+      <p>Sign in with your assigned email address.</p>
+      <form id="loginForm">
+        <label>Email <input name="email" type="email" autocomplete="username" required /></label>
+        <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
+        <label id="codeField" hidden>Authenticator Code <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" /></label>
+        <input name="challengeToken" type="hidden" />
+        <button type="submit">Sign In</button>
+        <p id="status" role="alert">${escapeHtml(message)}</p>
+      </form>
+      <p><a href="/forgot-password">Forgot password?</a></p>
+    </main>
+    <script>
+      const form = document.querySelector("#loginForm");
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        const values = Object.fromEntries(new FormData(form));
+        const verifying = Boolean(values.challengeToken);
+        const response = await fetch(verifying ? "/api/auth/verify-2fa" : "/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(values)
+        });
+        const result = await response.json().catch(() => ({}));
+        if (response.ok && result.authenticated) return location.assign("/admin");
+        if (response.ok && result.twoFactorRequired) {
+          form.elements.challengeToken.value = result.challengeToken;
+          form.elements.password.disabled = true;
+          document.querySelector("#codeField").hidden = false;
+          form.elements.code.required = true;
+          form.elements.code.focus();
+          document.querySelector("#status").textContent = "Enter the six-digit code from your authenticator app.";
+          return;
+        }
+        document.querySelector("#status").textContent = result.error || "Sign-in failed.";
+      });
+    </script>
+  </body>
+</html>`;
+}
+
+function passwordPage(mode, token = "") {
+  const forgot = mode === "forgot";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${forgot ? "Reset Password" : "Choose New Password"}</title><style>
+  body{background:#edf2f3;color:#173848;font-family:Arial,sans-serif;margin:0;padding:24px}main{background:#fff;border:1px solid #cad7db;border-radius:8px;margin:10vh auto;max-width:430px;padding:30px}form,label{display:grid;gap:12px}input,button{font:inherit;padding:12px}button{background:#173848;color:#fff;border:0}a{color:#28657e}</style></head>
+  <body><main><h1>${forgot ? "Reset Password" : "Choose New Password"}</h1>
+  <form id="passwordForm">${forgot
+    ? '<label>Email <input name="email" type="email" required /></label>'
+    : `<input name="token" type="hidden" value="${escapeHtml(token)}" /><label>New Password <input name="password" type="password" minlength="12" required /></label>`}
+  <button type="submit">${forgot ? "Send Reset Link" : "Set Password"}</button><p id="status"></p></form><p><a href="/login">Return to login</a></p></main>
+  <script>document.querySelector("#passwordForm").addEventListener("submit",async event=>{event.preventDefault();const response=await fetch("${forgot ? "/api/auth/request-reset" : "/api/auth/reset-password"}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))});const result=await response.json().catch(()=>({}));document.querySelector("#status").textContent=result.message||result.error||"Request complete.";if(response.ok&&!${forgot})setTimeout(()=>location.assign("/login"),1200);});</script>
+  </body></html>`;
+}
+
+async function handleAuthApi(req, res, url) {
+  if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    if (store.type === "postgresql-normalized") db = await store.refresh();
+    const body = await readBody(req);
+    const email = cleanText(body.email, 255).toLowerCase();
+    if (loginRateLimited(req, email)) {
+      recordLoginAudit({ email, outcome: "rate-limited", req });
+      await saveData();
+      return json(res, 429, { error: "Too many sign-in attempts. Try again later." });
+    }
+    const user = db.users.find(item => item.email === email && item.status === "active");
+    const valid = user?.passwordHash && await verifyPassword(body.password, user.passwordHash);
+    if (!valid) {
+      recordLoginAudit({ email, userId: user?.id || null, outcome: "failed", req });
+      await saveData();
+      return json(res, 401, { error: "Email or password is incorrect." });
+    }
+    if (user.twoFactorEnabled && user.encryptedTwoFactorSecret) {
+      const challengeToken = randomToken();
+      db.sessions.push({
+        id: entityId("login-challenge"),
+        userId: user.id,
+        challengeHash: tokenHash(challengeToken),
+        status: "pending-2fa",
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString()
+      });
+      recordLoginAudit({ email, userId: user.id, outcome: "password-accepted", req });
+      await saveData();
+      return json(res, 200, { twoFactorRequired: true, challengeToken });
+    }
+    const { token } = createAuthenticatedSession(user, req);
+    recordLoginAudit({ email, userId: user.id, outcome: "success", req });
+    await saveData();
+    res.setHeader("Set-Cookie", sessionCookie(token, { secure: baseUrl.startsWith("https://") }));
+    return json(res, 200, { authenticated: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/verify-2fa") {
+    if (store.type === "postgresql-normalized") db = await store.refresh();
+    const body = await readBody(req);
+    const challenge = db.sessions.find(item =>
+      item.status === "pending-2fa"
+      && item.challengeHash === tokenHash(body.challengeToken)
+      && new Date(item.expiresAt).getTime() > Date.now()
+    );
+    const user = db.users.find(item => item.id === challenge?.userId && item.status === "active");
+    let twoFactorSecret = "";
+    try {
+      twoFactorSecret = user?.encryptedTwoFactorSecret ? decryptCredential(user.encryptedTwoFactorSecret) : "";
+    } catch {
+      twoFactorSecret = "";
+    }
+    if (!challenge || !user || !twoFactorSecret || !verifyTotp(twoFactorSecret, body.code)) {
+      recordLoginAudit({ email: user?.email, userId: user?.id, outcome: "two-factor-failed", req });
+      await saveData();
+      return json(res, 401, { error: "Authenticator code is invalid or expired." });
+    }
+    db.sessions = db.sessions.filter(item => item.id !== challenge.id);
+    const { token } = createAuthenticatedSession(user, req);
+    recordLoginAudit({ email: user.email, userId: user.id, outcome: "success-2fa", req });
+    await saveData();
+    res.setHeader("Set-Cookie", sessionCookie(token, { secure: baseUrl.startsWith("https://") }));
+    return json(res, 200, { authenticated: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+    if (!csrfValid(req)) return json(res, 403, { error: "Invalid CSRF token." });
+    const session = currentSession(req);
+    if (session) session.revokedAt = new Date().toISOString();
+    await saveData();
+    res.setHeader("Set-Cookie", clearSessionCookie({ secure: baseUrl.startsWith("https://") }));
+    return json(res, 200, { loggedOut: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/request-reset") {
+    if (store.type === "postgresql-normalized") db = await store.refresh();
+    const body = await readBody(req);
+    const resetCutoff = Date.now() - 15 * 60 * 1000;
+    const resetRequests = db.loginAudit.filter(item =>
+      item.outcome === "password-reset-request"
+      && item.ipAddress === clientIp(req)
+      && new Date(item.createdAt).getTime() >= resetCutoff
+    ).length;
+    if (resetRequests >= 5) return json(res, 429, { error: "Too many password-reset requests. Try again later." });
+    const user = db.users.find(item =>
+      item.email === cleanText(body.email, 255).toLowerCase()
+      && ["active", "invited"].includes(item.status)
+    );
+    if (user) {
+      const rawToken = randomToken();
+      db.passwordResetTokens.push({
+        id: entityId("password-reset"),
+        userId: user.id,
+        tokenHash: tokenHash(rawToken),
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+        usedAt: null,
+        createdAt: new Date().toISOString()
+      });
+      if (db.settings.email.enabled) {
+        const link = `${baseUrl.replace(/\/+$/, "")}/reset-password?token=${encodeURIComponent(rawToken)}`;
+        await deliverTrackedEmail({
+          to: user.email,
+          subject: "Reset your Signage Management password",
+          text: `Use this link within 30 minutes to reset your password: ${link}`,
+          html: `<p>Use this link within 30 minutes to reset your password:</p><p><a href="${escapeHtml(link)}">Reset password</a></p>`,
+          type: "password-reset",
+          userId: user.id,
+          source: "authentication"
+        }).catch(() => {});
+      }
+    }
+    recordLoginAudit({ email: body.email, userId: user?.id || null, outcome: "password-reset-request", req });
+    await saveData();
+    return json(res, 200, { message: "If the account exists, a reset link has been sent." });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/reset-password") {
+    if (store.type === "postgresql-normalized") db = await store.refresh();
+    const body = await readBody(req);
+    const reset = db.passwordResetTokens.find(item =>
+      item.tokenHash === tokenHash(body.token)
+      && !item.usedAt
+      && new Date(item.expiresAt).getTime() > Date.now()
+    );
+    const user = db.users.find(item => item.id === reset?.userId);
+    if (!reset || !user) return json(res, 400, { error: "Reset link is invalid or expired." });
+    try {
+      user.passwordHash = await hashPassword(body.password);
+    } catch (error) {
+      return validationError(res, error.message);
+    }
+    reset.usedAt = new Date().toISOString();
+    if (user.status === "invited") user.status = "active";
+    db.sessions.forEach(session => {
+      if (session.userId === user.id) session.revokedAt = new Date().toISOString();
+    });
+    recordLoginAudit({ email: user.email, userId: user.id, outcome: "password-reset", req });
+    await saveData();
+    return json(res, 200, { message: "Password updated. You may now sign in." });
+  }
+  const viewer = currentViewer(req);
+  if (!viewer) return json(res, 401, { error: "Authentication required." });
+  const authSessionMatch = url.pathname.match(/^\/api\/auth\/sessions\/([^/]+)$/);
+  if (req.method === "DELETE" && authSessionMatch) {
+    if (!csrfValid(req)) return json(res, 403, { error: "Invalid CSRF token." });
+    const session = db.sessions.find(item => item.id === authSessionMatch[1] && item.userId === viewer.id);
+    if (!session) return json(res, 404, { error: "Session not found." });
+    session.revokedAt = new Date().toISOString();
+    await saveData();
+    return json(res, 200, { revoked: true });
+  }
+  if (!csrfValid(req)) return json(res, 403, { error: "Invalid CSRF token." });
+  if (req.method === "POST" && url.pathname === "/api/auth/2fa/setup") {
+    const secret = generateTotpSecret();
+    viewer.encryptedPendingTwoFactorSecret = encryptCredential(secret);
+    await saveData();
+    return json(res, 200, {
+      secret,
+      otpauthUri: otpauthUri({
+        secret,
+        email: viewer.email,
+        issuer: process.env.TWO_FACTOR_ISSUER || db.settings.appName
+      })
+    });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/2fa/confirm") {
+    const body = await readBody(req);
+    let pendingSecret = "";
+    try {
+      pendingSecret = decryptCredential(viewer.encryptedPendingTwoFactorSecret);
+    } catch {
+      pendingSecret = "";
+    }
+    if (!pendingSecret || !verifyTotp(pendingSecret, body.code)) {
+      return validationError(res, "Authenticator code is invalid.");
+    }
+    viewer.encryptedTwoFactorSecret = viewer.encryptedPendingTwoFactorSecret;
+    viewer.encryptedPendingTwoFactorSecret = "";
+    viewer.twoFactorEnabled = true;
+    await saveData();
+    return json(res, 200, { enabled: true });
+  }
+  return json(res, 404, { error: "Authentication endpoint not found." });
+}
+
+function csrfValid(req) {
+  const session = currentSession(req);
+  const supplied = String(req.headers["x-csrf-token"] || "");
+  const expectedBuffer = Buffer.from(session?.csrfToken || "");
+  const suppliedBuffer = Buffer.from(supplied);
+  return Boolean(expectedBuffer.length && expectedBuffer.length === suppliedBuffer.length && crypto.timingSafeEqual(expectedBuffer, suppliedBuffer));
+}
+
+function publicApiPath(req, url) {
+  if (req.method === "GET" && url.pathname === "/api/health") return true;
+  if (req.method === "GET" && /^\/api\/rooms\/[^/]+(?:\/events)?$/.test(url.pathname)) return true;
+  if (req.method === "GET" && /^\/api\/rooms\/[^/]+\/qr\.svg$/.test(url.pathname)) return true;
+  if (req.method === "POST" && ["/api/kiosk-devices/register", "/api/kiosk-devices/heartbeat"].includes(url.pathname)) return true;
+  if (req.method === "GET" && /^\/api\/calendar-oauth\/(google|microsoft365)\/callback$/.test(url.pathname)) return true;
+  if (url.pathname.startsWith("/api/calendar-webhooks/")) return true;
+  return false;
+}
+
 async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/health") {
-    return json(res, 200, { status: "healthy", app: "signage", storage: store.type, calendarQueue: calendarQueue.enabled ? "redis" : "in-process", time: new Date().toISOString() });
+    return json(res, 200, {
+      status: "healthy",
+      app: "signage",
+      storage: store.type,
+      calendarQueue: calendarQueue.enabled ? "redis" : "in-process",
+      backgroundQueue: backgroundQueue?.enabled ? "redis" : "in-process",
+      authentication: authenticationIsReady() ? "ready" : "bootstrap-required",
+      time: new Date().toISOString()
+    });
+  }
+  const pagedDataMatch = url.pathname.match(/^\/api\/data\/(rooms|users|notifications|calendar-events|audit-logs)$/);
+  if (req.method === "GET" && pagedDataMatch) {
+    const viewer = currentViewer(req);
+    const page = Math.max(1, Number(url.searchParams.get("page") || 1));
+    const pageSize = Math.max(1, Math.min(100, Number(url.searchParams.get("pageSize") || 25)));
+    const search = cleanText(url.searchParams.get("search"), 200).toLowerCase();
+    let items = {
+      rooms: db.rooms.filter(room => viewerCanAccessRoom(viewer, room)).map(publicRoom),
+      users: db.users.filter(user => viewerCanManageUser(viewer, user)).map(publicUser),
+      notifications: db.notifications.filter(item => item.userId === viewer?.id),
+      "calendar-events": db.calendarEvents.filter(event => {
+        const room = db.rooms.find(item => item.id === event.roomId);
+        return room && viewerCanAccessRoom(viewer, room);
+      }),
+      "audit-logs": viewerIsSystemAdmin(viewer) ? db.auditLogs : []
+    }[pagedDataMatch[1]];
+    if (search) items = items.filter(item => JSON.stringify(item).toLowerCase().includes(search));
+    const total = items.length;
+    const offset = (page - 1) * pageSize;
+    return json(res, 200, {
+      items: items.slice(offset, offset + pageSize),
+      pagination: { page, pageSize, total, pages: Math.max(1, Math.ceil(total / pageSize)) }
+    });
   }
   if (req.method === "GET" && url.pathname === "/api/state") {
     await runBroadcastLifecycle();
     const viewer = currentViewer(req);
+    const session = currentSession(req);
+    const accessibleRooms = db.rooms.filter(room => viewerCanAccessRoom(viewer, room));
+    const accessibleRoomIds = new Set(accessibleRooms.map(room => room.id));
+    const accessibleCenters = db.centers.filter(center => viewerCanAccessCenter(viewer, center));
+    const accessibleCampuses = db.campuses.filter(campus => viewerCanAccessCampus(viewer, campus));
+    const accessibleBuildings = db.buildings.filter(building => viewerCanAccessBuilding(viewer, building));
+    const accessibleAccountIds = new Set(db.calendarAssignments
+      .filter(assignment => accessibleRoomIds.has(assignment.roomId))
+      .map(assignment => assignment.accountId));
     const accessibleBroadcasts = db.broadcasts
       .filter(broadcast => broadcastTargetRooms(broadcast).some(room => viewerCanAccessRoom(viewer, room)))
       .map(publicBroadcast);
@@ -2111,21 +2715,22 @@ async function handleApi(req, res, url) {
       },
       storageType: store.type,
       calendarQueueEnabled: calendarQueue.enabled,
-      centers: db.centers,
-      campuses: db.campuses,
-      buildings: db.buildings,
-      rooms: db.rooms.map(publicRoom),
-      themes: db.themes,
+      centers: accessibleCenters,
+      campuses: accessibleCampuses,
+      buildings: accessibleBuildings,
+      rooms: accessibleRooms.map(publicRoom),
+      themes: db.themes.filter(theme => viewerCanAccessTheme(viewer, theme)),
       features: db.features,
       permissionCatalog,
       roles: db.roles,
-      users: db.users.map(publicUser),
+      users: db.users.filter(user => viewerCanManageUser(viewer, user)).map(publicUser),
       broadcastTemplates: db.broadcastTemplates,
-      calendarAccounts: db.calendarAccounts.map(publicCalendarAccount),
-      calendarAssignments: db.calendarAssignments,
+      calendarAccounts: db.calendarAccounts.filter(account =>
+        viewerIsSystemAdmin(viewer) || accessibleAccountIds.has(account.id) || account.ownerUserId === viewer?.id
+      ).map(publicCalendarAccount),
+      calendarAssignments: db.calendarAssignments.filter(assignment => accessibleRoomIds.has(assignment.roomId)),
       calendarEvents: db.calendarEvents.filter(event => {
-        const room = db.rooms.find(item => item.id === event.roomId);
-        return room && viewerCanAccessRoom(viewer, room);
+        return accessibleRoomIds.has(event.roomId);
       }),
       calendarConflicts: db.calendarConflicts.filter(conflict => {
         const room = db.rooms.find(item => item.id === conflict.roomId);
@@ -2135,7 +2740,7 @@ async function handleApi(req, res, url) {
         const room = db.rooms.find(item => item.id === decision.roomId);
         return room && viewerCanAccessRoom(viewer, room);
       }).slice(0, 200),
-      calendarSyncHistory: db.calendarSyncHistory.slice(0, 50),
+      calendarSyncHistory: db.calendarSyncHistory.filter(item => accessibleRoomIds.has(item.roomId)).slice(0, 50),
       kioskDevices: db.kioskDevices.filter(device => {
         const room = db.rooms.find(item => item.id === device.roomId);
         return room && viewerCanAccessRoom(viewer, room);
@@ -2153,10 +2758,23 @@ async function handleApi(req, res, url) {
       activeBroadcasts: accessibleBroadcasts.filter(broadcast => broadcast.status === "active"),
       scheduledBroadcasts: accessibleBroadcasts.filter(broadcast => broadcast.status === "scheduled"),
       broadcastHistory: viewerHasPermission(req, "broadcast.history.view") ? accessibleBroadcasts.slice(0, 200) : [],
-      emailNotifications: db.emailNotifications.slice(0, 50),
+      emailNotifications: viewerIsSystemAdmin(viewer)
+        ? db.emailNotifications.slice(0, 50)
+        : db.emailNotifications.filter(item => item.userId === viewer?.id).slice(0, 50),
       notifications: db.notifications.filter(item => item.userId === viewer?.id).slice(0, 100),
       auditLogs: viewerIsSystemAdmin(viewer) ? db.auditLogs.slice(0, 20) : [],
-      viewer: publicViewer(viewer)
+      loginAudit: viewerIsSystemAdmin(viewer) ? db.loginAudit.slice(0, 100) : [],
+      sessions: db.sessions.filter(item => item.userId === viewer?.id && item.tokenHash).map(item => ({
+        id: item.id,
+        ipAddress: item.ipAddress,
+        userAgent: item.userAgent,
+        createdAt: item.createdAt,
+        lastSeenAt: item.lastSeenAt,
+        expiresAt: item.expiresAt,
+        revokedAt: item.revokedAt,
+        current: item.id === session?.id
+      })),
+      viewer: publicViewer(viewer, session)
     });
   }
   if (req.method === "GET" && url.pathname === "/api/broadcasts/history") {
@@ -2173,6 +2791,7 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     const permissions = Array.isArray(body.permissions) ? [...new Set(body.permissions)].filter(item => permissionCatalog.includes(item)) : [];
     if (!name) return validationError(res, "Role name is required.");
+    if (!rolePermissionsAllowed(currentViewer(req), permissions)) return json(res, 403, { error: "One or more permissions exceed your access." });
     const role = { id: entityId("role"), name, builtIn: false, cloneable: true, active: body.active !== false, permissions };
     db.roles.push(role);
     addAudit("role.create", { roleId: role.id, name });
@@ -2188,6 +2807,7 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     const permissions = Array.isArray(body.permissions) ? [...new Set(body.permissions)].filter(item => permissionCatalog.includes(item)) : [];
     if (!name) return validationError(res, "Role name is required.");
+    if (!rolePermissionsAllowed(currentViewer(req), permissions)) return json(res, 403, { error: "One or more permissions exceed your access." });
     Object.assign(role, { name, permissions, active: body.active !== false });
     addAudit("role.update", { roleId: role.id, name });
     await saveData();
@@ -2211,6 +2831,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "role.manage")) return;
     const source = db.roles.find(item => item.id === roleCloneMatch[1]);
     if (!source) return json(res, 404, { error: "Role not found" });
+    if (!rolePermissionsAllowed(currentViewer(req), source.permissions || [])) return json(res, 403, { error: "This role exceeds your access." });
     const body = await readBody(req);
     const role = {
       ...structuredClone(source),
@@ -2227,6 +2848,7 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "POST" && url.pathname === "/api/calendar-accounts") {
     if (!requirePermission(req, res, "calendar.manage")) return;
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may manage calendar credentials." });
     const body = await readBody(req);
     const provider = cleanText(body.provider, 30);
     const authMode = cleanText(body.authMode, 40)
@@ -2312,6 +2934,7 @@ async function handleApi(req, res, url) {
   const calendarAccountMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)$/);
   if (req.method === "PUT" && calendarAccountMatch) {
     if (!requirePermission(req, res, "calendar.manage")) return;
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may manage calendar credentials." });
     const account = db.calendarAccounts.find(item => item.id === calendarAccountMatch[1]);
     if (!account) return json(res, 404, { error: "Calendar account not found" });
     const body = await readBody(req);
@@ -2396,13 +3019,21 @@ async function handleApi(req, res, url) {
   const calendarOauthStartMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)\/oauth\/start$/);
   if (req.method === "GET" && calendarOauthStartMatch) {
     if (!requirePermission(req, res, "calendar.manage")) return;
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may connect calendar credentials." });
     const account = db.calendarAccounts.find(item => item.id === calendarOauthStartMatch[1]);
     if (!account) return json(res, 404, { error: "Calendar account not found" });
     if (account.authMode !== "oauth" || !["google", "microsoft365"].includes(account.provider)) {
       return validationError(res, "This calendar account is not configured for interactive OAuth.");
     }
     const state = crypto.randomBytes(32).toString("hex");
-    oauthStates.set(state, { accountId: account.id, provider: account.provider, expiresAt: Date.now() + 10 * 60 * 1000 });
+    db.oauthStates.push({
+      id: entityId("oauth-state"),
+      stateHash: tokenHash(state),
+      accountId: account.id,
+      provider: account.provider,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString()
+    });
+    await saveData();
     return json(res, 200, {
       authorizationUrl: calendarAuthorizationUrl(account, account.provider, baseUrl, state)
     });
@@ -2412,9 +3043,13 @@ async function handleApi(req, res, url) {
     const provider = calendarOauthCallbackMatch[1];
     const state = cleanText(url.searchParams.get("state"), 200);
     const code = cleanText(url.searchParams.get("code"), 4000);
-    const pending = oauthStates.get(state);
-    oauthStates.delete(state);
-    if (!pending || pending.provider !== provider || pending.expiresAt < Date.now()) return send(res, 400, "OAuth state expired or invalid.");
+    if (store.type === "postgresql-normalized") db = await store.refresh();
+    const pending = db.oauthStates.find(item => item.stateHash === tokenHash(state));
+    db.oauthStates = db.oauthStates.filter(item => item.id !== pending?.id);
+    if (!pending || pending.provider !== provider || new Date(pending.expiresAt).getTime() < Date.now()) {
+      await saveData();
+      return send(res, 400, "OAuth state expired or invalid.");
+    }
     const account = db.calendarAccounts.find(item => item.id === pending.accountId);
     if (!account || !code) return send(res, 400, "OAuth authorization code was not provided.");
     try {
@@ -2445,6 +3080,7 @@ async function handleApi(req, res, url) {
   const calendarDiscoverMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)\/discover$/);
   if (req.method === "POST" && calendarDiscoverMatch) {
     if (!requirePermission(req, res, "calendar.manage")) return;
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may verify calendar credentials." });
     const account = db.calendarAccounts.find(item => item.id === calendarDiscoverMatch[1]);
     if (!account) return json(res, 404, { error: "Calendar account not found" });
     try {
@@ -2489,6 +3125,7 @@ async function handleApi(req, res, url) {
   const calendarWebhookRegisterMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)\/calendars\/([^/]+)\/webhook$/);
   if (req.method === "POST" && calendarWebhookRegisterMatch) {
     if (!requirePermission(req, res, "calendar.manage")) return;
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may register calendar webhooks." });
     const account = db.calendarAccounts.find(item => item.id === calendarWebhookRegisterMatch[1]);
     const calendar = account?.calendars?.find(item => item.id === calendarWebhookRegisterMatch[2]);
     if (!account || !calendar) return json(res, 404, { error: "Calendar connection not found" });
@@ -2569,6 +3206,7 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "DELETE" && calendarAccountMatch) {
     if (!requirePermission(req, res, "calendar.manage")) return;
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may manage calendar credentials." });
     const account = db.calendarAccounts.find(item => item.id === calendarAccountMatch[1]);
     if (!account) return json(res, 404, { error: "Calendar account not found" });
     if (db.calendarAssignments.some(item => item.accountId === account.id)) return json(res, 409, { error: "Remove room assignments before deleting this account." });
@@ -2626,6 +3264,7 @@ async function handleApi(req, res, url) {
       const result = await syncAssignment(assignment);
       addAudit("calendar.sync", { assignmentId: assignment.id, status: "success", eventCount: result.eventCount });
       await saveData();
+      notifyRoom(room.code, "data-refresh");
       return json(res, 200, result);
     } catch (error) {
       addAudit("calendar.sync", { assignmentId: assignment.id, status: "failed", error: cleanText(error.message, 300) });
@@ -2988,10 +3627,14 @@ async function handleApi(req, res, url) {
     if (db.users.some(user => user.email === email)) return json(res, 409, { error: "That email address is already assigned to a user." });
     if (!allowedStatuses.has(status)) return validationError(res, "Select a valid user status.");
     if (!validIds(body.roleIds || [], db.roles)) return validationError(res, "One or more roles are invalid.");
+    if (!roleAssignmentsAllowed(currentViewer(req), body.roleIds || [])) return json(res, 403, { error: "One or more roles exceed your permissions." });
     if (!validIds(body.centerIds || [], db.centers)) return validationError(res, "One or more centers are invalid.");
     if (!validIds(body.campusIds || [], db.campuses)) return validationError(res, "One or more campuses are invalid.");
     if (!validIds(body.buildingIds || [], db.buildings)) return validationError(res, "One or more buildings are invalid.");
+    if (!validIds(body.roomIds || [], db.rooms)) return validationError(res, "One or more rooms are invalid.");
+    if (!assignmentsWithinViewerScope(currentViewer(req), body)) return json(res, 403, { error: "One or more user assignments are outside your scope." });
     const features = Array.isArray(body.features) ? body.features.filter(feature => db.features.includes(feature)) : [];
+    if (!featureAssignmentsAllowed(currentViewer(req), features)) return json(res, 403, { error: "One or more feature grants exceed your access." });
     const now = new Date().toISOString();
     const user = {
       id: entityId("user"),
@@ -3002,6 +3645,7 @@ async function handleApi(req, res, url) {
       centerIds: body.centerIds || [],
       campusIds: body.campusIds || [],
       buildingIds: body.buildingIds || [],
+      roomIds: body.roomIds || [],
       features,
       twoFactorEnabled: false,
       invitedAt: null,
@@ -3037,6 +3681,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "user.manage")) return;
     const user = db.users.find(item => item.id === userMatch[1]);
     if (!user) return json(res, 404, { error: "User not found" });
+    if (!viewerCanManageUser(currentViewer(req), user)) return json(res, 403, { error: "This user is outside your assigned scope." });
     const body = await readBody(req);
     const name = cleanText(body.name);
     const email = cleanText(body.email, 255).toLowerCase();
@@ -3047,10 +3692,14 @@ async function handleApi(req, res, url) {
     if (db.users.some(item => item.id !== user.id && item.email === email)) return json(res, 409, { error: "That email address is already assigned to a user." });
     if (!allowedStatuses.has(status)) return validationError(res, "Select a valid user status.");
     if (!validIds(body.roleIds || [], db.roles)) return validationError(res, "One or more roles are invalid.");
+    if (!roleAssignmentsAllowed(currentViewer(req), body.roleIds || [])) return json(res, 403, { error: "One or more roles exceed your permissions." });
     if (!validIds(body.centerIds || [], db.centers)) return validationError(res, "One or more centers are invalid.");
     if (!validIds(body.campusIds || [], db.campuses)) return validationError(res, "One or more campuses are invalid.");
     if (!validIds(body.buildingIds || [], db.buildings)) return validationError(res, "One or more buildings are invalid.");
+    if (!validIds(body.roomIds || [], db.rooms)) return validationError(res, "One or more rooms are invalid.");
+    if (!assignmentsWithinViewerScope(currentViewer(req), body)) return json(res, 403, { error: "One or more user assignments are outside your scope." });
     const features = Array.isArray(body.features) ? body.features.filter(feature => db.features.includes(feature)) : [];
+    if (!featureAssignmentsAllowed(currentViewer(req), features)) return json(res, 403, { error: "One or more feature grants exceed your access." });
     Object.assign(user, {
       name,
       email,
@@ -3059,6 +3708,7 @@ async function handleApi(req, res, url) {
       centerIds: body.centerIds || [],
       campusIds: body.campusIds || [],
       buildingIds: body.buildingIds || [],
+      roomIds: body.roomIds || [],
       features,
       updatedAt: new Date().toISOString()
     });
@@ -3071,6 +3721,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "user.manage")) return;
     const user = db.users.find(item => item.id === userInviteMatch[1]);
     if (!user) return json(res, 404, { error: "User not found" });
+    if (!viewerCanManageUser(currentViewer(req), user)) return json(res, 403, { error: "This user is outside your assigned scope." });
     const message = invitationMessage(user);
     try {
       await deliverTrackedEmail({
@@ -3090,6 +3741,47 @@ async function handleApi(req, res, url) {
       await saveData();
       return json(res, 502, { error: `Invitation email failed: ${error.message}` });
     }
+  }
+  const userFeatureGrantMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/feature-grants$/);
+  if (req.method === "POST" && userFeatureGrantMatch) {
+    if (!requirePermission(req, res, "user.manage")) return;
+    const user = db.users.find(item => item.id === userFeatureGrantMatch[1]);
+    if (!user) return json(res, 404, { error: "User not found" });
+    if (!viewerCanManageUser(currentViewer(req), user)) return json(res, 403, { error: "This user is outside your assigned scope." });
+    const body = await readBody(req);
+    const startsAt = new Date(body.startsAt);
+    const endsAt = new Date(body.endsAt);
+    if (!db.features.includes(body.featureName)) return validationError(res, "Select a valid feature.");
+    if (!featureAssignmentsAllowed(currentViewer(req), [body.featureName])) return json(res, 403, { error: "This feature exceeds your access." });
+    if (!Number.isFinite(startsAt.getTime()) || !Number.isFinite(endsAt.getTime()) || endsAt <= startsAt) {
+      return validationError(res, "Temporary grants require a valid start and later end time.");
+    }
+    const grant = {
+      id: entityId("feature-grant"),
+      userId: user.id,
+      featureName: body.featureName,
+      startsAt: startsAt.toISOString(),
+      endsAt: endsAt.toISOString(),
+      active: true,
+      createdBy: currentViewer(req)?.id || null,
+      createdAt: new Date().toISOString()
+    };
+    db.featureGrants.push(grant);
+    addAudit("user.feature-grant.create", { grantId: grant.id, userId: user.id, featureName: grant.featureName });
+    await saveData();
+    return json(res, 201, grant);
+  }
+  const featureGrantMatch = url.pathname.match(/^\/api\/feature-grants\/([^/]+)$/);
+  if (req.method === "DELETE" && featureGrantMatch) {
+    if (!requirePermission(req, res, "user.manage")) return;
+    const grant = db.featureGrants.find(item => item.id === featureGrantMatch[1]);
+    const user = db.users.find(item => item.id === grant?.userId);
+    if (!grant || !user) return json(res, 404, { error: "Feature grant not found" });
+    if (!viewerCanManageUser(currentViewer(req), user)) return json(res, 403, { error: "This user is outside your assigned scope." });
+    db.featureGrants = db.featureGrants.filter(item => item.id !== grant.id);
+    addAudit("user.feature-grant.delete", { grantId: grant.id, userId: user.id });
+    await saveData();
+    return json(res, 200, { deleted: true });
   }
   if (req.method === "POST" && url.pathname === "/api/broadcast-templates") {
     if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required." });
@@ -3165,6 +3857,7 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "POST" && url.pathname === "/api/centers") {
     if (!requirePermission(req, res, "center.manage")) return;
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may create centers." });
     const body = await readBody(req);
     const name = cleanText(body.name);
     const timezone = cleanText(body.timezone, 80);
@@ -3178,6 +3871,9 @@ async function handleApi(req, res, url) {
     if (logoUrl && !validUrl(logoUrl) && !logoUrl.startsWith("/assets/")) return validationError(res, "Enter a valid logo URL or asset path.");
     if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) {
       return validationError(res, "Select a valid default theme.");
+    }
+    if (body.defaultThemeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === body.defaultThemeId))) {
+      return json(res, 403, { error: "This theme is outside your assigned scope." });
     }
     const center = {
       id: entityId("center"),
@@ -3204,6 +3900,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "center.manage")) return;
     const center = db.centers.find(item => item.id === centerMatch[1]);
     if (!center) return json(res, 404, { error: "Center not found" });
+    if (!viewerCanAccessCenter(currentViewer(req), center)) return json(res, 403, { error: "This center is outside your assigned scope." });
     const body = await readBody(req);
     const name = cleanText(body.name);
     const timezone = cleanText(body.timezone, 80);
@@ -3217,6 +3914,9 @@ async function handleApi(req, res, url) {
     if (logoUrl && !validUrl(logoUrl) && !logoUrl.startsWith("/assets/")) return validationError(res, "Enter a valid logo URL or asset path.");
     if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) {
       return validationError(res, "Select a valid default theme.");
+    }
+    if (body.defaultThemeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === body.defaultThemeId))) {
+      return json(res, 403, { error: "This theme is outside your assigned scope." });
     }
     Object.assign(center, {
       name,
@@ -3241,6 +3941,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "center.manage")) return;
     const center = db.centers.find(item => item.id === centerMatch[1]);
     if (!center) return json(res, 404, { error: "Center not found" });
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may delete centers." });
     if (db.campuses.some(item => item.centerId === center.id) || db.rooms.some(item => item.centerId === center.id)) {
       return json(res, 409, { error: "Remove this center's campuses and rooms before deleting it." });
     }
@@ -3256,11 +3957,13 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     if (!name) return validationError(res, "Campus name is required.");
     if (!db.centers.some(center => center.id === body.centerId)) return validationError(res, "Select a valid center.");
+    if (!viewerCanAccessCenter(currentViewer(req), db.centers.find(center => center.id === body.centerId))) return json(res, 403, { error: "This center is outside your assigned scope." });
     const bookingUrl = cleanText(body.bookingUrl, 500);
     const contactEmail = cleanText(body.contactEmail, 255).toLowerCase();
     if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid campus booking URL.");
     if (contactEmail && !validEmail(contactEmail)) return validationError(res, "Enter a valid campus contact email.");
     if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) return validationError(res, "Select a valid campus theme.");
+    if (body.defaultThemeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === body.defaultThemeId))) return json(res, 403, { error: "This theme is outside your assigned scope." });
     const campus = {
       id: entityId("campus"),
       centerId: body.centerId,
@@ -3285,15 +3988,18 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "campus.manage")) return;
     const campus = db.campuses.find(item => item.id === campusMatch[1]);
     if (!campus) return json(res, 404, { error: "Campus not found" });
+    if (!viewerCanAccessCampus(currentViewer(req), campus)) return json(res, 403, { error: "This campus is outside your assigned scope." });
     const body = await readBody(req);
     const name = cleanText(body.name);
     if (!name) return validationError(res, "Campus name is required.");
     if (!db.centers.some(center => center.id === body.centerId)) return validationError(res, "Select a valid center.");
+    if (!viewerCanAccessCenter(currentViewer(req), db.centers.find(center => center.id === body.centerId))) return json(res, 403, { error: "The destination center is outside your assigned scope." });
     const bookingUrl = cleanText(body.bookingUrl, 500);
     const contactEmail = cleanText(body.contactEmail, 255).toLowerCase();
     if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid campus booking URL.");
     if (contactEmail && !validEmail(contactEmail)) return validationError(res, "Enter a valid campus contact email.");
     if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) return validationError(res, "Select a valid campus theme.");
+    if (body.defaultThemeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === body.defaultThemeId))) return json(res, 403, { error: "This theme is outside your assigned scope." });
     if (db.buildings.some(building => building.campusId === campus.id) && body.centerId !== campus.centerId) {
       return json(res, 409, { error: "A campus with buildings cannot be moved to another center." });
     }
@@ -3319,6 +4025,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "campus.manage")) return;
     const campus = db.campuses.find(item => item.id === campusMatch[1]);
     if (!campus) return json(res, 404, { error: "Campus not found" });
+    if (!viewerCanAccessCampus(currentViewer(req), campus)) return json(res, 403, { error: "This campus is outside your assigned scope." });
     if (db.buildings.some(item => item.campusId === campus.id) || db.rooms.some(item => item.campusId === campus.id)) {
       return json(res, 409, { error: "Remove this campus's buildings and rooms before deleting it." });
     }
@@ -3334,11 +4041,13 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     if (!name) return validationError(res, "Building name is required.");
     if (!db.campuses.some(campus => campus.id === body.campusId)) return validationError(res, "Select a valid campus.");
+    if (!viewerCanAccessCampus(currentViewer(req), db.campuses.find(campus => campus.id === body.campusId))) return json(res, 403, { error: "This campus is outside your assigned scope." });
     const timezone = cleanText(body.timezone, 80);
     const bookingUrl = cleanText(body.bookingUrl, 500);
     if (timezone && !validTimezone(timezone)) return validationError(res, "Enter a valid building timezone override.");
     if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid building booking URL.");
     if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) return validationError(res, "Select a valid building theme.");
+    if (body.defaultThemeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === body.defaultThemeId))) return json(res, 403, { error: "This theme is outside your assigned scope." });
     const building = {
       id: entityId("building"),
       campusId: body.campusId,
@@ -3363,15 +4072,18 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "building.manage")) return;
     const building = db.buildings.find(item => item.id === buildingMatch[1]);
     if (!building) return json(res, 404, { error: "Building not found" });
+    if (!viewerCanAccessBuilding(currentViewer(req), building)) return json(res, 403, { error: "This building is outside your assigned scope." });
     const body = await readBody(req);
     const name = cleanText(body.name);
     if (!name) return validationError(res, "Building name is required.");
     if (!db.campuses.some(campus => campus.id === body.campusId)) return validationError(res, "Select a valid campus.");
+    if (!viewerCanAccessCampus(currentViewer(req), db.campuses.find(campus => campus.id === body.campusId))) return json(res, 403, { error: "The destination campus is outside your assigned scope." });
     const timezone = cleanText(body.timezone, 80);
     const bookingUrl = cleanText(body.bookingUrl, 500);
     if (timezone && !validTimezone(timezone)) return validationError(res, "Enter a valid building timezone override.");
     if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid building booking URL.");
     if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) return validationError(res, "Select a valid building theme.");
+    if (body.defaultThemeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === body.defaultThemeId))) return json(res, 403, { error: "This theme is outside your assigned scope." });
     if (db.rooms.some(room => room.buildingId === building.id) && body.campusId !== building.campusId) {
       return json(res, 409, { error: "A building with rooms cannot be moved to another campus." });
     }
@@ -3397,6 +4109,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "building.manage")) return;
     const building = db.buildings.find(item => item.id === buildingMatch[1]);
     if (!building) return json(res, 404, { error: "Building not found" });
+    if (!viewerCanAccessBuilding(currentViewer(req), building)) return json(res, 403, { error: "This building is outside your assigned scope." });
     if (db.rooms.some(item => item.buildingId === building.id)) {
       return json(res, 409, { error: "Remove this building's rooms before deleting it." });
     }
@@ -3419,11 +4132,14 @@ async function handleApi(req, res, url) {
     if (db.rooms.some(room => room.code === code)) return json(res, 409, { error: "That room code is already in use." });
     if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid HTTP or HTTPS booking URL.");
     if (hierarchy.error) return validationError(res, hierarchy.error);
+    if (!viewerCanAccessBuilding(currentViewer(req), hierarchy.building)) return json(res, 403, { error: "This building is outside your assigned scope." });
     if (themeId && !db.themes.some(theme => theme.id === themeId)) return validationError(res, "Select a valid theme.");
+    if (themeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === themeId))) return json(res, 403, { error: "This theme is outside your assigned scope." });
     if (!["available", "maintenance", "closed"].includes(body.maintenanceStatus || "available")) return validationError(res, "Select a valid maintenance status.");
     if (!["standard", "private-title", "hide-details"].includes(body.privacyMode || "standard")) return validationError(res, "Select a valid privacy setting.");
     const room = {
       id: entityId("room"),
+      kioskIdentifier: randomToken(18),
       code,
       name,
       centerId: body.centerId,
@@ -3485,13 +4201,15 @@ async function handleApi(req, res, url) {
     return json(res, 200, publicRoom(
       room,
       cleanText(url.searchParams.get("theme"), 120),
-      cleanText(url.searchParams.get("state"), 20)
+      cleanText(url.searchParams.get("state"), 20),
+      false
     ));
   }
   if (req.method === "PUT" && roomMatch) {
     if (!requirePermission(req, res, "room.manage")) return;
     const room = db.rooms.find(item => item.id === roomMatch[1] || item.code === roomMatch[1]);
     if (!room) return json(res, 404, { error: "Room not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
     const body = await readBody(req);
     const name = cleanText(body.name);
     const code = cleanText(body.code, 80).toLowerCase();
@@ -3503,7 +4221,9 @@ async function handleApi(req, res, url) {
     if (db.rooms.some(item => item.id !== room.id && item.code === code)) return json(res, 409, { error: "That room code is already in use." });
     if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid HTTP or HTTPS booking URL.");
     if (hierarchy.error) return validationError(res, hierarchy.error);
+    if (!viewerCanAccessBuilding(currentViewer(req), hierarchy.building)) return json(res, 403, { error: "The destination building is outside your assigned scope." });
     if (themeId && !db.themes.some(theme => theme.id === themeId)) return validationError(res, "Select a valid theme.");
+    if (themeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === themeId))) return json(res, 403, { error: "This theme is outside your assigned scope." });
     if (!["available", "maintenance", "closed"].includes(body.maintenanceStatus || "available")) return validationError(res, "Select a valid maintenance status.");
     if (!["standard", "private-title", "hide-details"].includes(body.privacyMode || "standard")) return validationError(res, "Select a valid privacy setting.");
     const previousCode = room.code;
@@ -3536,6 +4256,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "room.manage")) return;
     const room = db.rooms.find(item => item.id === roomMatch[1] || item.code === roomMatch[1]);
     if (!room) return json(res, 404, { error: "Room not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
     db.rooms = db.rooms.filter(item => item.id !== room.id);
     db.upcomingEvents = db.upcomingEvents.filter(item => item.roomId !== room.id);
     for (const group of db.roomGroups) group.roomIds = group.roomIds.filter(id => id !== room.id);
@@ -3582,6 +4303,9 @@ async function handleApi(req, res, url) {
     const room = db.rooms.find(item => item.code === body.roomCode);
     const clientDeviceId = cleanText(body.clientDeviceId, 160);
     if (!room || !clientDeviceId) return validationError(res, "Room code and device ID are required.");
+    if (!body.kioskIdentifier || body.kioskIdentifier !== room.kioskIdentifier) {
+      return json(res, 403, { error: "Kiosk registration identifier is invalid." });
+    }
     let device = db.kioskDevices.find(item => item.clientDeviceId === clientDeviceId);
     if (device?.status === "revoked") {
       return json(res, 403, { error: "This kiosk registration has been revoked. An administrator must remove the revoked record before it can pair again.", status: "revoked" });
@@ -3901,8 +4625,7 @@ async function handleApi(req, res, url) {
     await saveData();
     notifyChangedRooms(broadcast.targetRoomCodes);
     if (broadcast.status === "active") {
-      await notifyBroadcastEvent(broadcast, "activated");
-      await saveData();
+      await backgroundQueue.enqueue("broadcast-notification", { broadcast: structuredClone(broadcast), eventType: "activated" });
     }
     return json(res, 201, publicBroadcast(broadcast));
   }
@@ -3930,8 +4653,7 @@ async function handleApi(req, res, url) {
     addAudit("broadcast.update", { id: broadcast.id, title: broadcast.title, targetRoomCodes: broadcast.targetRoomCodes });
     await saveData();
     notifyChangedRooms([...previousRoomCodes, ...broadcast.targetRoomCodes]);
-    await notifyBroadcastEvent(broadcast, "updated");
-    await saveData();
+    await backgroundQueue.enqueue("broadcast-notification", { broadcast: structuredClone(broadcast), eventType: "updated" });
     return json(res, 200, publicBroadcast(broadcast));
   }
   const broadcastEndMatch = url.pathname.match(/^\/api\/broadcasts\/([^/]+)\/end$/);
@@ -3949,8 +4671,7 @@ async function handleApi(req, res, url) {
     addAudit("broadcast.end", { id: broadcast.id });
     await saveData();
     notifyChangedRooms(rooms.map(room => room.code));
-    await notifyBroadcastEvent(broadcast, "ended");
-    await saveData();
+    await backgroundQueue.enqueue("broadcast-notification", { broadcast: structuredClone(broadcast), eventType: "ended" });
     return json(res, 200, publicBroadcast(broadcast));
   }
   const broadcastCancelMatch = url.pathname.match(/^\/api\/broadcasts\/([^/]+)\/cancel$/);
@@ -3966,8 +4687,7 @@ async function handleApi(req, res, url) {
     broadcast.endedAt = new Date().toISOString();
     broadcast.endedBy = viewer?.id || null;
     addAudit("broadcast.cancel", { id: broadcast.id });
-    await notifyBroadcastEvent(broadcast, "cancelled");
-    await saveData();
+    await backgroundQueue.enqueue("broadcast-notification", { broadcast: structuredClone(broadcast), eventType: "cancelled" });
     return json(res, 200, publicBroadcast(broadcast));
   }
   if (req.method === "POST" && url.pathname === "/api/broadcasts/end") {
@@ -3985,8 +4705,7 @@ async function handleApi(req, res, url) {
     addAudit("broadcast.end", { id: broadcast.id });
     await saveData();
     notifyChangedRooms(broadcastTargetRooms(broadcast).map(room => room.code));
-    await notifyBroadcastEvent(broadcast, "ended");
-    await saveData();
+    await backgroundQueue.enqueue("broadcast-notification", { broadcast: structuredClone(broadcast), eventType: "ended" });
     return json(res, 200, { ended: true, broadcast: publicBroadcast(broadcast) });
   }
   if (req.method === "POST" && url.pathname === "/api/theme-schedules") {
@@ -4053,6 +4772,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "theme.manage")) return;
     const source = db.themes.find(theme => theme.id === themeCloneMatch[1]);
     if (!source) return json(res, 404, { error: "Theme not found" });
+    if (!viewerCanAccessTheme(currentViewer(req), source)) return json(res, 403, { error: "This theme is outside your assigned scope." });
     if (!source.cloneable) return json(res, 409, { error: "This theme cannot be cloned." });
     const body = await readBody(req);
     const name = cleanText(body.name) || `${source.name} Copy`;
@@ -4067,6 +4787,7 @@ async function handleApi(req, res, url) {
       cssTokens: structuredClone(source.cssTokens || defaultThemeTokens),
       published: false,
       archived: false,
+      createdBy: currentViewer(req)?.id || null,
       updatedAt: new Date().toISOString()
     };
     db.themes.push(clone);
@@ -4079,6 +4800,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "theme.manage")) return;
     const theme = db.themes.find(item => item.id === themeBackgroundMatch[1]);
     if (!theme) return json(res, 404, { error: "Theme not found" });
+    if (!viewerCanAccessTheme(currentViewer(req), theme)) return json(res, 403, { error: "This theme is outside your assigned scope." });
     if (theme.builtIn) return json(res, 409, { error: "Clone a built-in theme before uploading a background." });
     const body = await readBody(req);
     const mimeTypes = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp" };
@@ -4113,6 +4835,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "theme.manage")) return;
     const theme = db.themes.find(item => item.id === themeBackgroundMatch[1]);
     if (!theme) return json(res, 404, { error: "Theme not found" });
+    if (!viewerCanAccessTheme(currentViewer(req), theme)) return json(res, 403, { error: "This theme is outside your assigned scope." });
     if (theme.builtIn) return json(res, 409, { error: "Built-in theme backgrounds cannot be removed." });
     const assetUrl = theme.cssTokens?.backgroundImage || "";
     theme.cssTokens = { ...defaultThemeTokens, ...theme.cssTokens, backgroundImage: "" };
@@ -4130,11 +4853,16 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "theme.manage")) return;
     const theme = db.themes.find(item => item.id === themeMatch[1]);
     if (!theme) return json(res, 404, { error: "Theme not found" });
+    if (!viewerCanAccessTheme(currentViewer(req), theme)) return json(res, 403, { error: "This theme is outside your assigned scope." });
     if (theme.builtIn) return json(res, 409, { error: "Clone a built-in theme before editing it." });
     const body = await readBody(req);
     const allowedTokens = new Set(Object.keys(defaultThemeTokens));
+    const standardizedStatusTokens = new Set(["availableBg", "availableText", "busyBg", "busyText", "warningBg", "warningText"]);
     const cssTokens = {};
     for (const [key, value] of Object.entries(body.cssTokens || {})) {
+      if (!viewerIsSystemAdmin(currentViewer(req)) && standardizedStatusTokens.has(key) && value !== theme.cssTokens?.[key]) {
+        return json(res, 403, { error: "Only a System Administrator may change standardized room-status colors." });
+      }
       if (allowedTokens.has(key) && key !== "backgroundImage") cssTokens[key] = cleanText(value, 200);
     }
     Object.assign(theme, {
@@ -4157,14 +4885,50 @@ async function handleApi(req, res, url) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, baseUrl);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "SAMEORIGIN");
+    res.setHeader("Referrer-Policy", "same-origin");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+    if (baseUrl.startsWith("https://")) res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    if (
+      store.type === "postgresql-normalized"
+      && (
+        url.pathname === "/admin"
+        || url.pathname.startsWith("/preview/")
+        || (url.pathname.startsWith("/api/") && !url.pathname.startsWith("/api/auth/") && !publicApiPath(req, url))
+      )
+    ) {
+      db = await store.refresh();
+    }
     if (url.pathname.startsWith("/static/")) return serveFile(req, res, path.join(rootDir, "public"), "/static/");
     if (url.pathname.startsWith("/assets/uploads/themes/")) return serveFile(req, res, themeAssetsDir, "/assets/uploads/themes/");
     if (url.pathname.startsWith("/assets/")) return serveFile(req, res, path.join(rootDir, "assets"), "/assets/");
     if (url.pathname.startsWith("/samples/")) return serveFile(req, res, path.join(rootDir, "samples"), "/samples/");
-    if (url.pathname.startsWith("/api/")) return handleApi(req, res, url);
-    if (url.pathname === "/" || url.pathname === "/admin") return send(res, 200, adminPage());
+    if (url.pathname.startsWith("/api/auth/")) return handleAuthApi(req, res, url);
+    if (url.pathname.startsWith("/api/")) {
+      if (!publicApiPath(req, url) && !currentViewer(req)) return json(res, 401, { error: "Authentication required." });
+      if (!publicApiPath(req, url) && !["GET", "HEAD"].includes(req.method) && !csrfValid(req)) {
+        return json(res, 403, { error: "Invalid CSRF token." });
+      }
+      return handleApi(req, res, url);
+    }
+    if (url.pathname === "/login") {
+      if (currentViewer(req)) return redirect(res, "/admin");
+      return send(res, 200, loginPage());
+    }
+    if (url.pathname === "/forgot-password") return send(res, 200, passwordPage("forgot"));
+    if (url.pathname === "/reset-password") return send(res, 200, passwordPage("reset", cleanText(url.searchParams.get("token"), 200)));
+    if (url.pathname === "/" || url.pathname === "/admin") {
+      if (!currentViewer(req)) return redirect(res, "/login");
+      return send(res, 200, adminPage());
+    }
     const previewMatch = url.pathname.match(/^\/preview\/([^/]+)$/);
     if (previewMatch) {
+      const viewer = currentViewer(req);
+      if (!viewer) return redirect(res, "/login");
+      const room = db.rooms.find(item => item.code === previewMatch[1]);
+      if (!room || !viewerCanAccessRoom(viewer, room)) return send(res, 403, "This room is outside your assigned scope.");
       const page = kioskPage(
         previewMatch[1],
         true,
@@ -4181,6 +4945,10 @@ const server = http.createServer(async (req, res) => {
     return send(res, 404, "Not found");
   } catch (error) {
     console.error(error);
+    if (error.code === "STATE_CONFLICT") {
+      db = await store.refresh();
+      return json(res, 409, { error: error.message });
+    }
     return json(res, 500, { error: "Internal server error" });
   }
 });
@@ -4237,9 +5005,31 @@ server.listen(port, host, () => {
   console.log(`Signage app running at http://${host}:${port}`);
 });
 
-const calendarSyncTimer = setInterval(runScheduledCalendarSync, 60000);
+const calendarSyncTimer = setInterval(() => {
+  const bucket = Math.floor(Date.now() / 60000);
+  backgroundQueue.enqueue("scheduled-calendar-sync", {}, { jobId: `scheduled-calendar-${bucket}` })
+    .catch(error => console.error("Scheduled calendar job failed:", error.message));
+}, 60000);
 calendarSyncTimer.unref();
 const broadcastLifecycleTimer = setInterval(() => {
-  runBroadcastLifecycle().catch(error => console.error("Broadcast lifecycle update failed:", error.message));
+  const bucket = Math.floor(Date.now() / 5000);
+  backgroundQueue.enqueue("broadcast-lifecycle", {}, { jobId: `broadcast-lifecycle-${bucket}` })
+    .catch(error => console.error("Broadcast lifecycle job failed:", error.message));
 }, 5000);
 broadcastLifecycleTimer.unref();
+const scheduleReconciliationTimer = setInterval(() => {
+  const bucket = Math.floor(Date.now() / 60000);
+  backgroundQueue.enqueue("schedule-reconciliation", {}, { jobId: `schedule-reconciliation-${bucket}` }).catch(() => {});
+}, 60000);
+scheduleReconciliationTimer.unref();
+
+async function shutdown() {
+  clearInterval(calendarSyncTimer);
+  clearInterval(broadcastLifecycleTimer);
+  clearInterval(scheduleReconciliationTimer);
+  await Promise.allSettled([calendarQueue.close(), backgroundQueue.close(), store.close()]);
+  server.close(() => process.exit(0));
+}
+
+process.once("SIGTERM", shutdown);
+process.once("SIGINT", shutdown);

@@ -9,6 +9,7 @@ COPY public ./public
 COPY assets ./assets
 COPY samples ./samples
 COPY templates ./templates
+COPY database ./database
 
 ENV NODE_ENV=production
 ENV PORT=3000

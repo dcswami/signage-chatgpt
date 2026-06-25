@@ -1,5 +1,6 @@
 const root = document.querySelector("#kiosk");
 const roomCode = root.dataset.roomCode;
+const kioskIdentifier = root.dataset.kioskIdentifier;
 const themeOverride = root.dataset.themeOverride;
 const stateOverride = root.dataset.stateOverride;
 const isPreview = root.dataset.preview === "true";
@@ -53,6 +54,7 @@ function deviceProfile() {
   return {
     clientDeviceId: clientDeviceId(),
     roomCode,
+    kioskIdentifier,
     name: `${deviceType} - ${roomCode}`,
     deviceType,
     browser: navigator.userAgent,
