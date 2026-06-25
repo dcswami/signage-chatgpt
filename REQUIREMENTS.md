@@ -575,6 +575,8 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - All management portal access must require authentication.
 - Users must sign in with email and password. Passwords must be stored using a memory-hard salted hash.
 - Password-reset links must be single-use, expire after 30 minutes, and revoke existing sessions when used.
+- Signed-in users must be able to change their password by providing their current password and confirming a new password.
+- System Administrators must be able to assign or reset a user's password. The reset must revoke that user's existing sessions and may explicitly clear authenticator-app enrollment.
 - Authenticator-app two-factor authentication must use standard TOTP enrollment and verification.
 - Authenticated sessions must use high-entropy server-tracked tokens, secure HTTP-only same-site cookies, an eight-hour expiration, explicit logout, and revocation.
 - Management write operations must require a per-session CSRF token.
@@ -631,6 +633,8 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Authorized users must be able to refresh a kiosk page from the management portal.
 - Management-portal-triggered refreshes should update schedule, status, template, and broadcast content without requiring physical access to the kiosk device.
 - Management portal list views should support search, filtering, and pagination.
+- The Calendars management page must provide separate Calendar Sync, Calendar Assignment, and Conflict Resolution tabs.
+- Registered Kiosk Devices must support filtering by search text, room, registration state, and health state.
 - The system should support multiple campuses, buildings, and rooms without major performance degradation.
 
 ### 10.3 Accessibility

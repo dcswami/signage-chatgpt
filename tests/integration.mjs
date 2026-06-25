@@ -144,6 +144,23 @@ try {
   const initialState = await request("/api/state");
   csrfToken = initialState.viewer.csrfToken;
   assert.equal(initialState.viewer.isSystemAdmin, true);
+  await request("/api/auth/change-password", {
+    method: "POST",
+    body: JSON.stringify({
+      currentPassword: "Integration-Admin-Password-2026!",
+      newPassword: "Integration-Admin-Password-Changed-2026!",
+      confirmPassword: "Integration-Admin-Password-Changed-2026!"
+    })
+  });
+  const changedAdminLogin = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: "admin@example.org",
+      password: "Integration-Admin-Password-Changed-2026!"
+    })
+  });
+  assert.equal(changedAdminLogin.status, 200);
   assert.equal(initialState.rooms.length, 3);
   assert.equal(initialState.settings.email.hasPassword, false);
   assert.equal(initialState.roles.some(role => role.id === "campus-manager"), true);
@@ -429,6 +446,36 @@ try {
   assert.equal(updatedUser.status, "suspended");
   assert.deepEqual(updatedUser.roleIds, ["building-manager"]);
   assert.deepEqual(updatedUser.buildingIds, [building.id]);
+  const adminSetPassword = await request(`/api/users/${user.id}/password`, {
+    method: "POST",
+    body: JSON.stringify({
+      newPassword: "Admin-Assigned-User-Password-2026!",
+      confirmPassword: "Admin-Assigned-User-Password-2026!",
+      resetTwoFactor: true
+    })
+  });
+  assert.equal(adminSetPassword.status, "suspended");
+  assert.equal(adminSetPassword.twoFactorEnabled, false);
+  await request(`/api/users/${user.id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      name: user.name,
+      email: user.email,
+      status: "active",
+      roleIds: ["building-manager"],
+      centerIds: [],
+      campusIds: [],
+      buildingIds: [building.id],
+      roomIds: [],
+      features: ["Notifications", "Emergency & Safety Broadcast"]
+    })
+  });
+  const assignedPasswordLogin = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: user.email, password: "Admin-Assigned-User-Password-2026!" })
+  });
+  assert.equal(assignedPasswordLogin.status, 200);
   const manualEmail = await request("/api/email/send", {
     method: "POST",
     body: JSON.stringify({
@@ -820,6 +867,8 @@ try {
   assert.match(adminHtml, /Emergency Broadcast/);
   assert.match(adminHtml, /Permission & Role Editor/);
   assert.match(adminHtml, /Calendar Accounts/);
+  assert.match(adminHtml, /Calendar Assignment/);
+  assert.match(adminHtml, /Conflict Resolution/);
   assert.match(adminHtml, /Calendar Conflict Dashboard/);
   assert.match(adminHtml, /Conflict Decision History/);
   assert.match(adminHtml, /Replace Others/);
@@ -832,6 +881,9 @@ try {
   assert.match(adminHtml, /Room Groups/);
   assert.match(adminHtml, /In-App Notifications/);
   assert.match(adminHtml, /Kiosk Devices/);
+  assert.match(adminHtml, /kioskDeviceSearch/);
+  assert.match(adminHtml, /changePasswordForm/);
+  assert.match(adminHtml, /adminPasswordForm/);
   const serviceWorkerResponse = await fetch(`${baseUrl}/static/kiosk-sw.js`);
   assert.equal(serviceWorkerResponse.status, 200);
   assert.match(await serviceWorkerResponse.text(), /signage-kiosk-runtime/);
@@ -840,6 +892,7 @@ try {
   const finalState = await request("/api/state");
   assert.equal(finalState.settings.email.hasPassword, true);
   assert.equal(JSON.stringify(finalState).includes("smtp-password"), false);
+  assert.equal(JSON.stringify(finalState).includes("passwordHash"), false);
   assert.equal(finalState.emailNotifications.length >= 3, true);
 
   console.log("Integration checks passed");

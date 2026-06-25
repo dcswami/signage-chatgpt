@@ -150,6 +150,38 @@ button.compact {
   display: block;
 }
 
+.section-tabs {
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 4px;
+  margin-bottom: 18px;
+  overflow-x: auto;
+}
+
+.section-tabs button {
+  background: #eef3f4;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 4px 4px 0 0;
+  color: var(--muted);
+  min-height: 42px;
+  white-space: nowrap;
+}
+
+.section-tabs button.active {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.calendar-subpanel {
+  display: none;
+}
+
+.calendar-subpanel.active {
+  display: block;
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -227,6 +259,10 @@ button.compact {
   grid-template-columns: minmax(240px, 2fr) minmax(180px, 1fr) minmax(180px, 1fr);
   margin-bottom: 14px;
   padding: 14px;
+}
+
+.device-filters {
+  grid-template-columns: minmax(240px, 2fr) repeat(3, minmax(150px, 1fr));
 }
 
 label {

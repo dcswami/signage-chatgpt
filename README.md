@@ -15,6 +15,7 @@ The scaffold includes:
 - Live kiosk refresh using Server-Sent Events.
 - Transactional per-domain PostgreSQL storage with versioned migrations, first-run legacy import, indexed queries, and optimistic concurrency protection.
 - Email/password authentication, password reset, authenticator-app 2FA, secure sessions, CSRF protection, rate limiting, security headers, and login auditing.
+- Self-service password changes plus System Administrator password resets with session revocation and optional authenticator reset.
 - Scope-filtered rooms, locations, users, calendars, themes, room-level assignments, and permanent or scheduled feature grants.
 - Dashboard search, status filters, room controls, and live kiosk preview.
 - Center, campus, building, and room create/edit/delete workflows.
@@ -26,6 +27,7 @@ The scaffold includes:
 - Calendar account management for Google service accounts/OAuth, Microsoft 365 applications/OAuth, CalDAV/iCloud, and public iCalendar URLs.
 - Redis/BullMQ workers for calendar jobs, notifications, conflicts, broadcast lifecycle, schedule reconciliation, and multi-instance kiosk event distribution.
 - Calendar conflict dashboard with detailed review, deterministic kiosk selection, six-month decision history, and Ignore/Resolve/Cancel/Replace/Move actions for supported writable sources.
+- Calendar management organized into Calendar Sync, Calendar Assignment, and Conflict Resolution working tabs.
 - Per-room calendar assignment, calendar discovery/verification, private-event masking, configurable upcoming-event pagination, and sync history.
 - Editable cloned-theme design tokens with selectable-room live preview, color pickers, panel opacity, draft, publish, and archive states.
 - Persistent theme background image upload/removal and configurable upcoming-event tile colors.
@@ -37,6 +39,7 @@ The scaffold includes:
 - Genuine theme-configurable booking QR codes, offline schedule/theme caching, five-minute stale indication, and an independent offline clock.
 - Full room-local kiosk date and time including weekday, date, year, and seconds.
 - Responsive portrait/landscape layouts plus secure kiosk pairing, online/stale/offline health monitoring, device inventory details, remote refresh/reload, room reassignment, and token revocation.
+- Registered-device search and filters for room, registration state, and health state.
 - Built-in themes: Classic Institutional, Event Formal, and Custom Background.
 - Sample HTML/CSS theme gallery in `samples/kiosk-layout-options.html`.
 - PostgreSQL schema and ordered runtime migrations in `database/schema.sql` and `database/migrations/`.

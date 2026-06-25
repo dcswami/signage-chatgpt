@@ -1829,7 +1829,7 @@ function adminPage() {
         <button type="button" class="active" data-tab="dashboard">Dashboard</button>
         <button type="button" data-tab="locations">Locations & Rooms</button>
         <button type="button" data-tab="users">Users</button>
-        <button type="button" data-tab="calendars">Calendar Sync</button>
+        <button type="button" data-tab="calendars">Calendars</button>
         <button type="button" data-tab="devices">Kiosk Devices</button>
         <button type="button" data-tab="themes">Theme Editor</button>
         <button type="button" data-tab="theme-scheduler">Theme Scheduler</button>
@@ -1925,7 +1925,12 @@ function adminPage() {
       </section>
 
       <section class="tab-panel" data-panel="calendars">
-        <section class="management-grid">
+        <nav class="section-tabs" aria-label="Calendar sections">
+          <button type="button" class="active" data-calendar-tab="sync">Calendar Sync</button>
+          <button type="button" data-calendar-tab="assignment">Calendar Assignment</button>
+          <button type="button" data-calendar-tab="conflicts">Conflict Resolution</button>
+        </nav>
+        <section class="calendar-subpanel active" data-calendar-panel="sync">
           <section class="panel">
             <div class="panel-heading">
               <div><h2>Calendar Accounts</h2><p>Google service accounts, Microsoft 365 applications, and public calendar URLs.</p></div>
@@ -1933,6 +1938,8 @@ function adminPage() {
             </div>
             <div id="calendarAccountList" class="entity-list"></div>
           </section>
+        </section>
+        <section class="calendar-subpanel" data-calendar-panel="assignment">
           <section class="panel">
             <div class="panel-heading"><div><h2>Room Calendar Assignment</h2><p>Each room maps to one calendar source in this release.</p></div></div>
             <form id="calendarAssignmentForm">
@@ -1943,25 +1950,27 @@ function adminPage() {
             </form>
             <div id="calendarAssignmentList" class="entity-list assignment-list"></div>
           </section>
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Sync History</h2><p>Manual and scheduled synchronization results retained for up to six months.</p></div></div>
+            <div class="table-wrap"><table>
+              <thead><tr><th>Time</th><th>Room</th><th>Account</th><th>Status</th><th>Events</th></tr></thead>
+              <tbody id="calendarSyncRows"></tbody>
+            </table></div>
+          </section>
         </section>
-        <section class="panel">
-          <div class="panel-heading"><div><h2>Sync History</h2><p>Manual and scheduled synchronization results retained for up to six months.</p></div></div>
-          <div class="table-wrap"><table>
-            <thead><tr><th>Time</th><th>Room</th><th>Account</th><th>Status</th><th>Events</th></tr></thead>
-            <tbody id="calendarSyncRows"></tbody>
-          </table></div>
-        </section>
-        <section class="panel">
-          <div class="panel-heading"><div><h2>Calendar Conflict Dashboard</h2><p>Review overlaps, choose deterministic signage behavior, or update writable Google and Microsoft calendars.</p></div></div>
-          <div id="calendarConflictSummary" class="summary-grid compact-summary"></div>
-          <div id="calendarConflictList" class="entity-list"></div>
-        </section>
-        <section class="panel">
-          <div class="panel-heading"><div><h2>Conflict Decision History</h2><p>Ignore, resolve, cancel, replace, and move decisions retained for six months.</p></div></div>
-          <div class="table-wrap"><table>
-            <thead><tr><th>Time</th><th>Room</th><th>User</th><th>Action</th><th>Source Change</th><th>Selection</th></tr></thead>
-            <tbody id="calendarConflictHistoryRows"></tbody>
-          </table></div>
+        <section class="calendar-subpanel" data-calendar-panel="conflicts">
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Calendar Conflict Dashboard</h2><p>Review overlaps, choose deterministic signage behavior, or update writable Google and Microsoft calendars.</p></div></div>
+            <div id="calendarConflictSummary" class="summary-grid compact-summary"></div>
+            <div id="calendarConflictList" class="entity-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Conflict Decision History</h2><p>Ignore, resolve, cancel, replace, and move decisions retained for six months.</p></div></div>
+            <div class="table-wrap"><table>
+              <thead><tr><th>Time</th><th>Room</th><th>User</th><th>Action</th><th>Source Change</th><th>Selection</th></tr></thead>
+              <tbody id="calendarConflictHistoryRows"></tbody>
+            </table></div>
+          </section>
         </section>
       </section>
 
@@ -1987,6 +1996,23 @@ function adminPage() {
         <section class="panel">
           <div class="panel-heading"><div><h2>Registered Kiosk Devices</h2><p>Approve pairing, monitor device health, reassign trusted kiosks, or revoke access. Online means contact within 2 minutes; stale means 2-10 minutes; offline means more than 10 minutes.</p></div><button type="button" class="secondary" id="refreshKioskDevices">Refresh Status</button></div>
           <div id="kioskDeviceSummary" class="summary-grid compact-summary"></div>
+          <div class="filters device-filters">
+            <label>Search <input id="kioskDeviceSearch" type="search" placeholder="Device, room, browser, type, or IP" /></label>
+            <label>Room <select id="kioskDeviceRoomFilter"><option value="">All rooms</option></select></label>
+            <label>Registration <select id="kioskDeviceStatusFilter">
+              <option value="">All registration states</option>
+              <option value="pending">Pending</option>
+              <option value="active">Active</option>
+              <option value="revoked">Revoked</option>
+            </select></label>
+            <label>Health <select id="kioskDeviceHealthFilter">
+              <option value="">All health states</option>
+              <option value="online">Online</option>
+              <option value="stale">Stale</option>
+              <option value="offline">Offline</option>
+              <option value="revoked">Revoked</option>
+            </select></label>
+          </div>
           <div id="kioskDeviceList" class="entity-list"></div>
         </section>
       </section>
@@ -2195,6 +2221,15 @@ function adminPage() {
         <section class="admin-grid">
           <section class="panel">
             <div class="panel-heading"><div><h2>Account Security</h2><p>Enroll an authenticator app and protect this management account.</p></div></div>
+            <form id="changePasswordForm">
+              <label>Current Password <input name="currentPassword" type="password" autocomplete="current-password" required /></label>
+              <div class="form-grid">
+                <label>New Password <input name="newPassword" type="password" autocomplete="new-password" minlength="12" required /></label>
+                <label>Confirm New Password <input name="confirmPassword" type="password" autocomplete="new-password" minlength="12" required /></label>
+              </div>
+              <button type="submit">Change Password</button>
+              <p id="changePasswordStatus" class="form-status" role="status"></p>
+            </form>
             <button type="button" id="setupTwoFactor">Set Up Authenticator App</button>
             <div id="twoFactorSetup" hidden>
               <label>Authenticator Secret <input id="twoFactorSecret" readonly /></label>
@@ -2251,6 +2286,19 @@ function adminPage() {
           <button type="button" class="danger-text source-conflict-action" data-conflict-action="replace">Replace Others</button>
           <button type="button" class="secondary source-conflict-action" data-conflict-action="move">Move Selected</button>
         </div>
+      </form>
+    </dialog>
+    <dialog id="passwordDialog">
+      <form id="adminPasswordForm">
+        <div class="dialog-heading"><h2>Set User Password</h2><button type="button" class="icon-button" id="closePasswordDialog" aria-label="Close">&times;</button></div>
+        <input type="hidden" name="userId" />
+        <p id="passwordDialogUser" class="help-text"></p>
+        <label>New Password <input name="newPassword" type="password" autocomplete="new-password" minlength="12" required /></label>
+        <label>Confirm New Password <input name="confirmPassword" type="password" autocomplete="new-password" minlength="12" required /></label>
+        <label class="check-label"><input name="resetTwoFactor" type="checkbox" /> Reset authenticator-app enrollment</label>
+        <p class="help-text">All existing sessions for this user will be revoked.</p>
+        <p id="adminPasswordStatus" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button type="button" class="secondary" id="cancelPasswordDialog">Cancel</button><button type="submit">Set Password</button></div>
       </form>
     </dialog>
 
@@ -2596,6 +2644,30 @@ async function handleAuthApi(req, res, url) {
   }
   const viewer = currentViewer(req);
   if (!viewer) return json(res, 401, { error: "Authentication required." });
+  if (req.method === "POST" && url.pathname === "/api/auth/change-password") {
+    if (!csrfValid(req)) return json(res, 403, { error: "Invalid CSRF token." });
+    const body = await readBody(req);
+    if (!viewer.passwordHash || !await verifyPassword(body.currentPassword, viewer.passwordHash)) {
+      recordLoginAudit({ email: viewer.email, userId: viewer.id, outcome: "password-change-failed", req });
+      await saveData();
+      return json(res, 401, { error: "Current password is incorrect." });
+    }
+    if (body.newPassword !== body.confirmPassword) return validationError(res, "New passwords do not match.");
+    try {
+      viewer.passwordHash = await hashPassword(body.newPassword);
+    } catch (error) {
+      return validationError(res, error.message);
+    }
+    const current = currentSession(req);
+    for (const session of db.sessions) {
+      if (session.userId === viewer.id && session.id !== current?.id) session.revokedAt = new Date().toISOString();
+    }
+    viewer.updatedAt = new Date().toISOString();
+    addAudit("user.password.change", { userId: viewer.id });
+    recordLoginAudit({ email: viewer.email, userId: viewer.id, outcome: "password-changed", req });
+    await saveData();
+    return json(res, 200, { changed: true });
+  }
   const authSessionMatch = url.pathname.match(/^\/api\/auth\/sessions\/([^/]+)$/);
   if (req.method === "DELETE" && authSessionMatch) {
     if (!csrfValid(req)) return json(res, 403, { error: "Invalid CSRF token." });
@@ -3782,6 +3854,38 @@ async function handleApi(req, res, url) {
     addAudit("user.feature-grant.delete", { grantId: grant.id, userId: user.id });
     await saveData();
     return json(res, 200, { deleted: true });
+  }
+  const userPasswordMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/password$/);
+  if (req.method === "POST" && userPasswordMatch) {
+    const viewer = currentViewer(req);
+    if (!viewerIsSystemAdmin(viewer)) return json(res, 403, { error: "System Administrator access is required." });
+    const user = db.users.find(item => item.id === userPasswordMatch[1]);
+    if (!user) return json(res, 404, { error: "User not found" });
+    const body = await readBody(req);
+    if (body.newPassword !== body.confirmPassword) return validationError(res, "New passwords do not match.");
+    try {
+      user.passwordHash = await hashPassword(body.newPassword);
+    } catch (error) {
+      return validationError(res, error.message);
+    }
+    if (user.status === "invited") user.status = "active";
+    user.updatedAt = new Date().toISOString();
+    if (body.resetTwoFactor === true) {
+      user.twoFactorEnabled = false;
+      user.encryptedTwoFactorSecret = "";
+      user.encryptedPendingTwoFactorSecret = "";
+    }
+    for (const session of db.sessions) {
+      if (session.userId === user.id) session.revokedAt = new Date().toISOString();
+    }
+    addAudit("user.password.admin-set", {
+      userId: user.id,
+      resetTwoFactor: body.resetTwoFactor === true,
+      actorUserId: viewer.id
+    });
+    recordLoginAudit({ email: user.email, userId: user.id, outcome: "password-admin-set", req, details: { actorUserId: viewer.id } });
+    await saveData();
+    return json(res, 200, publicUser(user));
   }
   if (req.method === "POST" && url.pathname === "/api/broadcast-templates") {
     if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required." });

@@ -4,6 +4,8 @@ const entityDialog = document.querySelector("#entityDialog");
 const entityForm = document.querySelector("#entityForm");
 const conflictDialog = document.querySelector("#conflictDialog");
 const conflictActionForm = document.querySelector("#conflictActionForm");
+const passwordDialog = document.querySelector("#passwordDialog");
+const adminPasswordForm = document.querySelector("#adminPasswordForm");
 
 async function api(path, options = {}) {
   const csrfToken = state?.viewer?.csrfToken || "";
@@ -172,7 +174,25 @@ function renderKioskDevices() {
   document.querySelector("#kioskDeviceSummary").innerHTML = healthCounts.map(item => `
     <article><span>${escapeHtml(item.status)}</span><strong>${item.count}</strong></article>
   `).join("");
-  document.querySelector("#kioskDeviceList").innerHTML = state.kioskDevices.map(device => {
+  const roomFilter = document.querySelector("#kioskDeviceRoomFilter");
+  const selectedRoom = roomFilter.value;
+  const deviceRoomIds = new Set(state.kioskDevices.map(device => device.roomId));
+  roomFilter.innerHTML = `<option value="">All rooms</option>${state.rooms
+    .filter(room => deviceRoomIds.has(room.id))
+    .map(room => `<option value="${escapeHtml(room.id)}">${escapeHtml(room.name)} - ${escapeHtml(room.buildingName)}</option>`)
+    .join("")}`;
+  roomFilter.value = selectedRoom;
+  const search = document.querySelector("#kioskDeviceSearch").value.trim().toLowerCase();
+  const registrationStatus = document.querySelector("#kioskDeviceStatusFilter").value;
+  const healthStatus = document.querySelector("#kioskDeviceHealthFilter").value;
+  const devices = state.kioskDevices.filter(device => {
+    const haystack = `${device.name} ${device.roomName} ${device.deviceType} ${device.browser} ${device.platform} ${device.lastIpAddress}`.toLowerCase();
+    return (!search || haystack.includes(search))
+      && (!roomFilter.value || device.roomId === roomFilter.value)
+      && (!registrationStatus || device.status === registrationStatus)
+      && (!healthStatus || device.healthStatus === healthStatus);
+  });
+  document.querySelector("#kioskDeviceList").innerHTML = devices.map(device => {
     return `<article class="entity-item kiosk-device-item">
       <div>
         <strong>${escapeHtml(device.name || device.roomName)}</strong>
@@ -192,7 +212,7 @@ function renderKioskDevices() {
         ${device.status === "revoked" ? `<button type="button" class="danger-text" data-delete-device="${escapeHtml(device.id)}">Remove Record</button>` : ""}
       </div>
     </article>`;
-  }).join("") || `<p class="empty-state">No kiosk devices have registered yet.</p>`;
+  }).join("") || `<p class="empty-state">No kiosk devices match these filters.</p>`;
 }
 
 function renderBroadcastTemplates() {
@@ -417,6 +437,7 @@ function renderUsers() {
       <td><div class="row-actions">
         <button type="button" class="secondary" data-edit="user" data-id="${escapeHtml(user.id)}">Edit</button>
         <button type="button" class="secondary" data-invite-user="${escapeHtml(user.id)}">Send Invite</button>
+        ${state.viewer.isSystemAdmin ? `<button type="button" class="secondary" data-set-user-password="${escapeHtml(user.id)}">Set Password</button>` : ""}
       </div></td>
     </tr>
   `).join("");
@@ -1174,6 +1195,58 @@ async function revokeSession(sessionId) {
   await load();
 }
 
+async function changePassword(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const status = document.querySelector("#changePasswordStatus");
+  const values = Object.fromEntries(new FormData(form));
+  if (values.newPassword !== values.confirmPassword) {
+    status.textContent = "New passwords do not match.";
+    return;
+  }
+  status.textContent = "Changing password...";
+  try {
+    await api("/api/auth/change-password", { method: "POST", body: JSON.stringify(values) });
+    form.reset();
+    status.textContent = "Password changed. Other signed-in sessions were revoked.";
+    await load();
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+function openPasswordDialog(userId) {
+  const user = state.users.find(item => item.id === userId);
+  if (!user) return;
+  adminPasswordForm.reset();
+  adminPasswordForm.elements.userId.value = user.id;
+  document.querySelector("#passwordDialogUser").textContent = `${user.name} (${user.email})`;
+  document.querySelector("#adminPasswordStatus").textContent = "";
+  passwordDialog.showModal();
+}
+
+async function setUserPassword(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = Object.fromEntries(new FormData(form));
+  const status = document.querySelector("#adminPasswordStatus");
+  if (values.newPassword !== values.confirmPassword) {
+    status.textContent = "New passwords do not match.";
+    return;
+  }
+  values.resetTwoFactor = form.elements.resetTwoFactor.checked;
+  try {
+    await api(`/api/users/${values.userId}/password`, {
+      method: "POST",
+      body: JSON.stringify(values)
+    });
+    passwordDialog.close();
+    await load();
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
 async function setupTwoFactor() {
   const status = document.querySelector("#twoFactorStatus");
   try {
@@ -1903,17 +1976,29 @@ document.querySelectorAll("[data-tab]").forEach(button => {
   });
 });
 
+document.querySelectorAll("[data-calendar-tab]").forEach(button => {
+  button.addEventListener("click", () => {
+    document.querySelectorAll("[data-calendar-tab]").forEach(item => item.classList.toggle("active", item === button));
+    document.querySelectorAll("[data-calendar-panel]").forEach(panel => panel.classList.toggle("active", panel.dataset.calendarPanel === button.dataset.calendarTab));
+  });
+});
+
 document.querySelector("#roomSearch").addEventListener("input", renderDashboardRows);
 document.querySelector("#dashboardCenterFilter").addEventListener("change", renderDashboardRows);
 document.querySelector("#dashboardStatusFilter").addEventListener("change", renderDashboardRows);
 document.querySelector("#refreshDashboard").addEventListener("click", load);
 document.querySelector("#setupTwoFactor").addEventListener("click", setupTwoFactor);
 document.querySelector("#confirmTwoFactorForm").addEventListener("submit", confirmTwoFactor);
+document.querySelector("#changePasswordForm").addEventListener("submit", changePassword);
 document.querySelector("#logoutButton").addEventListener("click", async () => {
   await api("/api/auth/logout", { method: "POST", body: "{}" });
   window.location.assign("/login");
 });
 document.querySelector("#refreshKioskDevices").addEventListener("click", load);
+document.querySelector("#kioskDeviceSearch").addEventListener("input", renderKioskDevices);
+document.querySelector("#kioskDeviceRoomFilter").addEventListener("change", renderKioskDevices);
+document.querySelector("#kioskDeviceStatusFilter").addEventListener("change", renderKioskDevices);
+document.querySelector("#kioskDeviceHealthFilter").addEventListener("change", renderKioskDevices);
 document.querySelector("#userSearch").addEventListener("input", renderUsers);
 document.querySelector("#userStatusFilter").addEventListener("change", renderUsers);
 document.querySelector("#smtpForm").addEventListener("submit", saveSmtpSettings);
@@ -1975,6 +2060,9 @@ document.querySelector("#cancelBroadcastEdit").addEventListener("click", resetBr
 document.querySelector("#closeDialog").addEventListener("click", () => entityDialog.close());
 document.querySelector("#cancelDialog").addEventListener("click", () => entityDialog.close());
 document.querySelector("#closeConflictDialog").addEventListener("click", () => conflictDialog.close());
+document.querySelector("#closePasswordDialog").addEventListener("click", () => passwordDialog.close());
+document.querySelector("#cancelPasswordDialog").addEventListener("click", () => passwordDialog.close());
+adminPasswordForm.addEventListener("submit", setUserPassword);
 conflictActionForm.addEventListener("change", event => {
   if (event.target.name === "selectedExternalEventId") updateConflictActionAvailability();
 });
@@ -1998,6 +2086,8 @@ document.addEventListener("click", event => {
   if (cloneButton) return cloneTheme(cloneButton.dataset.cloneTheme);
   const inviteButton = event.target.closest("[data-invite-user]");
   if (inviteButton) return inviteUser(inviteButton.dataset.inviteUser);
+  const setPasswordButton = event.target.closest("[data-set-user-password]");
+  if (setPasswordButton) return openPasswordDialog(setPasswordButton.dataset.setUserPassword);
   const deleteFeatureGrantButton = event.target.closest("[data-delete-feature-grant]");
   if (deleteFeatureGrantButton) return deleteFeatureGrant(deleteFeatureGrantButton.dataset.deleteFeatureGrant);
   const revokeSessionButton = event.target.closest("[data-revoke-session]");
