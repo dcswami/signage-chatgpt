@@ -892,6 +892,29 @@ function eventDisplayTitle(event) {
     : event.originalTitle || event.title || "Untitled Event";
 }
 
+function calendarEventSummary(events, now = new Date()) {
+  const nowMs = now.getTime();
+  const valid = events.filter(event =>
+    Number.isFinite(new Date(event.startsAt).getTime())
+    && Number.isFinite(new Date(event.endsAt).getTime())
+  );
+  const chronological = [...valid].sort((left, right) => left.startsAt.localeCompare(right.startsAt));
+  const future = chronological.filter(event => new Date(event.startsAt).getTime() > nowMs);
+  return {
+    eventCount: valid.length,
+    invalidEventCount: events.length - valid.length,
+    pastEventCount: valid.filter(event => new Date(event.endsAt).getTime() <= nowMs).length,
+    currentEventCount: valid.filter(event =>
+      new Date(event.startsAt).getTime() <= nowMs
+      && new Date(event.endsAt).getTime() > nowMs
+    ).length,
+    futureEventCount: future.length,
+    firstEventAt: chronological[0]?.startsAt || null,
+    lastEventAt: chronological.at(-1)?.endsAt || null,
+    nextEventAt: future[0]?.startsAt || null
+  };
+}
+
 function detectRoomConflicts(roomId, events) {
   const previous = new Map(db.calendarConflicts.filter(item => item.roomId === roomId).map(item => [item.id, item]));
   const sorted = [...events].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
@@ -999,6 +1022,7 @@ async function syncAssignment(assignment) {
       new Date(startedAt.getTime() - 30 * 24 * 60 * 60 * 1000),
       new Date(startedAt.getTime() + 30 * 24 * 60 * 60 * 1000)
     );
+    const summary = calendarEventSummary(events, startedAt);
     db.calendarEvents = db.calendarEvents.filter(item => item.roomId !== room.id || item.assignmentId !== assignment.id);
     db.calendarEvents.push(...events.map(event => ({ ...event, id: entityId("calendar-event"), assignmentId: assignment.id, roomId: room.id, provider: account.provider })));
     assignment.lastSuccessfulSyncAt = new Date().toISOString();
@@ -1012,12 +1036,14 @@ async function syncAssignment(assignment) {
       roomId: room.id,
       accountId: account.id,
       status: "success",
-      eventCount: events.length,
+      ...summary,
       createdAt: new Date().toISOString()
     });
     refreshRoomEvents(room.id);
+    summary.displayedUpcomingEventCount = db.upcomingEvents.filter(item => item.roomId === room.id).length;
+    db.calendarSyncHistory[0].displayedUpcomingEventCount = summary.displayedUpcomingEventCount;
     notifyRoom(room.code);
-    return { eventCount: events.length };
+    return summary;
   } catch (error) {
     assignment.lastSyncError = cleanText(error.message, 500);
     account.lastSyncError = assignment.lastSyncError;

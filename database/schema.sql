@@ -256,6 +256,14 @@ CREATE TABLE IF NOT EXISTS calendar_sync_history (
   calendar_account_id uuid REFERENCES calendar_accounts(id) ON DELETE SET NULL,
   status text NOT NULL CHECK (status IN ('success', 'failed')),
   event_count integer,
+  invalid_event_count integer,
+  past_event_count integer,
+  current_event_count integer,
+  future_event_count integer,
+  displayed_upcoming_event_count integer,
+  first_event_at timestamptz,
+  last_event_at timestamptz,
+  next_event_at timestamptz,
   error text,
   created_at timestamptz NOT NULL DEFAULT now()
 );

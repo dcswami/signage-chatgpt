@@ -484,7 +484,10 @@ function renderCalendars() {
   document.querySelector("#calendarSyncRows").innerHTML = state.calendarSyncHistory.map(item => {
     const room = state.rooms.find(roomItem => roomItem.id === item.roomId);
     const account = state.calendarAccounts.find(accountItem => accountItem.id === item.accountId);
-    return `<tr><td>${new Date(item.createdAt).toLocaleString()}</td><td>${escapeHtml(room?.name || "Unknown")}</td><td>${escapeHtml(account?.accountName || "Unknown")}</td><td><span class="status-pill email-${item.status === "success" ? "sent" : "failed"}">${escapeHtml(item.status)}</span>${item.error ? `<span class="subtle">${escapeHtml(item.error)}</span>` : ""}</td><td>${item.eventCount ?? "-"}</td></tr>`;
+    const eventSummary = item.status === "success"
+      ? `<strong>${item.eventCount ?? 0} total</strong><span class="subtle">${item.futureEventCount ?? 0} upcoming · ${item.currentEventCount ?? 0} active · ${item.pastEventCount ?? 0} past</span><span class="subtle">${item.displayedUpcomingEventCount ?? item.futureEventCount ?? 0} projected to signage</span>${item.nextEventAt ? `<span class="subtle">Next: ${escapeHtml(new Date(item.nextEventAt).toLocaleString())}</span>` : `<span class="subtle">No future event found in the next 30 days.</span>`}${item.firstEventAt && item.lastEventAt ? `<span class="subtle">Imported range: ${escapeHtml(new Date(item.firstEventAt).toLocaleString())} - ${escapeHtml(new Date(item.lastEventAt).toLocaleString())}</span>` : ""}`
+      : "-";
+    return `<tr><td>${new Date(item.createdAt).toLocaleString()}</td><td>${escapeHtml(room?.name || "Unknown")}</td><td>${escapeHtml(account?.accountName || "Unknown")}</td><td><span class="status-pill email-${item.status === "success" ? "sent" : "failed"}">${escapeHtml(item.status)}</span>${item.error ? `<span class="subtle">${escapeHtml(item.error)}</span>` : ""}</td><td>${eventSummary}</td></tr>`;
   }).join("") || `<tr><td colspan="5" class="empty-state">No calendar sync history yet.</td></tr>`;
 
   document.querySelector("#calendarConflictList").innerHTML = state.calendarConflicts.map(conflict => {
@@ -1133,7 +1136,7 @@ async function saveCalendarAssignment(event) {
   try {
     const result = await api(`/api/calendar-assignments/${assignment.id}/sync`, { method: "POST", body: "{}" });
     await load();
-    alert(`Calendar assigned and synchronized. ${result.eventCount} events loaded.`);
+    alert(calendarSyncMessage("Calendar assigned and synchronized.", result));
   } catch (error) {
     await load();
     alert(`Calendar was assigned, but the first sync failed.\n\n${error.message}`);
@@ -1144,11 +1147,18 @@ async function syncCalendarAssignment(assignmentId) {
   try {
     const result = await api(`/api/calendar-assignments/${assignmentId}/sync`, { method: "POST", body: "{}" });
     await load();
-    alert(`Calendar synchronized. ${result.eventCount} events loaded.`);
+    alert(calendarSyncMessage("Calendar synchronized.", result));
   } catch (error) {
     await load();
     alert(error.message);
   }
+}
+
+function calendarSyncMessage(prefix, result) {
+  const nextLine = result.nextEventAt
+    ? `Next event: ${new Date(result.nextEventAt).toLocaleString()}`
+    : "No future event was found in the next 30 days.";
+  return `${prefix}\n\n${result.eventCount} total events loaded\n${result.futureEventCount} upcoming · ${result.currentEventCount} active · ${result.pastEventCount} past\n${result.displayedUpcomingEventCount} projected to signage\n${nextLine}`;
 }
 
 async function discoverCalendars(accountId) {

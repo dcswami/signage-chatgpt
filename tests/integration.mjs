@@ -250,6 +250,11 @@ try {
   }, 201);
   const syncResult = await request(`/api/calendar-assignments/${calendarAssignment.id}/sync`, { method: "POST", body: "{}" });
   assert.equal(syncResult.eventCount, 7);
+  assert.equal(syncResult.futureEventCount, 7);
+  assert.equal(syncResult.currentEventCount, 0);
+  assert.equal(syncResult.pastEventCount, 0);
+  assert.equal(syncResult.displayedUpcomingEventCount, 7);
+  assert.equal(Boolean(syncResult.nextEventAt), true);
   const syncedRoom = await request("/api/rooms/integration-room");
   assert.equal(syncedRoom.upcomingEvents[0].title, "Private Event");
   assert.equal(syncedRoom.upcomingEvents[0].description, "");
