@@ -33,6 +33,10 @@ The Signage Management System provides room-facing digital signage for classroom
 - Roles must control access to management portal modules and actions.
 - Permissions should include view, create, edit, delete, approve, broadcast, and manage settings.
 - Administrators must be able to assign users to one or more roles.
+- Only System Administrators may create, clone, edit, deactivate, or delete role definitions.
+- System Administrators may create users and assign any role to any user.
+- Center Administrators may create users within their assigned center scope.
+- Center Administrators may assign only roles and feature access at or below their own permission and feature level.
 - Administrators must be able to scope user access by center, campus, building, or room.
 - A user may belong to and receive access for multiple centers.
 
@@ -230,7 +234,8 @@ The management portal must provide secure administrative access to configure the
 
 ### 5.6 Role Management
 
-- Create, edit, deactivate, and view roles.
+- System Administrators may create, edit, deactivate, delete, clone, and view roles.
+- Non-System Administrators may view role names for assignment and user review, but may not change role definitions.
 - Configure permissions by module and action.
 - Support default system roles.
 - Allow System Administrators to clone roles.
@@ -668,6 +673,7 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Optional device registration must add health monitoring, orientation, browser/platform details, last contact, last successful data time, audio status, and remote refresh/reload controls.
 - A new device must display a six-digit pairing code and remain pending until approved.
 - System Administrators and Center Administrators responsible for the room's center may approve pairing.
+- Center Administrators may approve only kiosk devices assigned to rooms in their own center scope.
 - Registration must generate a high-entropy device token, return it only to the physical kiosk, store only a one-way token hash, and validate subsequent heartbeats using timing-safe comparison.
 - Device health is online when the last check-in is within two minutes, stale after two minutes, and offline after ten minutes.
 - The management portal must show device name, assigned room, device type, browser, platform, viewport, orientation, last IP address, audio state, last contact, and last successful data time.

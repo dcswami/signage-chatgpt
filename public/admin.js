@@ -442,6 +442,9 @@ function renderThemeSchedules() {
 }
 
 function renderUsersRoles() {
+  const panel = document.querySelector("#roleEditorPanel");
+  panel.hidden = !state.viewer.isSystemAdmin;
+  if (panel.hidden) return;
   document.querySelector("#roleManagerList").innerHTML = state.roles.map(role => `
     <article class="entity-item">
       <div><strong>${escapeHtml(role.name)}</strong><span>${role.builtIn ? "Built-in" : "Custom"} / ${role.active ? "Active" : "Inactive"} / ${role.permissions.length} permissions</span></div>

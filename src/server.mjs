@@ -1076,7 +1076,7 @@ function viewerCanAccessTheme(user, theme) {
 
 function viewerCanPairRoom(user, room) {
   return viewerIsSystemAdmin(user)
-    || (user?.roleIds?.includes("center-admin") && user?.centerIds?.includes(room.centerId));
+    || (viewerPermissions(user).has("center.manage") && user?.centerIds?.includes(room.centerId));
 }
 
 function requirePermission(req, res, permission) {
@@ -2365,7 +2365,7 @@ function adminPage() {
               <button type="submit" class="secondary">Send Test SMS</button>
             </form>
           </section>
-          <section class="panel span-2">
+          <section class="panel span-2" id="roleEditorPanel">
             <div class="panel-heading"><div><h2>Permission & Role Editor</h2><p>Configure module and action permissions, clone roles, and protect assignments.</p></div><button type="button" data-new="role">New Role</button></div>
             <div id="roleManagerList" class="entity-list"></div>
           </section>
@@ -3204,12 +3204,11 @@ async function handleApi(req, res, url) {
       .map(publicBroadcast));
   }
   if (req.method === "POST" && url.pathname === "/api/roles") {
-    if (!requirePermission(req, res, "role.manage")) return;
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required to create roles." });
     const body = await readBody(req);
     const name = cleanText(body.name);
     const permissions = Array.isArray(body.permissions) ? [...new Set(body.permissions)].filter(item => permissionCatalog.includes(item)) : [];
     if (!name) return validationError(res, "Role name is required.");
-    if (!rolePermissionsAllowed(currentViewer(req), permissions)) return json(res, 403, { error: "One or more permissions exceed your access." });
     const role = { id: entityId("role"), name, builtIn: false, cloneable: true, active: body.active !== false, permissions };
     db.roles.push(role);
     addAudit("role.create", { roleId: role.id, name });
@@ -3218,21 +3217,20 @@ async function handleApi(req, res, url) {
   }
   const roleMatch = url.pathname.match(/^\/api\/roles\/([^/]+)$/);
   if (req.method === "PUT" && roleMatch) {
-    if (!requirePermission(req, res, "role.manage")) return;
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required to change roles." });
     const role = db.roles.find(item => item.id === roleMatch[1]);
     if (!role) return json(res, 404, { error: "Role not found" });
     const body = await readBody(req);
     const name = cleanText(body.name);
     const permissions = Array.isArray(body.permissions) ? [...new Set(body.permissions)].filter(item => permissionCatalog.includes(item)) : [];
     if (!name) return validationError(res, "Role name is required.");
-    if (!rolePermissionsAllowed(currentViewer(req), permissions)) return json(res, 403, { error: "One or more permissions exceed your access." });
     Object.assign(role, { name, permissions, active: body.active !== false });
     addAudit("role.update", { roleId: role.id, name });
     await saveData();
     return json(res, 200, role);
   }
   if (req.method === "DELETE" && roleMatch) {
-    if (!requirePermission(req, res, "role.manage")) return;
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required to delete roles." });
     const role = db.roles.find(item => item.id === roleMatch[1]);
     if (!role) return json(res, 404, { error: "Role not found" });
     if (role.builtIn) return json(res, 409, { error: "Built-in roles cannot be deleted." });
@@ -3246,10 +3244,9 @@ async function handleApi(req, res, url) {
   }
   const roleCloneMatch = url.pathname.match(/^\/api\/roles\/([^/]+)\/clone$/);
   if (req.method === "POST" && roleCloneMatch) {
-    if (!requirePermission(req, res, "role.manage")) return;
+    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required to clone roles." });
     const source = db.roles.find(item => item.id === roleCloneMatch[1]);
     if (!source) return json(res, 404, { error: "Role not found" });
-    if (!rolePermissionsAllowed(currentViewer(req), source.permissions || [])) return json(res, 403, { error: "This role exceeds your access." });
     const body = await readBody(req);
     const role = {
       ...structuredClone(source),
