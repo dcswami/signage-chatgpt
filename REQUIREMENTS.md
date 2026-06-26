@@ -40,11 +40,16 @@ The Signage Management System provides room-facing digital signage for classroom
 
 - The system must allow administrators to grant feature access to individual users.
 - User feature access grants must support the following feature groups:
-  - G1. Calendar Sync.
-  - G2. Calendar Event Conflict Resolution.
-  - G3. Front End Theme and Style Management.
-  - G4. Notifications.
-  - G5. Emergency & Safety Broadcast.
+  - Calendar Sync.
+  - Calendar Event Conflict Resolution.
+  - Theme Editor.
+  - Theme Scheduler.
+  - Notifications.
+  - Emergency & Safety Broadcast.
+- Users must only see management menu items, pages, tabs, and page actions for features specifically assigned to them.
+- Calendar Sync controls must be shown only to users with Calendar Sync access.
+- Calendar Conflict Resolution controls must be shown only to users with Calendar Event Conflict Resolution access.
+- Theme Editor and Theme Scheduler must be separate feature grants.
 - Feature access grants must work with role permissions and location scope.
 - A user must only be able to use a granted feature for the centers, campuses, buildings, or rooms assigned by role or explicit access scope.
 - Administrators must be able to view which users have access to each feature.
@@ -238,7 +243,7 @@ The management portal must provide secure administrative access to configure the
 
 - Enable or disable system features by center, campus, building, room, or role.
 - Grant or revoke feature access for individual users.
-- Support feature flags for calendar sync, conflict resolution, theme management, notifications, and emergency broadcasts.
+- Support feature flags for calendar sync, conflict resolution, theme editing, theme scheduling, notifications, and emergency broadcasts.
 - Show enabled and disabled status clearly in the management portal.
 - Restrict feature configuration to authorized administrators.
 - Support scheduled activation and expiration for feature access when needed.
@@ -310,7 +315,7 @@ The management portal must provide secure administrative access to configure the
 - Center name, building name, room name, current time, room status, QR code, and upcoming-event structure must remain constant across center default themes.
 - Themes and templates may be assigned at center, campus, building, or room level.
 - Lower-level themes should be able to inherit or override higher-level defaults.
-- Event-based templates may use a different logo image when authorized through feature G3.
+- Event-based templates may use a different logo image when authorized through Theme Editor access.
 - Administrators must be able to preview themes before publishing.
 - Theme preview must allow selection of an eligible room and Available, Busy, or Buffer/Warning display state.
 - Published theme changes must update kiosk displays without redeploying application code.
@@ -318,8 +323,8 @@ The management portal must provide secure administrative access to configure the
 - Scheduled themes must temporarily override the room theme configured in Room Management.
 - Theme schedules must include start and end times, target entities, selected theme, owner, creation time, and update time.
 - The portal must show active/future schedules and completed schedules from the previous two years.
-- Schedule creation and editing must respect the user's assigned location scope and theme-management permission.
-- The system must allow authorized users to create, update, clone, publish, archive, and restore kiosk templates through feature G3.
+- Schedule creation and editing must respect the user's assigned location scope and Theme Scheduler permission.
+- The system must allow authorized users to create, update, clone, publish, archive, and restore kiosk templates through Theme Editor access.
 - Administrators must be able to clone kiosk templates.
 - Google Fonts may be used by kiosk templates when the selected font is approved and available to the kiosk display.
 - Colors, fonts, spacing rules, and accessibility contrast requirements must be configurable by template.
@@ -876,7 +881,7 @@ The initial release should include:
 - An authorized user can open detailed conflict review and apply Ignore, Resolve, Cancel, Replace, or Move according to source access.
 - Unresolved conflicts display one deterministic event on kiosks.
 - Conflict decision history identifies the acting user and is retained for six months.
-- An administrator can grant and revoke a user's access to Calendar Sync, Calendar Event Conflict Resolution, Front End Theme and Style Management, Notifications, and Emergency & Safety Broadcast.
+- An administrator can grant and revoke a user's access to Calendar Sync, Calendar Event Conflict Resolution, Theme Editor, Theme Scheduler, Notifications, and Emergency & Safety Broadcast.
 - A System Administrator can clone and modify roles.
 - A user can belong to multiple centers.
 - An authorized user can create an emergency broadcast.

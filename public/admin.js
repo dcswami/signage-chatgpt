@@ -46,6 +46,56 @@ function optionList(items, selectedId, label = item => item.name) {
   return items.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === selectedId ? "selected" : ""}>${escapeHtml(label(item))}</option>`).join("");
 }
 
+function hasFeature(feature) {
+  return Boolean(state?.viewer?.isSystemAdmin || state?.viewer?.features?.includes(feature));
+}
+
+function hasAnyFeature(features) {
+  return features.some(feature => hasFeature(feature));
+}
+
+function elementAllowed(element) {
+  if (element.dataset.feature && !hasFeature(element.dataset.feature)) return false;
+  if (element.dataset.anyFeature && !hasAnyFeature(element.dataset.anyFeature.split("|"))) return false;
+  return true;
+}
+
+function activateTab(tabName) {
+  const button = Array.from(document.querySelectorAll("[data-tab]"))
+    .find(item => item.dataset.tab === tabName && !item.hidden);
+  if (!button) return;
+  document.querySelectorAll("[data-tab]").forEach(item => item.classList.toggle("active", item === button));
+  document.querySelectorAll("[data-panel]").forEach(panel => panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab && !panel.hidden));
+}
+
+function activateCalendarTab(tabName) {
+  const button = Array.from(document.querySelectorAll("[data-calendar-tab]"))
+    .find(item => item.dataset.calendarTab === tabName && !item.hidden);
+  if (!button) return;
+  document.querySelectorAll("[data-calendar-tab]").forEach(item => item.classList.toggle("active", item === button));
+  document.querySelectorAll("[data-calendar-panel]").forEach(panel => panel.classList.toggle("active", panel.dataset.calendarPanel === button.dataset.calendarTab && !panel.hidden));
+}
+
+function applyFeatureVisibility() {
+  document.querySelectorAll("[data-feature], [data-any-feature]").forEach(element => {
+    element.hidden = !elementAllowed(element);
+  });
+  const activeTab = document.querySelector("[data-tab].active");
+  if (!activeTab || activeTab.hidden) {
+    const firstVisible = Array.from(document.querySelectorAll("[data-tab]")).find(item => !item.hidden);
+    if (firstVisible) activateTab(firstVisible.dataset.tab);
+  } else {
+    activateTab(activeTab.dataset.tab);
+  }
+  const activeCalendarTab = document.querySelector("[data-calendar-tab].active");
+  if (!activeCalendarTab || activeCalendarTab.hidden) {
+    const firstVisibleCalendarTab = Array.from(document.querySelectorAll("[data-calendar-tab]")).find(item => !item.hidden);
+    if (firstVisibleCalendarTab) activateCalendarTab(firstVisibleCalendarTab.dataset.calendarTab);
+  } else {
+    activateCalendarTab(activeCalendarTab.dataset.calendarTab);
+  }
+}
+
 function centerName(id) {
   return state.centers.find(item => item.id === id)?.name || "Unknown center";
 }
@@ -755,7 +805,8 @@ function renderCalendarChoices() {
 
 function renderBroadcastHistory() {
   const panel = document.querySelector("#broadcastHistoryPanel");
-  panel.hidden = !state.viewer.isSystemAdmin && !state.viewer.permissions.includes("broadcast.history.view");
+  panel.hidden = !hasFeature("Emergency & Safety Broadcast")
+    || (!state.viewer.isSystemAdmin && !state.viewer.permissions.includes("broadcast.history.view"));
   if (panel.hidden) return;
   document.querySelector("#broadcastHistoryRows").innerHTML = state.broadcastHistory.map(item => `
     <tr>
@@ -1997,6 +2048,7 @@ async function deleteThemeSchedule(scheduleId) {
 function render() {
   document.querySelector("#currentUserName").textContent = state.viewer.name;
   document.querySelector("#storageBadge").textContent = state.storageType === "postgresql-normalized" ? "PostgreSQL" : "Local JSON";
+  applyFeatureVisibility();
   document.querySelector("#twoFactorCurrentStatus").textContent = state.viewer.twoFactorEnabled
     ? `Enabled using ${state.viewer.twoFactorMethod === "sms" ? `SMS to ${state.viewer.phoneNumber}` : "an authenticator app"}.`
     : "Not enabled.";
@@ -2048,15 +2100,15 @@ async function load() {
 
 document.querySelectorAll("[data-tab]").forEach(button => {
   button.addEventListener("click", () => {
-    document.querySelectorAll("[data-tab]").forEach(item => item.classList.toggle("active", item === button));
-    document.querySelectorAll("[data-panel]").forEach(panel => panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab));
+    if (button.hidden) return;
+    activateTab(button.dataset.tab);
   });
 });
 
 document.querySelectorAll("[data-calendar-tab]").forEach(button => {
   button.addEventListener("click", () => {
-    document.querySelectorAll("[data-calendar-tab]").forEach(item => item.classList.toggle("active", item === button));
-    document.querySelectorAll("[data-calendar-panel]").forEach(panel => panel.classList.toggle("active", panel.dataset.calendarPanel === button.dataset.calendarTab));
+    if (button.hidden) return;
+    activateCalendarTab(button.dataset.calendarTab);
   });
 });
 

@@ -65,6 +65,16 @@ const permissionCatalog = [
   "settings.manage"
 ];
 
+const legacyThemeFeature = "Front End Theme and Style Management";
+const systemFeatures = [
+  "Calendar Sync",
+  "Calendar Event Conflict Resolution",
+  "Theme Editor",
+  "Theme Scheduler",
+  "Notifications",
+  "Emergency & Safety Broadcast"
+];
+
 const defaultThemeTokens = {
   availableBg: "#9bd092",
   availableText: "#005d0d",
@@ -117,13 +127,7 @@ const seedData = {
       lastTestError: ""
     }
   },
-  features: [
-    "Calendar Sync",
-    "Calendar Event Conflict Resolution",
-    "Front End Theme and Style Management",
-    "Notifications",
-    "Emergency & Safety Broadcast"
-  ],
+  features: systemFeatures,
   centers: [
     {
       id: "center-la",
@@ -252,7 +256,8 @@ const seedData = {
       features: [
         "Calendar Sync",
         "Calendar Event Conflict Resolution",
-        "Front End Theme and Style Management",
+        "Theme Editor",
+        "Theme Scheduler",
         "Notifications",
         "Emergency & Safety Broadcast"
       ],
@@ -339,6 +344,19 @@ const seedData = {
   auditLogs: []
 };
 
+function normalizeFeatureList(features = []) {
+  const names = new Set();
+  for (const feature of features || []) {
+    if (feature === legacyThemeFeature) {
+      names.add("Theme Editor");
+      names.add("Theme Scheduler");
+      continue;
+    }
+    if (systemFeatures.includes(feature)) names.add(feature);
+  }
+  return [...names];
+}
+
 function normalizeData(data) {
   const normalized = {
     ...structuredClone(seedData),
@@ -360,6 +378,7 @@ function normalizeData(data) {
   for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "sessions", "passwordResetTokens", "oauthStates", "featureGrants", "calendarAccounts", "calendarAssignments", "calendarEvents", "calendarConflicts", "calendarConflictHistory", "calendarSyncHistory", "themeSchedules", "roomGroups", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "notifications", "kioskDevices", "kioskPairingCodes", "auditLogs", "loginAudit"]) {
     if (!Array.isArray(normalized[key])) normalized[key] = structuredClone(seedData[key] || []);
   }
+  normalized.features = systemFeatures;
   normalized.centers = normalized.centers.map(center => ({
     active: true,
     description: "",
@@ -422,30 +441,34 @@ function normalizeData(data) {
     ...theme,
     cssTokens: { ...defaultThemeTokens, ...theme.cssTokens }
   }));
-  normalized.users = normalized.users.map(user => ({
-    status: "active",
-    roleIds: [],
-    centerIds: [],
-    campusIds: [],
-    buildingIds: [],
-    roomIds: [],
-    features: [],
-    passwordHash: "",
-    twoFactorEnabled: false,
-    twoFactorMethod: "",
-    phoneNumber: "",
-    phoneVerifiedAt: null,
-    encryptedTwoFactorSecret: "",
-    encryptedPendingTwoFactorSecret: "",
-    pendingTwoFactorMethod: "",
-    pendingPhoneNumber: "",
-    pendingSmsCodeHash: "",
-    pendingSmsCodeExpiresAt: null,
-    invitedAt: null,
-    lastEmailAt: null,
-    ...user,
-    email: String(user.email || "").toLowerCase()
-  }));
+  normalized.users = normalized.users.map(user => {
+    const features = normalizeFeatureList(user.features);
+    return {
+      status: "active",
+      roleIds: [],
+      centerIds: [],
+      campusIds: [],
+      buildingIds: [],
+      roomIds: [],
+      features: [],
+      passwordHash: "",
+      twoFactorEnabled: false,
+      twoFactorMethod: "",
+      phoneNumber: "",
+      phoneVerifiedAt: null,
+      encryptedTwoFactorSecret: "",
+      encryptedPendingTwoFactorSecret: "",
+      pendingTwoFactorMethod: "",
+      pendingPhoneNumber: "",
+      pendingSmsCodeHash: "",
+      pendingSmsCodeExpiresAt: null,
+      invitedAt: null,
+      lastEmailAt: null,
+      ...user,
+      features,
+      email: String(user.email || "").toLowerCase()
+    };
+  });
   for (const role of seedData.roles) {
     const existing = normalized.roles.find(item => item.id === role.id);
     if (!existing) normalized.roles.push(structuredClone(role));
@@ -527,6 +550,15 @@ function normalizeData(data) {
     updatedAt: null,
     ...schedule
   }));
+  normalized.featureGrants = normalized.featureGrants.flatMap(grant =>
+    normalizeFeatureList([grant.featureName]).map(featureName => ({
+      ...grant,
+      id: grant.featureName === featureName
+        ? grant.id
+        : `${grant.id}-${featureName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`,
+      featureName
+    }))
+  );
   normalized.roomGroups = normalized.roomGroups.map(group => ({
     description: "",
     roomIds: [],
@@ -956,7 +988,6 @@ function viewerIsSystemAdmin(user) {
 const permissionFeatures = {
   "calendar.manage": "Calendar Sync",
   "calendar.sync": "Calendar Sync",
-  "theme.manage": "Front End Theme and Style Management",
   "notification.manage": "Notifications",
   "broadcast.publish": "Emergency & Safety Broadcast",
   "broadcast.template.manage": "Emergency & Safety Broadcast",
@@ -974,12 +1005,23 @@ function activeFeatureNames(user, now = Date.now()) {
   return names;
 }
 
+function viewerHasFeature(user, feature) {
+  return viewerIsSystemAdmin(user) || activeFeatureNames(user).has(feature);
+}
+
 function viewerHasPermission(req, permission) {
   const viewer = currentViewer(req);
   if (viewerIsSystemAdmin(viewer)) return true;
   if (!viewerPermissions(viewer).has(permission)) return false;
   const requiredFeature = permissionFeatures[permission];
-  return !requiredFeature || activeFeatureNames(viewer).has(requiredFeature);
+  return !requiredFeature || viewerHasFeature(viewer, requiredFeature);
+}
+
+function viewerHasRolePermission(user, permissions) {
+  if (viewerIsSystemAdmin(user)) return true;
+  const required = Array.isArray(permissions) ? permissions : [permissions];
+  const available = viewerPermissions(user);
+  return required.some(permission => available.has(permission));
 }
 
 function viewerCanAccessRoom(user, room) {
@@ -1044,6 +1086,28 @@ function requirePermission(req, res, permission) {
   }
   if (viewerHasPermission(req, permission)) return true;
   json(res, 403, { error: `Permission required: ${permission}` });
+  return false;
+}
+
+function requireFeature(req, res, feature) {
+  const viewer = currentViewer(req);
+  if (!viewer) {
+    json(res, 401, { error: "Authentication required." });
+    return false;
+  }
+  if (viewerHasFeature(viewer, feature)) return true;
+  json(res, 403, { error: `Feature access required: ${feature}` });
+  return false;
+}
+
+function requireRolePermission(req, res, permissions) {
+  const viewer = currentViewer(req);
+  if (!viewer) {
+    json(res, 401, { error: "Authentication required." });
+    return false;
+  }
+  if (viewerHasRolePermission(viewer, permissions)) return true;
+  json(res, 403, { error: `Permission required: ${Array.isArray(permissions) ? permissions.join(" or ") : permissions}` });
   return false;
 }
 
@@ -1509,7 +1573,7 @@ function broadcastRecipientUsers(broadcast) {
   const roomIds = new Set(broadcastTargetRooms(broadcast).map(room => room.id));
   return db.users.filter(user =>
     user.status === "active"
-    && (viewerIsSystemAdmin(user) || user.features?.includes("Notifications") || user.features?.includes("Emergency & Safety Broadcast"))
+    && (viewerIsSystemAdmin(user) || viewerHasFeature(user, "Notifications") || viewerHasFeature(user, "Emergency & Safety Broadcast"))
     && (viewerIsSystemAdmin(user) || db.rooms.some(room => roomIds.has(room.id) && viewerCanAccessRoom(user, room)))
   );
 }
@@ -1859,12 +1923,12 @@ function adminPage() {
         <button type="button" class="active" data-tab="dashboard">Dashboard</button>
         <button type="button" data-tab="locations">Locations & Rooms</button>
         <button type="button" data-tab="users">Users</button>
-        <button type="button" data-tab="calendars">Calendars</button>
+        <button type="button" data-tab="calendars" data-any-feature="Calendar Sync|Calendar Event Conflict Resolution">Calendars</button>
         <button type="button" data-tab="devices">Kiosk Devices</button>
-        <button type="button" data-tab="themes">Theme Editor</button>
-        <button type="button" data-tab="theme-scheduler">Theme Scheduler</button>
-        <button type="button" data-tab="notifications">Email Notifications</button>
-        <button type="button" data-tab="broadcast">Emergency Broadcast</button>
+        <button type="button" data-tab="themes" data-feature="Theme Editor">Theme Editor</button>
+        <button type="button" data-tab="theme-scheduler" data-feature="Theme Scheduler">Theme Scheduler</button>
+        <button type="button" data-tab="notifications" data-feature="Notifications">Email Notifications</button>
+        <button type="button" data-tab="broadcast" data-feature="Emergency & Safety Broadcast">Emergency Broadcast</button>
         <button type="button" data-tab="configuration">Configuration</button>
       </nav>
 
@@ -1954,13 +2018,13 @@ function adminPage() {
         </section>
       </section>
 
-      <section class="tab-panel" data-panel="calendars">
+      <section class="tab-panel" data-panel="calendars" data-any-feature="Calendar Sync|Calendar Event Conflict Resolution">
         <nav class="section-tabs" aria-label="Calendar sections">
-          <button type="button" class="active" data-calendar-tab="sync">Calendar Sync</button>
-          <button type="button" data-calendar-tab="assignment">Calendar Assignment</button>
-          <button type="button" data-calendar-tab="conflicts">Conflict Resolution</button>
+          <button type="button" class="active" data-calendar-tab="sync" data-feature="Calendar Sync">Calendar Sync</button>
+          <button type="button" data-calendar-tab="assignment" data-feature="Calendar Sync">Calendar Assignment</button>
+          <button type="button" data-calendar-tab="conflicts" data-feature="Calendar Event Conflict Resolution">Conflict Resolution</button>
         </nav>
-        <section class="calendar-subpanel active" data-calendar-panel="sync">
+        <section class="calendar-subpanel active" data-calendar-panel="sync" data-feature="Calendar Sync">
           <section class="panel">
             <div class="panel-heading">
               <div><h2>Calendar Accounts</h2><p>Google service accounts, Microsoft 365 applications, and public calendar URLs.</p></div>
@@ -1969,7 +2033,7 @@ function adminPage() {
             <div id="calendarAccountList" class="entity-list"></div>
           </section>
         </section>
-        <section class="calendar-subpanel" data-calendar-panel="assignment">
+        <section class="calendar-subpanel" data-calendar-panel="assignment" data-feature="Calendar Sync">
           <section class="panel">
             <div class="panel-heading"><div><h2>Room Calendar Assignment</h2><p>Each room maps to one calendar source in this release.</p></div></div>
             <form id="calendarAssignmentForm">
@@ -1988,7 +2052,7 @@ function adminPage() {
             </table></div>
           </section>
         </section>
-        <section class="calendar-subpanel" data-calendar-panel="conflicts">
+        <section class="calendar-subpanel" data-calendar-panel="conflicts" data-feature="Calendar Event Conflict Resolution">
           <section class="panel">
             <div class="panel-heading"><div><h2>Calendar Conflict Dashboard</h2><p>Review overlaps, choose deterministic signage behavior, or update writable Google and Microsoft calendars.</p></div></div>
             <div id="calendarConflictSummary" class="summary-grid compact-summary"></div>
@@ -2047,7 +2111,7 @@ function adminPage() {
         </section>
       </section>
 
-      <section class="tab-panel" data-panel="themes">
+      <section class="tab-panel" data-panel="themes" data-feature="Theme Editor">
         <section class="management-grid theme-editor-grid">
           <section class="panel">
             <div class="panel-heading"><div><h2>Themes</h2><p>Clone built-in themes, then edit and publish the custom copy.</p></div></div>
@@ -2093,7 +2157,7 @@ function adminPage() {
         </section>
       </section>
 
-      <section class="tab-panel" data-panel="theme-scheduler">
+      <section class="tab-panel" data-panel="theme-scheduler" data-feature="Theme Scheduler">
         <section class="panel">
           <div class="panel-heading"><div><h2>Schedule Theme Override</h2><p>Scheduled themes temporarily override each room's default theme.</p></div></div>
           <form id="themeScheduleForm">
@@ -2129,7 +2193,7 @@ function adminPage() {
         </section>
       </section>
 
-      <section class="tab-panel" data-panel="notifications">
+      <section class="tab-panel" data-panel="notifications" data-feature="Notifications">
         <section class="management-grid email-grid">
           <section class="panel">
             <div class="panel-heading"><div><h2>SMTP Settings</h2><p>Credentials are encrypted before storage and are never displayed again.</p></div></div>
@@ -2184,7 +2248,7 @@ function adminPage() {
         </section>
       </section>
 
-      <section class="tab-panel" data-panel="broadcast">
+      <section class="tab-panel" data-panel="broadcast" data-feature="Emergency & Safety Broadcast">
         <section class="panel broadcast-panel">
           <div class="panel-heading">
             <div><h2>Emergency & Safety Broadcast</h2><p>Prepared templates still require confirmation before publishing.</p></div>
@@ -2535,10 +2599,13 @@ function loginPage(message = "") {
       h1 { font-size: 28px; margin: 0 0 8px; }
       p { color: #58717c; line-height: 1.45; }
       form { display: grid; gap: 16px; margin-top: 24px; }
+      .step { display: grid; gap: 16px; }
       label { display: grid; font-size: 14px; font-weight: 700; gap: 7px; }
       input { border: 1px solid #9eb2ba; border-radius: 4px; font: inherit; padding: 12px; }
       button { background: #173848; border: 0; border-radius: 4px; color: #fff; font: 700 15px inherit; padding: 12px; }
+      button.secondary { background: #eef3f4; color: #173848; }
       a { color: #28657e; }
+      .account-summary { background: #eef3f4; border-radius: 4px; color: #173848; font-size: 14px; margin: 0; padding: 10px 12px; }
       #status { color: #9b2430; min-height: 20px; }
     </style>
   </head>
@@ -2547,18 +2614,41 @@ function loginPage(message = "") {
       <h1>Signage Management</h1>
       <p>Sign in with your assigned email address.</p>
       <form id="loginForm">
-        <label>Email <input name="email" type="email" autocomplete="username" required /></label>
-        <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
-        <label id="codeField" hidden><span id="codeLabel">Verification Code</span><input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" /></label>
+        <div id="passwordStep" class="step">
+          <label>Email <input name="email" type="email" autocomplete="username" required /></label>
+          <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
+        </div>
+        <div id="twoFactorStep" class="step" hidden>
+          <p id="accountSummary" class="account-summary"></p>
+          <label><span id="codeLabel">Verification Code</span><input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" /></label>
+        </div>
         <input name="challengeToken" type="hidden" />
         <button type="submit">Sign In</button>
-        <button id="resendCode" type="button" hidden>Resend Code</button>
+        <button id="resendCode" type="button" class="secondary" hidden>Resend Code</button>
+        <button id="backToPassword" type="button" class="secondary" hidden>Use Different Account</button>
         <p id="status" role="alert">${escapeHtml(message)}</p>
       </form>
       <p><a href="/forgot-password">Forgot password?</a></p>
     </main>
     <script>
       const form = document.querySelector("#loginForm");
+      const passwordStep = document.querySelector("#passwordStep");
+      const twoFactorStep = document.querySelector("#twoFactorStep");
+      const submitButton = form.querySelector('button[type="submit"]');
+      function resetPasswordStep() {
+        form.elements.challengeToken.value = "";
+        form.elements.code.value = "";
+        form.elements.code.required = false;
+        form.elements.email.disabled = false;
+        form.elements.password.disabled = false;
+        passwordStep.hidden = false;
+        twoFactorStep.hidden = true;
+        submitButton.textContent = "Sign In";
+        document.querySelector("#resendCode").hidden = true;
+        document.querySelector("#backToPassword").hidden = true;
+        document.querySelector("#status").textContent = "";
+        form.elements.email.focus();
+      }
       form.addEventListener("submit", async event => {
         event.preventDefault();
         const values = Object.fromEntries(new FormData(form));
@@ -2572,8 +2662,13 @@ function loginPage(message = "") {
         if (response.ok && result.authenticated) return location.assign("/admin");
         if (response.ok && result.twoFactorRequired) {
           form.elements.challengeToken.value = result.challengeToken;
+          document.querySelector("#accountSummary").textContent = values.email;
+          passwordStep.hidden = true;
+          twoFactorStep.hidden = false;
+          submitButton.textContent = "Verify Code";
+          document.querySelector("#backToPassword").hidden = false;
+          form.elements.email.disabled = true;
           form.elements.password.disabled = true;
-          document.querySelector("#codeField").hidden = false;
           form.elements.code.required = true;
           form.elements.code.focus();
           document.querySelector("#codeLabel").textContent = result.twoFactorMethod === "sms" ? "SMS Verification Code" : "Authenticator Code";
@@ -2583,6 +2678,7 @@ function loginPage(message = "") {
         }
         document.querySelector("#status").textContent = result.error || "Sign-in failed.";
       });
+      document.querySelector("#backToPassword").addEventListener("click", resetPasswordStep);
       document.querySelector("#resendCode").addEventListener("click", async () => {
         const response = await fetch("/api/auth/resend-2fa", {
           method: "POST",
@@ -3017,13 +3113,20 @@ async function handleApi(req, res, url) {
     const accessibleAccountIds = new Set(db.calendarAssignments
       .filter(assignment => accessibleRoomIds.has(assignment.roomId))
       .map(assignment => assignment.accountId));
+    const canCalendarSync = viewerHasFeature(viewer, "Calendar Sync");
+    const canCalendarConflicts = viewerHasFeature(viewer, "Calendar Event Conflict Resolution");
+    const canThemeScheduler = viewerHasFeature(viewer, "Theme Scheduler");
+    const canBroadcast = viewerHasFeature(viewer, "Emergency & Safety Broadcast");
+    const canNotifications = viewerHasFeature(viewer, "Notifications");
     const accessibleBroadcasts = db.broadcasts
       .filter(broadcast => broadcastTargetRooms(broadcast).some(room => viewerCanAccessRoom(viewer, room)))
       .map(publicBroadcast);
     return json(res, 200, {
       settings: {
         ...db.settings,
-        email: publicEmailSettings(db.settings.email),
+        email: canNotifications
+          ? publicEmailSettings(db.settings.email)
+          : { enabled: Boolean(db.settings.email?.enabled) },
         twilio: viewerIsSystemAdmin(viewer)
           ? publicTwilioSettings(db.settings.twilio)
           : { enabled: Boolean(db.settings.twilio?.enabled) }
@@ -3039,23 +3142,23 @@ async function handleApi(req, res, url) {
       permissionCatalog,
       roles: db.roles,
       users: db.users.filter(user => viewerCanManageUser(viewer, user)).map(publicUser),
-      broadcastTemplates: db.broadcastTemplates,
-      calendarAccounts: db.calendarAccounts.filter(account =>
+      broadcastTemplates: canBroadcast ? db.broadcastTemplates : [],
+      calendarAccounts: canCalendarSync ? db.calendarAccounts.filter(account =>
         viewerIsSystemAdmin(viewer) || accessibleAccountIds.has(account.id) || account.ownerUserId === viewer?.id
-      ).map(publicCalendarAccount),
-      calendarAssignments: db.calendarAssignments.filter(assignment => accessibleRoomIds.has(assignment.roomId)),
-      calendarEvents: db.calendarEvents.filter(event => {
+      ).map(publicCalendarAccount) : [],
+      calendarAssignments: canCalendarSync ? db.calendarAssignments.filter(assignment => accessibleRoomIds.has(assignment.roomId)) : [],
+      calendarEvents: canCalendarConflicts ? db.calendarEvents.filter(event => {
         return accessibleRoomIds.has(event.roomId);
-      }),
-      calendarConflicts: db.calendarConflicts.filter(conflict => {
+      }) : [],
+      calendarConflicts: canCalendarConflicts ? db.calendarConflicts.filter(conflict => {
         const room = db.rooms.find(item => item.id === conflict.roomId);
         return room && viewerCanAccessRoom(viewer, room);
-      }),
-      calendarConflictHistory: db.calendarConflictHistory.filter(decision => {
+      }) : [],
+      calendarConflictHistory: canCalendarConflicts ? db.calendarConflictHistory.filter(decision => {
         const room = db.rooms.find(item => item.id === decision.roomId);
         return room && viewerCanAccessRoom(viewer, room);
-      }).slice(0, 200),
-      calendarSyncHistory: db.calendarSyncHistory.filter(item => accessibleRoomIds.has(item.roomId)).slice(0, 50),
+      }).slice(0, 200) : [],
+      calendarSyncHistory: canCalendarSync ? db.calendarSyncHistory.filter(item => accessibleRoomIds.has(item.roomId)).slice(0, 50) : [],
       kioskDevices: db.kioskDevices.filter(device => {
         const room = db.rooms.find(item => item.id === device.roomId);
         return room && viewerCanAccessRoom(viewer, room);
@@ -3066,16 +3169,16 @@ async function handleApi(req, res, url) {
           return room && viewerCanAccessRoom(viewer, room);
         })
       ),
-      themeSchedules: db.themeSchedules
+      themeSchedules: canThemeScheduler ? db.themeSchedules
         .filter(schedule => new Date(schedule.endsAt).getTime() >= Date.now() - 2 * 365 * 24 * 60 * 60 * 1000)
         .filter(schedule => scheduleTargetRooms(schedule).some(room => viewerCanAccessRoom(viewer, room)))
-        .map(publicThemeSchedule),
-      activeBroadcasts: accessibleBroadcasts.filter(broadcast => broadcast.status === "active"),
-      scheduledBroadcasts: accessibleBroadcasts.filter(broadcast => broadcast.status === "scheduled"),
-      broadcastHistory: viewerHasPermission(req, "broadcast.history.view") ? accessibleBroadcasts.slice(0, 200) : [],
-      emailNotifications: viewerIsSystemAdmin(viewer)
+        .map(publicThemeSchedule) : [],
+      activeBroadcasts: canBroadcast ? accessibleBroadcasts.filter(broadcast => broadcast.status === "active") : [],
+      scheduledBroadcasts: canBroadcast ? accessibleBroadcasts.filter(broadcast => broadcast.status === "scheduled") : [],
+      broadcastHistory: canBroadcast && viewerHasPermission(req, "broadcast.history.view") ? accessibleBroadcasts.slice(0, 200) : [],
+      emailNotifications: canNotifications && viewerIsSystemAdmin(viewer)
         ? db.emailNotifications.slice(0, 50)
-        : db.emailNotifications.filter(item => item.userId === viewer?.id).slice(0, 50),
+        : canNotifications ? db.emailNotifications.filter(item => item.userId === viewer?.id).slice(0, 50) : [],
       notifications: db.notifications.filter(item => item.userId === viewer?.id).slice(0, 100),
       auditLogs: viewerIsSystemAdmin(viewer) ? db.auditLogs.slice(0, 20) : [],
       loginAudit: viewerIsSystemAdmin(viewer) ? db.loginAudit.slice(0, 100) : [],
@@ -3632,7 +3735,8 @@ async function handleApi(req, res, url) {
   }
   const calendarConflictMatch = url.pathname.match(/^\/api\/calendar-conflicts\/([^/]+)\/select$/);
   if (req.method === "POST" && calendarConflictMatch) {
-    if (!requirePermission(req, res, "calendar.sync")) return;
+    if (!requireFeature(req, res, "Calendar Event Conflict Resolution")) return;
+    if (!requireRolePermission(req, res, ["calendar.sync", "calendar.manage"])) return;
     const conflict = db.calendarConflicts.find(item => item.id === calendarConflictMatch[1]);
     const room = db.rooms.find(item => item.id === conflict?.roomId);
     if (!conflict || !room) return json(res, 404, { error: "Calendar conflict not found" });
@@ -3654,6 +3758,7 @@ async function handleApi(req, res, url) {
   }
   const calendarConflictActionMatch = url.pathname.match(/^\/api\/calendar-conflicts\/([^/]+)\/action$/);
   if (req.method === "POST" && calendarConflictActionMatch) {
+    if (!requireFeature(req, res, "Calendar Event Conflict Resolution")) return;
     const conflict = db.calendarConflicts.find(item => item.id === calendarConflictActionMatch[1]);
     const room = db.rooms.find(item => item.id === conflict?.roomId);
     if (!conflict || !room) return json(res, 404, { error: "Calendar conflict not found" });
@@ -3663,7 +3768,7 @@ async function handleApi(req, res, url) {
     if (!["ignore", "resolve", "cancel", "replace", "move"].includes(action)) {
       return validationError(res, "Select a valid conflict action.");
     }
-    if (!requirePermission(req, res, ["cancel", "replace", "move"].includes(action) ? "calendar.manage" : "calendar.sync")) return;
+    if (!requireRolePermission(req, res, ["cancel", "replace", "move"].includes(action) ? "calendar.manage" : ["calendar.sync", "calendar.manage"])) return;
     const events = conflictEvents(conflict);
     if (events.length < 2) return validationError(res, "This conflict no longer contains overlapping events. Sync the calendar and try again.");
     const selectedExternalEventId = cleanText(body.selectedExternalEventId, 1000);
@@ -3780,7 +3885,7 @@ async function handleApi(req, res, url) {
     });
   }
   if (req.method === "PUT" && url.pathname === "/api/settings/email") {
-    if (!requirePermission(req, res, "settings.manage")) return;
+    if (!requirePermission(req, res, "notification.manage")) return;
     const body = await readBody(req);
     const host = cleanText(body.host, 255);
     const username = cleanText(body.username, 255);
@@ -3826,7 +3931,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, publicEmailSettings(db.settings.email));
   }
   if (req.method === "POST" && url.pathname === "/api/settings/email/test") {
-    if (!requirePermission(req, res, "settings.manage")) return;
+    if (!requirePermission(req, res, "notification.manage")) return;
     const body = await readBody(req);
     const recipient = cleanText(body.recipient, 255).toLowerCase();
     if (recipient && !validEmail(recipient)) return validationError(res, "Enter a valid test recipient.");
@@ -5144,6 +5249,7 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "POST" && url.pathname === "/api/theme-schedules") {
     if (!requirePermission(req, res, "theme.manage")) return;
+    if (!requireFeature(req, res, "Theme Scheduler")) return;
     const body = await readBody(req);
     const viewer = currentViewer(req);
     const schedule = scheduleFromBody(body, {
@@ -5165,6 +5271,7 @@ async function handleApi(req, res, url) {
   const themeScheduleMatch = url.pathname.match(/^\/api\/theme-schedules\/([^/]+)$/);
   if (req.method === "PUT" && themeScheduleMatch) {
     if (!requirePermission(req, res, "theme.manage")) return;
+    if (!requireFeature(req, res, "Theme Scheduler")) return;
     const schedule = db.themeSchedules.find(item => item.id === themeScheduleMatch[1]);
     if (!schedule) return json(res, 404, { error: "Theme schedule not found" });
     const viewer = currentViewer(req);
@@ -5188,6 +5295,7 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "DELETE" && themeScheduleMatch) {
     if (!requirePermission(req, res, "theme.manage")) return;
+    if (!requireFeature(req, res, "Theme Scheduler")) return;
     const schedule = db.themeSchedules.find(item => item.id === themeScheduleMatch[1]);
     if (!schedule) return json(res, 404, { error: "Theme schedule not found" });
     const viewer = currentViewer(req);
@@ -5204,6 +5312,7 @@ async function handleApi(req, res, url) {
   const themeCloneMatch = url.pathname.match(/^\/api\/themes\/([^/]+)\/clone$/);
   if (req.method === "POST" && themeCloneMatch) {
     if (!requirePermission(req, res, "theme.manage")) return;
+    if (!requireFeature(req, res, "Theme Editor")) return;
     const source = db.themes.find(theme => theme.id === themeCloneMatch[1]);
     if (!source) return json(res, 404, { error: "Theme not found" });
     if (!viewerCanAccessTheme(currentViewer(req), source)) return json(res, 403, { error: "This theme is outside your assigned scope." });
@@ -5232,6 +5341,7 @@ async function handleApi(req, res, url) {
   const themeBackgroundMatch = url.pathname.match(/^\/api\/themes\/([^/]+)\/background$/);
   if (req.method === "POST" && themeBackgroundMatch) {
     if (!requirePermission(req, res, "theme.manage")) return;
+    if (!requireFeature(req, res, "Theme Editor")) return;
     const theme = db.themes.find(item => item.id === themeBackgroundMatch[1]);
     if (!theme) return json(res, 404, { error: "Theme not found" });
     if (!viewerCanAccessTheme(currentViewer(req), theme)) return json(res, 403, { error: "This theme is outside your assigned scope." });
@@ -5267,6 +5377,7 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "DELETE" && themeBackgroundMatch) {
     if (!requirePermission(req, res, "theme.manage")) return;
+    if (!requireFeature(req, res, "Theme Editor")) return;
     const theme = db.themes.find(item => item.id === themeBackgroundMatch[1]);
     if (!theme) return json(res, 404, { error: "Theme not found" });
     if (!viewerCanAccessTheme(currentViewer(req), theme)) return json(res, 403, { error: "This theme is outside your assigned scope." });
@@ -5285,6 +5396,7 @@ async function handleApi(req, res, url) {
   const themeMatch = url.pathname.match(/^\/api\/themes\/([^/]+)$/);
   if (req.method === "PUT" && themeMatch) {
     if (!requirePermission(req, res, "theme.manage")) return;
+    if (!requireFeature(req, res, "Theme Editor")) return;
     const theme = db.themes.find(item => item.id === themeMatch[1]);
     if (!theme) return json(res, 404, { error: "Theme not found" });
     if (!viewerCanAccessTheme(currentViewer(req), theme)) return json(res, 403, { error: "This theme is outside your assigned scope." });
