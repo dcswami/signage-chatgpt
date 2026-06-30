@@ -11,28 +11,46 @@ const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "signage-test-"));
 const port = 3187;
 const smtpPort = 3188;
 const calendarPort = 3189;
+const twilioPort = 3190;
 const baseUrl = `http://127.0.0.1:${port}`;
 const icalDate = date => date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+const listen = (server, listenPort) => new Promise((resolve, reject) => {
+  server.once("error", reject);
+  server.listen(listenPort, "127.0.0.1", resolve);
+});
 const calendarStart = new Date(Date.now() + 60 * 60 * 1000);
-const calendarEnd = new Date(calendarStart.getTime() + 60 * 60 * 1000);
+const calendarEvents = Array.from({ length: 7 }, (_, index) => {
+  const startsAt = new Date(calendarStart.getTime() + index * 60 * 60 * 1000);
+  if (index === 1) startsAt.setTime(calendarStart.getTime() + 15 * 60 * 1000);
+  return {
+    uid: `calendar-event-${index + 1}`,
+    startsAt,
+    endsAt: new Date(startsAt.getTime() + 60 * 60 * 1000),
+    title: index === 0 ? "Rental Planning Meeting" : `Integration Event ${index + 1}`,
+    description: index === 0 ? "Rental Event" : `Description ${index + 1}`,
+    privacy: index === 0
+  };
+});
 const calendarServer = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/calendar" });
   res.end([
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
     "PRODID:-//Signage Test//EN",
-    "BEGIN:VEVENT",
-    "UID:private-calendar-event",
-    `DTSTART:${icalDate(calendarStart)}`,
-    `DTEND:${icalDate(calendarEnd)}`,
-    "SUMMARY:Rental Planning Meeting",
-    "DESCRIPTION:Rental Event",
-    "CLASS:PRIVATE",
-    "END:VEVENT",
+    ...calendarEvents.flatMap(event => [
+      "BEGIN:VEVENT",
+      `UID:${event.uid}`,
+      `DTSTART:${icalDate(event.startsAt)}`,
+      `DTEND:${icalDate(event.endsAt)}`,
+      `SUMMARY:${event.title}`,
+      `DESCRIPTION:${event.description}`,
+      event.privacy ? "CLASS:PRIVATE" : "CLASS:PUBLIC",
+      "END:VEVENT"
+    ]),
     "END:VCALENDAR"
   ].join("\r\n"));
 });
-await new Promise(resolve => calendarServer.listen(calendarPort, "127.0.0.1", resolve));
+await listen(calendarServer, calendarPort);
 const smtpMessages = [];
 const smtpServer = net.createServer(socket => {
   let dataMode = false;
@@ -61,7 +79,28 @@ const smtpServer = net.createServer(socket => {
     }
   });
 });
-await new Promise(resolve => smtpServer.listen(smtpPort, "127.0.0.1", resolve));
+await listen(smtpServer, smtpPort);
+const twilioMessages = [];
+const twilioServer = http.createServer((req, res) => {
+  let body = "";
+  req.on("data", chunk => { body += chunk; });
+  req.on("end", () => {
+    const values = new URLSearchParams(body);
+    twilioMessages.push({
+      to: values.get("To"),
+      from: values.get("From"),
+      body: values.get("Body"),
+      authorization: req.headers.authorization
+    });
+    res.writeHead(201, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      sid: `SM${"1".repeat(32)}`,
+      status: "queued",
+      to: values.get("To")
+    }));
+  });
+});
+await listen(twilioServer, twilioPort);
 const child = spawn(process.execPath, ["src/server.mjs"], {
   cwd: rootDir,
   env: {
@@ -69,16 +108,28 @@ const child = spawn(process.execPath, ["src/server.mjs"], {
     DATA_DIR: dataDir,
     HOST: "127.0.0.1",
     PORT: String(port),
+    APP_BASE_URL: baseUrl,
+    BOOTSTRAP_ADMIN_PASSWORD: "Integration-Admin-Password-2026!",
     THEME_ASSETS_DIR: path.join(dataDir, "theme-assets"),
-    CREDENTIAL_ENCRYPTION_KEY: "integration-test-credential-key-123456789"
+    CREDENTIAL_ENCRYPTION_KEY: "integration-test-credential-key-123456789",
+    TWILIO_API_BASE_URL: `http://127.0.0.1:${twilioPort}`
   },
   stdio: ["ignore", "pipe", "pipe"]
 });
 
+let authCookie = "";
+let csrfToken = "";
+
 async function request(route, options = {}, expectedStatus = 200) {
+  const method = options.method || "GET";
   const response = await fetch(`${baseUrl}${route}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(authCookie ? { Cookie: authCookie } : {}),
+      ...(!["GET", "HEAD"].includes(method) && csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+      ...(options.headers || {})
+    }
   });
   const body = await response.json().catch(() => ({}));
   assert.equal(response.status, expectedStatus, `${route}: ${JSON.stringify(body)}`);
@@ -99,10 +150,43 @@ async function waitForServer() {
 try {
   const health = await waitForServer();
   assert.equal(health.storage, "json");
+  assert.equal(health.authentication, "ready");
 
+  await request("/api/state", {}, 401);
+  await request("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email: "admin@example.org", password: "wrong-password" })
+  }, 401);
+  const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: "admin@example.org", password: "Integration-Admin-Password-2026!" })
+  });
+  assert.equal(loginResponse.status, 200);
+  authCookie = loginResponse.headers.get("set-cookie").split(";")[0];
   const initialState = await request("/api/state");
+  csrfToken = initialState.viewer.csrfToken;
+  assert.equal(initialState.viewer.isSystemAdmin, true);
+  await request("/api/auth/change-password", {
+    method: "POST",
+    body: JSON.stringify({
+      currentPassword: "Integration-Admin-Password-2026!",
+      newPassword: "Integration-Admin-Password-Changed-2026!",
+      confirmPassword: "Integration-Admin-Password-Changed-2026!"
+    })
+  });
+  const changedAdminLogin = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: "admin@example.org",
+      password: "Integration-Admin-Password-Changed-2026!"
+    })
+  });
+  assert.equal(changedAdminLogin.status, 200);
   assert.equal(initialState.rooms.length, 3);
   assert.equal(initialState.settings.email.hasPassword, false);
+  assert.equal(initialState.settings.twilio.hasAuthToken, false);
   assert.equal(initialState.roles.some(role => role.id === "campus-manager"), true);
   assert.equal(initialState.roles.some(role => role.id === "building-manager"), true);
   assert.equal(initialState.broadcastTemplates.length >= 4, true);
@@ -143,21 +227,64 @@ try {
   });
   assert.equal(smtpTest.emailSent, true);
 
+  const twilioSettings = await request("/api/settings/twilio", {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: true,
+      accountSid: `AC${"a".repeat(32)}`,
+      authToken: "twilio-auth-token",
+      fromPhoneNumber: "+13125550123"
+    })
+  });
+  assert.equal(twilioSettings.enabled, true);
+  assert.equal(twilioSettings.hasAuthToken, true);
+  assert.equal("encryptedAuthToken" in twilioSettings, false);
+  const twilioTest = await request("/api/settings/twilio/test", {
+    method: "POST",
+    body: JSON.stringify({ recipient: "+13125550124" })
+  });
+  assert.equal(twilioTest.sent, true);
+
   const center = await request("/api/centers", {
     method: "POST",
     body: JSON.stringify({
       name: "Integration Center",
+      description: "Integration location",
+      logoUrl: "/assets/branding/aksharderi-small2.png",
+      contactName: "Center Contact",
+      contactEmail: "center@example.org",
+      contactPhone: "555-0100",
+      bookingUrl: "https://example.org/center-booking",
       timezone: "America/Chicago",
-      defaultThemeId: "classic-institutional"
+      defaultThemeId: "classic-institutional",
+      upcomingEventCount: 3,
+      showEventDescription: true
     })
   }, 201);
   const campus = await request("/api/campuses", {
     method: "POST",
-    body: JSON.stringify({ name: "Integration Campus", centerId: center.id })
+    body: JSON.stringify({
+      name: "Integration Campus",
+      centerId: center.id,
+      address: "100 Campus Way",
+      contactName: "Campus Contact",
+      contactEmail: "campus@example.org",
+      bookingUrl: "https://example.org/campus-booking",
+      defaultThemeId: "event-formal"
+    })
   }, 201);
   const building = await request("/api/buildings", {
     method: "POST",
-    body: JSON.stringify({ name: "Integration Building", campusId: campus.id, code: "IB" })
+    body: JSON.stringify({
+      name: "Integration Building",
+      campusId: campus.id,
+      code: "IB",
+      address: "100 Campus Way",
+      floors: "1, 2",
+      timezone: "America/Denver",
+      bookingUrl: "https://example.org/building-booking",
+      defaultThemeId: "custom-background"
+    })
   }, 201);
   const room = await request("/api/rooms", {
     method: "POST",
@@ -167,14 +294,23 @@ try {
       centerId: center.id,
       campusId: campus.id,
       buildingId: building.id,
-      bookingUrl: "https://example.org/book",
-      themeId: "classic-institutional",
-      capacity: 25
+      bookingUrl: "",
+      themeId: "",
+      roomNumber: "A-101",
+      floor: "1",
+      capacity: 25,
+      equipment: "Projector, microphone",
+      accessibilityNotes: "Step-free entrance",
+      maintenanceStatus: "available",
+      privacyMode: "private-title"
     })
   }, 201);
 
-  assert.equal(room.timezone, "America/Chicago");
+  assert.equal(room.timezone, "America/Denver");
   assert.equal(room.buildingName, "Integration Building");
+  assert.equal(room.bookingUrl, "https://example.org/building-booking");
+  assert.equal(room.themeName, "Custom Background");
+  assert.equal(room.roomNumber, "A-101");
   await request(`/api/centers/${center.id}`, { method: "DELETE" }, 409);
 
   const calendarAccount = await request("/api/calendar-accounts", {
@@ -198,16 +334,92 @@ try {
     body: JSON.stringify({ roomId: room.id, accountId: calendarAccount.id, calendarId: calendarAccount.calendars[0].id })
   }, 201);
   const syncResult = await request(`/api/calendar-assignments/${calendarAssignment.id}/sync`, { method: "POST", body: "{}" });
-  assert.equal(syncResult.eventCount, 1);
+  assert.equal(syncResult.eventCount, 7);
+  assert.equal(syncResult.futureEventCount, 7);
+  assert.equal(syncResult.currentEventCount, 0);
+  assert.equal(syncResult.pastEventCount, 0);
+  assert.equal(syncResult.displayedUpcomingEventCount, 6);
+  assert.equal(Boolean(syncResult.nextEventAt), true);
   const syncedRoom = await request("/api/rooms/integration-room");
   assert.equal(syncedRoom.upcomingEvents[0].title, "Private Event");
+  assert.equal(syncedRoom.upcomingEvents[0].description, "");
+  assert.equal(syncedRoom.upcomingEvents[1].description, "Description 2");
+  assert.equal(syncedRoom.upcomingEventPageSize, 3);
+  assert.equal(syncedRoom.upcomingEvents.length, 6);
   assert.equal(Boolean(syncedRoom.buildVersion), true);
+  const conflictState = await request("/api/state");
+  const calendarConflict = conflictState.calendarConflicts.find(item => item.roomId === room.id);
+  assert.equal(Boolean(calendarConflict), true);
+  const ignoredConflict = await request(`/api/calendar-conflicts/${calendarConflict.id}/action`, {
+    method: "POST",
+    body: JSON.stringify({
+      action: "ignore",
+      selectedExternalEventId: calendarConflict.externalEventIds[1]
+    })
+  });
+  assert.equal(ignoredConflict.conflict.status, "ignored");
+  const ignoredRoom = await request("/api/rooms/integration-room");
+  assert.equal(ignoredRoom.upcomingEvents[0].title, "Integration Event 2");
+  await request(`/api/calendar-conflicts/${calendarConflict.id}/action`, {
+    method: "POST",
+    body: JSON.stringify({
+      action: "cancel",
+      targetExternalEventId: calendarConflict.externalEventIds[1]
+    })
+  }, 409);
+  const selectedConflict = await request(`/api/calendar-conflicts/${calendarConflict.id}/select`, {
+    method: "POST",
+    body: JSON.stringify({ externalEventId: calendarConflict.externalEventIds[1] })
+  });
+  assert.equal(selectedConflict.status, "resolved");
+  const conflictHistoryState = await request("/api/state");
+  assert.equal(conflictHistoryState.calendarConflictHistory.some(item => item.action === "ignore" && item.actorName === "System Administrator"), true);
+  assert.equal(conflictHistoryState.calendarConflictHistory.some(item => item.action === "resolve"), true);
+
+  const qrResponse = await fetch(`${baseUrl}/api/rooms/integration-room/qr.svg`);
+  assert.equal(qrResponse.status, 200);
+  assert.match(qrResponse.headers.get("content-type"), /image\/svg\+xml/);
+  assert.match(await qrResponse.text(), /<svg/);
+
+  const googleOauthAccount = await request("/api/calendar-accounts", {
+    method: "POST",
+    body: JSON.stringify({
+      accountName: "Integration Google OAuth",
+      provider: "google",
+      authMode: "oauth",
+      accessLevel: "read-only",
+      clientId: "integration-google-client.apps.googleusercontent.com",
+      credential: "integration-google-secret",
+      active: true,
+      calendars: []
+    })
+  }, 201);
+  const oauthStart = await request(`/api/calendar-accounts/${googleOauthAccount.id}/oauth/start`);
+  assert.match(oauthStart.authorizationUrl, /^https:\/\/accounts\.google\.com\//);
+
+  const caldavAccount = await request("/api/calendar-accounts", {
+    method: "POST",
+    body: JSON.stringify({
+      accountName: "Integration iCloud",
+      provider: "caldav",
+      authMode: "app-password",
+      accessLevel: "writable",
+      serverUrl: "https://caldav.icloud.com/",
+      username: "calendar@example.org",
+      credential: "app-specific-password",
+      active: true,
+      calendars: []
+    })
+  }, 201);
+  assert.equal(caldavAccount.provider, "caldav");
+  assert.equal(caldavAccount.hasCredential, true);
 
   const user = await request("/api/users", {
     method: "POST",
     body: JSON.stringify({
       name: "Integration User",
       email: "integration.user@example.org",
+      phoneNumber: "+13125550125",
       status: "invited",
       roleIds: ["campus-manager", "building-manager"],
       centerIds: [center.id],
@@ -222,10 +434,45 @@ try {
   assert.deepEqual(user.campusIds, [campus.id]);
   assert.deepEqual(user.buildingIds, [building.id]);
   assert.deepEqual(user.features, ["Notifications"]);
+  assert.equal(user.phoneNumber, "+13125550125");
   assert.equal(user.invitedAt !== null, true);
-  await request("/api/broadcasts/history", {
-    headers: { "Content-Type": "application/json", "X-User-Id": user.id }
-  }, 403);
+  await request("/api/auth/request-reset", {
+    method: "POST",
+    body: JSON.stringify({ email: user.email })
+  });
+  const resetMessage = smtpMessages.findLast(message => message.includes("Reset your Signage Management password"));
+  const resetToken = resetMessage?.match(/reset-password\?token=([A-Za-z0-9_-]+)/)?.[1];
+  assert.equal(Boolean(resetToken), true);
+  await request("/api/auth/reset-password", {
+    method: "POST",
+    body: JSON.stringify({ token: resetToken, password: "Integration-User-Password-2026!" })
+  });
+  const scopedLogin = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: user.email, password: "Integration-User-Password-2026!" })
+  });
+  assert.equal(scopedLogin.status, 200);
+  const scopedCookie = scopedLogin.headers.get("set-cookie").split(";")[0];
+  const scopedStateResponse = await fetch(`${baseUrl}/api/state`, { headers: { Cookie: scopedCookie } });
+  const scopedState = await scopedStateResponse.json();
+  assert.equal(scopedState.rooms.every(item => item.centerId === center.id), true);
+  const scopedCenterCreate = await fetch(`${baseUrl}/api/centers`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: scopedCookie,
+      "X-CSRF-Token": scopedState.viewer.csrfToken
+    },
+    body: JSON.stringify({ name: "Unauthorized Center", timezone: "America/Chicago" })
+  });
+  assert.equal(scopedCenterCreate.status, 403);
+  const scopedHistory = await fetch(`${baseUrl}/api/broadcasts/history`, { headers: { Cookie: scopedCookie } });
+  assert.equal(scopedHistory.status, 403);
+  const ignoredIdentityHeader = await request("/api/state", {
+    headers: { "X-User-Id": user.id }
+  });
+  assert.equal(ignoredIdentityHeader.viewer.id, initialState.viewer.id);
 
   const updatedUser = await request(`/api/users/${user.id}`, {
     method: "PUT",
@@ -243,22 +490,36 @@ try {
   assert.equal(updatedUser.status, "suspended");
   assert.deepEqual(updatedUser.roleIds, ["building-manager"]);
   assert.deepEqual(updatedUser.buildingIds, [building.id]);
-  await request("/api/centers", {
+  const adminSetPassword = await request(`/api/users/${user.id}/password`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-User-Id": user.id },
-    body: JSON.stringify({ name: "Unauthorized Center", timezone: "America/Chicago" })
-  }, 403);
-  await request("/api/broadcasts", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-User-Id": user.id },
     body: JSON.stringify({
-      title: "OUTSIDE SCOPE",
-      message: "This must be rejected.",
-      targetRoomCodes: ["room-108-shishu"],
-      confirm: true
+      newPassword: "Admin-Assigned-User-Password-2026!",
+      confirmPassword: "Admin-Assigned-User-Password-2026!",
+      resetTwoFactor: true
     })
-  }, 403);
-
+  });
+  assert.equal(adminSetPassword.status, "suspended");
+  assert.equal(adminSetPassword.twoFactorEnabled, false);
+  await request(`/api/users/${user.id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      name: user.name,
+      email: user.email,
+      status: "active",
+      roleIds: ["building-manager"],
+      centerIds: [],
+      campusIds: [],
+      buildingIds: [building.id],
+      roomIds: [],
+      features: ["Notifications", "Emergency & Safety Broadcast"]
+    })
+  });
+  const assignedPasswordLogin = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: user.email, password: "Admin-Assigned-User-Password-2026!" })
+  });
+  assert.equal(assignedPasswordLogin.status, 200);
   const manualEmail = await request("/api/email/send", {
     method: "POST",
     body: JSON.stringify({
@@ -311,6 +572,129 @@ try {
   });
   assert.equal(updatedRoom.themeName, "Event Formal");
   assert.equal(updatedRoom.capacity, 30);
+  assert.equal(updatedRoom.configuredBookingUrl, "https://example.org/new-booking");
+  const publicRoomPayload = await request(`/api/rooms/${updatedRoom.code}`);
+  assert.equal("kioskIdentifier" in publicRoomPayload, false);
+
+  const kioskRegistration = await request("/api/kiosk-devices/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Forwarded-For": "203.0.113.42" },
+    body: JSON.stringify({
+      roomCode: updatedRoom.code,
+      kioskIdentifier: updatedRoom.kioskIdentifier,
+      clientDeviceId: "integration-kiosk-device",
+      name: "Integration iPad",
+      deviceType: "iPad",
+      browser: "Safari integration test",
+      platform: "iPadOS",
+      viewport: "1024x1366",
+      orientation: "portrait",
+      audioEnabled: true
+    })
+  }, 202);
+  assert.equal(kioskRegistration.status, "pending");
+  assert.equal(Boolean(kioskRegistration.pairingCode), true);
+  assert.equal(Boolean(kioskRegistration.deviceToken), true);
+  let cleanupKioskId = kioskRegistration.id;
+  const stateAfterKioskRegistration = await request("/api/state");
+  const registeredKioskState = stateAfterKioskRegistration.kioskDevices.find(item => item.id === kioskRegistration.id);
+  assert.equal(registeredKioskState.deviceType, "iPad");
+  assert.equal(registeredKioskState.lastIpAddress, "203.0.113.42");
+  assert.equal("deviceToken" in registeredKioskState, false);
+  const approvedKiosk = await request(`/api/kiosk-devices/${kioskRegistration.id}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ pairingCode: kioskRegistration.pairingCode })
+  });
+  assert.equal(approvedKiosk.status, "active");
+  await request(`/api/kiosk-devices/${kioskRegistration.id}/command`, {
+    method: "POST",
+    body: JSON.stringify({ command: "reload" })
+  });
+  const kioskHeartbeat = await request("/api/kiosk-devices/heartbeat", {
+    method: "POST",
+    body: JSON.stringify({
+      roomCode: updatedRoom.code,
+      clientDeviceId: "integration-kiosk-device",
+      deviceToken: kioskRegistration.deviceToken,
+      deviceType: "iPad",
+      browser: "Safari integration test",
+      platform: "iPadOS",
+      viewport: "1024x1366",
+      orientation: "portrait",
+      audioEnabled: true,
+      lastDataAt: new Date().toISOString()
+    })
+  });
+  assert.equal(kioskHeartbeat.status, "active");
+  assert.equal(kioskHeartbeat.healthStatus, "online");
+  assert.equal(kioskHeartbeat.pendingCommand, "reload");
+  const reassignedKiosk = await request(`/api/kiosk-devices/${kioskRegistration.id}/reassign`, {
+    method: "POST",
+    body: JSON.stringify({
+      roomId: initialState.rooms[0].id,
+      name: "Integration iPad Reassigned",
+      deviceType: "iPad"
+    })
+  });
+  assert.equal(reassignedKiosk.roomId, initialState.rooms[0].id);
+  const reassignedHeartbeat = await request("/api/kiosk-devices/heartbeat", {
+    method: "POST",
+    body: JSON.stringify({
+      clientDeviceId: "integration-kiosk-device",
+      deviceToken: kioskRegistration.deviceToken,
+      deviceType: "iPad",
+      browser: "Safari integration test",
+      platform: "iPadOS",
+      viewport: "1024x1366",
+      orientation: "portrait",
+      audioEnabled: true
+    })
+  });
+  assert.equal(reassignedHeartbeat.roomCode, initialState.rooms[0].code);
+  assert.equal(reassignedHeartbeat.pendingCommand, `navigate:${initialState.rooms[0].code}`);
+  await request(`/api/kiosk-devices/${kioskRegistration.id}/reassign`, {
+    method: "POST",
+    body: JSON.stringify({ roomId: updatedRoom.id, name: "Integration iPad", deviceType: "iPad" })
+  });
+  const revokedKiosk = await request(`/api/kiosk-devices/${kioskRegistration.id}/revoke`, {
+    method: "POST",
+    body: "{}"
+  });
+  assert.equal(revokedKiosk.status, "revoked");
+  assert.equal(revokedKiosk.healthStatus, "revoked");
+  await request("/api/kiosk-devices/heartbeat", {
+    method: "POST",
+    body: JSON.stringify({
+      clientDeviceId: "integration-kiosk-device",
+      deviceToken: kioskRegistration.deviceToken
+    })
+  }, 403);
+  await request("/api/kiosk-devices/register", {
+    method: "POST",
+    body: JSON.stringify({
+      roomCode: updatedRoom.code,
+      kioskIdentifier: updatedRoom.kioskIdentifier,
+      clientDeviceId: "integration-kiosk-device"
+    })
+  }, 403);
+  await request(`/api/kiosk-devices/${kioskRegistration.id}`, { method: "DELETE" });
+  const repairedKiosk = await request("/api/kiosk-devices/register", {
+    method: "POST",
+    body: JSON.stringify({
+      roomCode: updatedRoom.code,
+      kioskIdentifier: updatedRoom.kioskIdentifier,
+      clientDeviceId: "integration-kiosk-device",
+      name: "Integration iPad Repaired",
+      deviceType: "iPad"
+    })
+  }, 202);
+  assert.notEqual(repairedKiosk.deviceToken, kioskRegistration.deviceToken);
+  cleanupKioskId = repairedKiosk.id;
+  const refreshResult = await request("/api/kiosks/refresh", {
+    method: "POST",
+    body: JSON.stringify({ centerIds: [center.id], command: "data-refresh" })
+  });
+  assert.equal(refreshResult.sent, 1);
 
   const clone = await request("/api/themes/classic-institutional/clone", {
     method: "POST",
@@ -406,13 +790,34 @@ try {
   assert.equal(scheduleState.themeSchedules.some(item => item.id === pastSchedule.id && item.ownerName === "System Administrator"), true);
   assert.equal(scheduleState.themeSchedules.some(item => item.id === oldSchedule.id), false);
 
+  const roomGroup = await request("/api/room-groups", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Integration Safety Group",
+      description: "One-room test group",
+      roomIds: [room.id],
+      active: true
+    })
+  }, 201);
+  assert.deepEqual(roomGroup.roomIds, [room.id]);
+
   const broadcast = await request("/api/broadcasts", {
     method: "POST",
     body: JSON.stringify({
       title: "SCOPED TEST",
       message: "Integration test",
       templateId: broadcastTemplate.id,
-      targetRoomCodes: ["updated-integration-room"],
+      roomGroupIds: [roomGroup.id],
+      confirm: true
+    })
+  }, 201);
+  const simultaneousBroadcast = await request("/api/broadcasts", {
+    method: "POST",
+    body: JSON.stringify({
+      title: "SECOND SCOPE",
+      message: "Separate room alert",
+      severity: "emergency",
+      roomIds: ["room-108"],
       confirm: true
     })
   }, 201);
@@ -420,9 +825,59 @@ try {
   const otherRoom = await request("/api/rooms/room-108-shishu");
   assert.equal(targetRoom.activeBroadcast.title, "SCOPED TEST");
   assert.equal(targetRoom.activeBroadcast.templateId, broadcastTemplate.id);
-  assert.equal(otherRoom.activeBroadcast, null);
+  assert.equal(otherRoom.activeBroadcast.title, "SECOND SCOPE");
 
-  await request("/api/broadcasts/end", { method: "POST", body: "{}" });
+  const updatedBroadcast = await request(`/api/broadcasts/${broadcast.id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      ...broadcast,
+      title: "UPDATED SCOPED TEST",
+      roomGroupIds: [roomGroup.id],
+      roomIds: [],
+      centerIds: [],
+      campusIds: [],
+      buildingIds: []
+    })
+  });
+  assert.equal(updatedBroadcast.updatedByName, "System Administrator");
+  assert.equal(updatedBroadcast.title, "UPDATED SCOPED TEST");
+
+  const scheduledBroadcast = await request("/api/broadcasts", {
+    method: "POST",
+    body: JSON.stringify({
+      title: "FUTURE TEST",
+      message: "Scheduled integration test",
+      severity: "informational",
+      audibleAlert: false,
+      startsAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      endsAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+      buildingIds: [building.id],
+      confirm: true
+    })
+  }, 201);
+  assert.equal(scheduledBroadcast.status, "scheduled");
+  await request(`/api/broadcasts/${scheduledBroadcast.id}/cancel`, { method: "POST", body: "{}" });
+
+  await request(`/api/broadcasts/${broadcast.id}/end`, { method: "POST", body: "{}" });
+  await request(`/api/broadcasts/${simultaneousBroadcast.id}/end`, { method: "POST", body: "{}" });
+
+  const expiringBroadcast = await request("/api/broadcasts", {
+    method: "POST",
+    body: JSON.stringify({
+      title: "EXPIRING TEST",
+      message: "This alert expires automatically.",
+      severity: "warning",
+      startsAt: new Date(Date.now() - 1000).toISOString(),
+      endsAt: new Date(Date.now() + 250).toISOString(),
+      roomIds: [room.id],
+      confirm: true
+    })
+  }, 201);
+  await new Promise(resolve => setTimeout(resolve, 400));
+  const lifecycleState = await request("/api/state");
+  assert.equal(lifecycleState.broadcastHistory.find(item => item.id === expiringBroadcast.id).status, "ended");
+  assert.equal(lifecycleState.notifications.some(item => item.sourceId === broadcast.id), true);
+
   const broadcastHistory = await request("/api/broadcasts/history");
   const completedBroadcast = broadcastHistory.find(item => item.id === broadcast.id);
   assert.equal(completedBroadcast.status, "ended");
@@ -433,10 +888,14 @@ try {
   assert.equal(stateAfterTemplateDelete.broadcastTemplates.some(item => item.id === broadcastTemplate.id), false);
   await request(`/api/calendar-assignments/${calendarAssignment.id}`, { method: "DELETE" });
   await request(`/api/calendar-accounts/${calendarAccount.id}`, { method: "DELETE" });
+  await request(`/api/calendar-accounts/${googleOauthAccount.id}`, { method: "DELETE" });
+  await request(`/api/calendar-accounts/${caldavAccount.id}`, { method: "DELETE" });
+  await request(`/api/kiosk-devices/${cleanupKioskId}`, { method: "DELETE" });
   await request(`/api/theme-schedules/${activeSchedule.id}`, { method: "DELETE" });
   await request(`/api/theme-schedules/${pastSchedule.id}`, { method: "DELETE" });
   await request(`/api/theme-schedules/${oldSchedule.id}`, { method: "DELETE" });
   await request(`/api/themes/${clone.id}/background`, { method: "DELETE" });
+  await request(`/api/room-groups/${roomGroup.id}`, { method: "DELETE" });
   await request(`/api/rooms/${room.id}`, { method: "DELETE" });
   await request(`/api/buildings/${building.id}`, { method: "DELETE" });
   await request(`/api/campuses/${campus.id}`, { method: "DELETE" });
@@ -444,7 +903,7 @@ try {
   await request(`/api/roles/${clonedRole.id}`, { method: "DELETE" });
   await request(`/api/roles/${customRole.id}`, { method: "DELETE" });
 
-  const adminResponse = await fetch(`${baseUrl}/admin`);
+  const adminResponse = await fetch(`${baseUrl}/admin`, { headers: { Cookie: authCookie } });
   const adminHtml = await adminResponse.text();
   assert.match(adminHtml, /Locations & Rooms/);
   assert.match(adminHtml, /User Management/);
@@ -452,23 +911,74 @@ try {
   assert.match(adminHtml, /Emergency Broadcast/);
   assert.match(adminHtml, /Permission & Role Editor/);
   assert.match(adminHtml, /Calendar Accounts/);
+  assert.match(adminHtml, /Calendar Assignment/);
+  assert.match(adminHtml, /Conflict Resolution/);
+  assert.match(adminHtml, /Calendar Conflict Dashboard/);
+  assert.match(adminHtml, /Conflict Decision History/);
+  assert.match(adminHtml, /Replace Others/);
   assert.match(adminHtml, /Live Theme Preview/);
   assert.match(adminHtml, /themePreviewRoom/);
   assert.match(adminHtml, /Theme Scheduler/);
   assert.match(adminHtml, /Upcoming Schedule/);
   assert.match(adminHtml, /Broadcast History/);
-  assert.match(adminHtml, /Published By/);
+  assert.match(adminHtml, /Active Broadcasts/);
+  assert.match(adminHtml, /Room Groups/);
+  assert.match(adminHtml, /In-App Notifications/);
+  assert.match(adminHtml, /Kiosk Devices/);
+  assert.match(adminHtml, /kioskDeviceSearch/);
+  assert.match(adminHtml, /changePasswordForm/);
+  assert.match(adminHtml, /adminPasswordForm/);
+  assert.match(adminHtml, /currentUserName/);
+  assert.match(adminHtml, /Twilio SMS Settings/);
+  const serviceWorkerResponse = await fetch(`${baseUrl}/static/kiosk-sw.js`);
+  assert.equal(serviceWorkerResponse.status, 200);
+  assert.match(await serviceWorkerResponse.text(), /signage-kiosk-runtime/);
   assert.equal(smtpMessages.length >= 3, true);
 
   const finalState = await request("/api/state");
   assert.equal(finalState.settings.email.hasPassword, true);
+  assert.equal(finalState.settings.twilio.hasAuthToken, true);
   assert.equal(JSON.stringify(finalState).includes("smtp-password"), false);
+  assert.equal(JSON.stringify(finalState).includes("twilio-auth-token"), false);
+  assert.equal(JSON.stringify(finalState).includes("passwordHash"), false);
   assert.equal(finalState.emailNotifications.length >= 3, true);
+
+  await request("/api/auth/2fa/setup", {
+    method: "POST",
+    body: JSON.stringify({ method: "sms", phoneNumber: "+13125550124" })
+  });
+  const setupCode = twilioMessages.at(-1).body.match(/\b(\d{6})\b/)[1];
+  const confirmedTwoFactor = await request("/api/auth/2fa/confirm", {
+    method: "POST",
+    body: JSON.stringify({ code: setupCode })
+  });
+  assert.equal(confirmedTwoFactor.method, "sms");
+  await request("/api/auth/logout", { method: "POST", body: "{}" });
+  authCookie = "";
+  csrfToken = "";
+  const smsLoginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: "admin@example.org",
+      password: "Integration-Admin-Password-Changed-2026!"
+    })
+  });
+  const smsLoginChallenge = await smsLoginResponse.json();
+  assert.equal(smsLoginChallenge.twoFactorMethod, "sms");
+  const loginCode = twilioMessages.at(-1).body.match(/\b(\d{6})\b/)[1];
+  const verifiedSmsLogin = await fetch(`${baseUrl}/api/auth/verify-2fa`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ challengeToken: smsLoginChallenge.challengeToken, code: loginCode })
+  });
+  assert.equal(verifiedSmsLogin.status, 200);
 
   console.log("Integration checks passed");
 } finally {
   child.kill("SIGTERM");
   await new Promise(resolve => smtpServer.close(resolve));
   await new Promise(resolve => calendarServer.close(resolve));
+  await new Promise(resolve => twilioServer.close(resolve));
   await fs.rm(dataDir, { recursive: true, force: true });
 }

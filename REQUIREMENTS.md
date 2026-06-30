@@ -33,18 +33,28 @@ The Signage Management System provides room-facing digital signage for classroom
 - Roles must control access to management portal modules and actions.
 - Permissions should include view, create, edit, delete, approve, broadcast, and manage settings.
 - Administrators must be able to assign users to one or more roles.
+- Users with `role.manage` may create, clone, edit, deactivate, or delete role definitions, limited to permissions at or below their own permission level unless they are System Administrators.
+- System Administrators may create users and assign any role to any user.
+- Center Administrators may create users within their assigned center scope.
+- Center Administrators may assign only roles and feature access at or below their own permission and feature level.
 - Administrators must be able to scope user access by center, campus, building, or room.
 - A user may belong to and receive access for multiple centers.
+- The system must include edit-only built-in roles: Center Edit, Campus Edit, Building Edit, and Room Edit.
 
 ### 3.3 User Feature Access Grant
 
 - The system must allow administrators to grant feature access to individual users.
 - User feature access grants must support the following feature groups:
-  - G1. Calendar Sync.
-  - G2. Calendar Event Conflict Resolution.
-  - G3. Front End Theme and Style Management.
-  - G4. Notifications.
-  - G5. Emergency & Safety Broadcast.
+  - Calendar Sync.
+  - Calendar Event Conflict Resolution.
+  - Theme Editor.
+  - Theme Scheduler.
+  - Notifications.
+  - Emergency & Safety Broadcast.
+- Users must only see management menu items, pages, tabs, and page actions for features specifically assigned to them.
+- Calendar Sync controls must be shown only to users with Calendar Sync access.
+- Calendar Conflict Resolution controls must be shown only to users with Calendar Event Conflict Resolution access.
+- Theme Editor and Theme Scheduler must be separate feature grants.
 - Feature access grants must work with role permissions and location scope.
 - A user must only be able to use a granted feature for the centers, campuses, buildings, or rooms assigned by role or explicit access scope.
 - Administrators must be able to view which users have access to each feature.
@@ -66,20 +76,22 @@ The kiosk display must show:
 - Organization, center, or facility logo.
 - Room name or room number.
 - Current event title when busy.
+- Current event start and end time when busy.
 - "Available" when no current event is active.
 - QR code for booking.
 - Human-readable booking link.
-- Class name or meeting category when available.
-- Current local time.
+- Current local weekday, date, year, and time including seconds, such as `Thu, Jun 25, 2026 1:01:01 AM`.
 - Upcoming events.
 
 ### 4.2 Current Event and Room Status Behavior
 
 - If a current event is active, the display must show the event title.
 - If the room is free, the display must show "Available" prominently.
-- The display should show current event start and end time when available.
-- The display should optionally show organizer, class name, or meeting type based on privacy settings.
+- The display must show current event title and start/end time by default.
+- Event description display must be an inherited center, campus, building, and room setting with room-level override.
+- Organizer and event category must not be shown on the kiosk.
 - Private events must respect configured privacy rules.
+- Events marked private, or whose description contains "Private Event", "Private Events", "Rental Event", or "Rental Events", must display the title "Private Event" and must not display their description.
 - The kiosk display must support four room status states:
   - Available: no event is active at the current time.
   - Busy: an event is currently active.
@@ -90,21 +102,26 @@ The kiosk display must show:
 
 ### 4.3 Upcoming Events
 
-- The display must list upcoming events for the same day by default.
-- Administrators must be able to configure how many upcoming events appear.
-- Upcoming events must show time range and title, unless privacy settings hide title details.
-- The display should indicate when there are no more scheduled events for the day.
+- The display must list the next upcoming events across the synchronized 30-day future window, not only events occurring today.
+- The number of upcoming events shown per page must be inherited from center, campus, building, and room settings, with a room-level override.
+- The default upcoming-event page size is five and the allowed range is one through ten.
+- If more events are available than fit on one page, the kiosk must rotate pages every 10 seconds.
+- Upcoming events must show title, weekday, date, start time, and end time unless privacy rules mask the title.
+- The display must show "No more events" when there are no later events in the synchronized future window.
 
 ### 4.4 Booking QR Code and Link
 
 - Each room display must include a QR code that opens a booking or room request URL.
 - The booking link must also be shown as readable text.
 - The booking destination must be configurable by room, building, campus, or center.
-- The QR code should update automatically if the booking URL changes.
+- The QR code must be a genuine, scannable QR code containing only the room's effective booking URL.
+- The QR code must update automatically if the effective booking URL changes.
+- Theme settings must support QR foreground color, background color, transparent background, size, border, and quiet-zone margin.
+- The system must enforce sufficient QR foreground/background contrast and fall back to black on white when configured colors are unreliable.
 
 ### 4.5 Time and Time Zone
 
-- The kiosk display must show the current local time for the room.
+- The kiosk display must show the current local weekday, date, year, and time with seconds for the room.
 - Time zone must be configured at the center level because a center is the primary physical geographic entity.
 - Campuses, buildings, and rooms must inherit the center time zone by default.
 - Event times must display in the center's local time zone unless an approved override is configured.
@@ -114,8 +131,14 @@ The kiosk display must show:
 - The display must be optimized for full-screen use.
 - The display must refresh schedule data automatically without manual reload.
 - The display must recover gracefully after network interruptions.
-- The display must show a clear offline or stale-data state if schedule data cannot be refreshed.
-- The display must support portrait and landscape layouts.
+- The display must cache the last complete room payload, schedule, theme tokens, broadcast state, and required static assets locally.
+- The display must show "Data may be outdated" after five minutes without successful server contact.
+- The display must continue operating from cached data indefinitely while clearly showing offline status.
+- The kiosk clock must continue using the device clock and effective room time zone while offline.
+- The display must support automatic responsive portrait and landscape layouts.
+- Each theme must declare whether it supports both orientations, landscape only, or portrait only.
+- When a device orientation is not explicitly supported, the kiosk must use a safe responsive fallback rather than showing an unusable layout.
+- Management-triggered refresh must support data refresh and full page reload commands targeted to centers, campuses, buildings, room groups, or rooms.
 - The display must prevent visual overlap or unreadable text on common kiosk screen sizes.
 
 ### 4.6.1 Public Route Structure
@@ -181,6 +204,7 @@ The management portal must provide secure administrative access to configure the
 - Assign rooms to a building.
 - Configure building-level booking URL and theme overrides.
 - Target notifications and safety broadcasts to a building.
+- Building booking, theme, and time zone values override campus or center defaults when configured.
 
 ### 5.4 Room Management
 
@@ -194,6 +218,7 @@ The management portal must provide secure administrative access to configure the
 - Preview kiosk display for a room.
 - Mark a room as unavailable for maintenance or closure.
 - Configure room privacy settings.
+- Room booking and theme values are optional overrides. Blank values inherit from building, then campus, then center.
 
 ### 5.5 User Management
 
@@ -204,26 +229,51 @@ The management portal must provide secure administrative access to configure the
 - Track user status such as active, invited, suspended, or deactivated.
 - Support email address as username.
 - Store passwords securely using encrypted or hashed password storage.
-- Support two-factor authentication using an authenticator app.
+- Support two-factor authentication using either an authenticator app or SMS text message.
 - Allow users to be assigned to multiple centers when authorized.
 - External identity provider support should be planned for a future version.
 
 ### 5.6 Role Management
 
-- Create, edit, deactivate, and view roles.
+- Users with `role.manage` may create, edit, deactivate, delete, clone, and view roles.
+- Non-System Administrators with `role.manage` may only include permissions at or below their own assigned permission level when creating or modifying roles.
 - Configure permissions by module and action.
 - Support default system roles.
-- Allow System Administrators to clone roles.
-- Allow System Administrators to modify cloned or custom role permissions.
+- Allow authorized users to clone roles.
+- Allow authorized users to modify cloned or custom role permissions according to their own permission ceiling.
 - Support flexible role definitions instead of hard-coded role permissions.
 - Prevent deletion of roles currently required by active users unless reassigned.
 - Record role changes in audit logs.
+
+### 5.6.1 Permission Definitions
+
+- `dashboard.view`: can view the dashboard.
+- `center.manage`: full add, edit, and delete rights for centers within permitted scope.
+- `center.edit`: edit-only rights for assigned center information.
+- `campus.manage`: full add, edit, and delete rights for campuses within permitted scope.
+- `campus.edit`: edit-only rights for assigned campus information.
+- `building.manage`: full add, edit, and delete rights for buildings within permitted scope.
+- `building.edit`: edit-only rights for assigned building information.
+- `room.manage`: full add, edit, and delete rights for rooms within permitted scope.
+- `room.edit`: edit-only rights for assigned room information.
+- `room.status.change`: can change room status only.
+- `user.manage`: full add, edit, and delete rights for users within permitted scope.
+- `role.manage`: full add, edit, and delete rights for roles, limited by the user's own permission ceiling unless System Administrator.
+- `calendar.manage`: full add, edit, and delete rights for room calendar assignments within permitted scope.
+- `calendar.sync`: full add, edit, and delete rights for calendar service connections and synchronization accounts.
+- `theme.manage`: full add, edit, and delete rights for themes created by that user, with System Administrator override.
+- `notification.manage`: access to the Notifications feature.
+- `broadcast.publish`: can publish emergency or safety broadcasts.
+- `broadcast.template.manage`: can create, edit, and delete broadcast templates.
+- `broadcast.history.view`: can view broadcast history.
+- `audit.view`: can view audit data when exposed in the portal.
+- `settings.manage`: can manage system settings.
 
 ### 5.7 Feature Management
 
 - Enable or disable system features by center, campus, building, room, or role.
 - Grant or revoke feature access for individual users.
-- Support feature flags for calendar sync, conflict resolution, theme management, notifications, and emergency broadcasts.
+- Support feature flags for calendar sync, conflict resolution, theme editing, theme scheduling, notifications, and emergency broadcasts.
 - Show enabled and disabled status clearly in the management portal.
 - Restrict feature configuration to authorized administrators.
 - Support scheduled activation and expiration for feature access when needed.
@@ -233,19 +283,32 @@ The management portal must provide secure administrative access to configure the
 ### 6.1 Calendar Sync
 
 - The system must support external calendar synchronization for room schedules.
-- Calendar sync must support Google Calendar and Microsoft 365.
-- Calendar sync should support public calendar URLs where provided by calendar services.
-- Public calendar URL feeds should be treated as read-only and should be expected to update approximately every 15 minutes depending on provider behavior.
+- Calendar sync must support Google Calendar, Microsoft 365, CalDAV with initial iCloud validation, and public iCalendar URLs.
+- Google must support service-account credentials and interactive OAuth.
+- Microsoft 365 must support application credentials and interactive OAuth.
+- CalDAV must support server URL, username, and app-specific password credentials.
+- OAuth connections are system-owned and may expose multiple calendars for assignment to individual rooms.
+- Public calendar URL feeds must be read-only.
+- Public URL refresh interval must be configurable with a default of 15 minutes and minimum of five minutes. The portal must warn that upstream provider caching may prevent a shorter interval from producing fresher data.
 - Additional calendar providers may be added in future releases.
 - The system must support a hybrid calendar-account model with multiple connected calendar accounts.
 - Each connected calendar account may provide access to multiple calendars.
 - System Administrators must be able to assign a specific calendar from any connected calendar account to a room.
 - Each room must be able to map to a calendar resource or calendar feed.
-- The system must import event title, start time, end time, organizer, location, description, and privacy status when available.
+- The system must import event title, start time, end time, location, description, privacy status, recurrence data, source identifier, source URL, and source ETag when available.
 - The system must import recurring events and recurrence exceptions from connected calendars.
-- Sync frequency must be configurable.
+- The synchronized window must include the previous 30 days and next 30 days.
+- Events deleted from an external calendar must be removed from signage data on the next successful sync.
+- Google and Microsoft webhooks should accelerate updates, but a recurring 15-minute reconciliation sync must remain active.
+- Webhook registration or delivery failure must automatically fall back to polling.
+- Redis and BullMQ must be used for queued calendar synchronization when Redis is available.
+- If Redis is unavailable, the application must continue operating with in-process polling rather than failing startup.
+- Sync frequency must be configurable within provider and system limits.
 - The system must support manual refresh by authorized users.
 - The system must show sync status, last successful sync time, and sync errors.
+- Sync failures must create in-app and configured email notifications for the connection owner, System Administrators, and affected Center Administrators.
+- Writable Google, Microsoft 365, and CalDAV connections must support internal create, update, and delete operations when provider permissions allow them.
+- In the initial management workflow, administrators should normally edit events in the external calendar and use Signage Management System conflict selection only to choose which overlapping event is displayed.
 - The system must avoid exposing private calendar details on kiosk displays unless explicitly allowed.
 - Private events must display as "Private Event" on kiosk displays.
 - Rental events must display as "Private Event" on kiosk displays.
@@ -254,14 +317,17 @@ The management portal must provide secure administrative access to configure the
 ### 6.2 Calendar Event Conflict Resolution
 
 - The system must detect overlapping events for the same room.
-- Conflicts must be visible in the management portal.
-- Authorized users must be able to review conflict details.
-- The system should support conflict resolution actions such as ignore, cancel, replace, move, or mark as resolved.
-- Conflict resolution must not require a separate approval step before applying the selected resolution.
-- If the system has writable access to the source calendar, conflict resolution actions may update calendar events.
-- If the system has read-only access, such as a public calendar URL, users must resolve conflicts outside the system and then refresh or wait for the next sync.
-- The system should preserve an audit trail of conflict decisions.
-- The kiosk display must use configured conflict handling rules to decide which event appears.
+- The management portal must provide a conflict dashboard and detailed review screen showing room, source account, calendar, access level, event title, description, start, end, and selected display event.
+- Authorized users must be able to ignore a conflict, resolve the signage display selection, cancel an event, replace other overlapping events with the selected event, or move an event.
+- Ignore and Resolve must not alter source calendars.
+- Cancel, Replace, and Move must write changes back only when every affected event is on a writable Google Calendar or Microsoft 365 connection.
+- Read-only Google, Microsoft, CalDAV, and public URL sources must reject source-changing conflict actions and continue to support Ignore or Resolve.
+- Source-changing actions must require confirmation in the management portal.
+- Every conflict decision must record the acting user, action, room, selected and target events, before/after times when applicable, event snapshots, source-write status, and decision time.
+- Conflict decision history and related audit records must be retained for no more than six months.
+- Unresolved and ignored conflicts must use deterministic kiosk behavior: selected event when configured, otherwise earliest start time, then earliest end time, then external event ID.
+- Only the deterministic winning event from an overlapping conflict group may appear in current or upcoming kiosk event data.
+- Recurrence exceptions and cancelled instances must be tested for Google Calendar, Microsoft 365, and ICS/public calendar feeds.
 
 ### 6.3 Front-End Theme and Style Management
 
@@ -279,7 +345,7 @@ The management portal must provide secure administrative access to configure the
 - Center name, building name, room name, current time, room status, QR code, and upcoming-event structure must remain constant across center default themes.
 - Themes and templates may be assigned at center, campus, building, or room level.
 - Lower-level themes should be able to inherit or override higher-level defaults.
-- Event-based templates may use a different logo image when authorized through feature G3.
+- Event-based templates may use a different logo image when authorized through Theme Editor access.
 - Administrators must be able to preview themes before publishing.
 - Theme preview must allow selection of an eligible room and Available, Busy, or Buffer/Warning display state.
 - Published theme changes must update kiosk displays without redeploying application code.
@@ -287,8 +353,8 @@ The management portal must provide secure administrative access to configure the
 - Scheduled themes must temporarily override the room theme configured in Room Management.
 - Theme schedules must include start and end times, target entities, selected theme, owner, creation time, and update time.
 - The portal must show active/future schedules and completed schedules from the previous two years.
-- Schedule creation and editing must respect the user's assigned location scope and theme-management permission.
-- The system must allow authorized users to create, update, clone, publish, archive, and restore kiosk templates through feature G3.
+- Schedule creation and editing must respect the user's assigned location scope and Theme Scheduler permission.
+- The system must allow authorized users to create, update, clone, publish, archive, and restore kiosk templates through Theme Editor access.
 - Administrators must be able to clone kiosk templates.
 - Google Fonts may be used by kiosk templates when the selected font is approved and available to the kiosk display.
 - Colors, fonts, spacing rules, and accessibility contrast requirements must be configurable by template.
@@ -299,7 +365,7 @@ The management portal must provide secure administrative access to configure the
 - Template changes may be scheduled from the management interface.
 - Scheduled template changes must support start date/time, end date/time, target scope, and priority.
 - Scheduled templates may be applied for special events by campus, building, or room while preserving the center default template.
-- When a scheduled template ends, the kiosk display must automatically return to the center's default template.
+- When a scheduled template ends, the kiosk display must return to the normal effective theme resolved in this order: room override, building default, campus default, then center default.
 - If multiple scheduled templates overlap, the system must apply a clear precedence order: room override, building override, campus override, center default.
 - The default attached-screen style must be available as a configurable CSS template in `templates/kiosk-default.css`.
 - The previously provided Available and Busy signage images should be treated as approved baseline layout references.
@@ -333,6 +399,10 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Authorized users must be able to create emergency or safety broadcasts.
 - Broadcasts must include title, message, severity, start time, end time, and target scope.
 - Broadcasts must be targetable by center, campus, building, room group, or specific room.
+- Multiple broadcasts may be active at the same time when they apply to separate or overlapping scopes.
+- If multiple active broadcasts apply to one room, the kiosk must display the highest-severity broadcast, then the most recently started broadcast when severity is equal.
+- Broadcasts may start immediately or at a scheduled time and may include an optional automatic expiration time.
+- The system must automatically activate and expire scheduled broadcasts without management-portal interaction.
 - Broadcast target choices must be limited to entities assigned to the user's role and access scope.
 - Users must be able to select one or more eligible centers, campuses, buildings, and rooms for a broadcast.
 - Emergency and safety broadcasts must require confirmation before publishing.
@@ -344,6 +414,9 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Broadcasts must be revocable by authorized users.
 - The system must track who created, updated, started, and ended each broadcast.
 - The management portal must clearly show active broadcasts.
+- The management portal must separately show active and future scheduled broadcasts with owner, target scope, severity, and effective time.
+- Broadcast creation, activation, updates, cancellation, and ending must create in-app notifications for eligible users.
+- Broadcast email notifications must be sent to eligible users when SMTP delivery is enabled.
 - The system must provide ready-to-use broadcast message templates that authorized users can launch at any moment.
 - Broadcast templates must be editable only by authorized administrators.
 - Broadcast template examples must include:
@@ -400,6 +473,8 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Booking URL
 - Manual room booking URL
 - Calendar source
+- Upcoming-event page size override
+- Event-description visibility override
 - Display URL
 - QR code value
 - Theme assignment
@@ -425,11 +500,16 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 ### 7.4 Calendar Account Data Fields
 
 - Calendar account ID
-- Provider such as Google Calendar, Microsoft 365, or public URL
+- Provider such as Google Calendar, Microsoft 365, CalDAV/iCloud, or public URL
 - Account name
 - Authentication type
 - Access level such as read-only or writable
+- System owner
+- Tenant, client, mailbox, server, username, and principal identifiers as applicable
+- Encrypted credential or OAuth token data
 - Connected calendars
+- Polling interval
+- Webhook status, last notification time, expiration, and error
 - Active status
 - Last successful sync time
 - Last sync error
@@ -451,6 +531,8 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Typography settings
 - Google Font selection
 - Layout settings
+- Supported orientation mode
+- QR foreground, background, transparency, size, border, and quiet-zone settings
 - Publication status
 - Created by
 - Last updated by
@@ -476,11 +558,22 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Device name
 - Device type
 - Browser
-- Registered room URL
-- Registration token
-- Last check-in time
+- Platform
+- Viewport and orientation
+- Client device ID
+- One-time device token returned only to the registering kiosk
+- One-way device-token hash stored by the server; the original token must not be retrievable
+- Six-digit pairing code
+- Registration status: pending, active, or revoked
+- Health status: online, stale, offline, or revoked
+- Approved by and approved time
+- Revoked by and revoked time
+- Last reassigned by and reassigned time
+- Last contact time
+- Last successful data time
+- Pending remote command
 - Last IP address
-- Audio autoplay enabled status
+- Alert-audio enabled status
 - Active status
 - Created by
 - Last updated by
@@ -515,13 +608,43 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 ## 8. Security Requirements
 
 - All management portal access must require authentication.
+- Users must sign in with email and password. Passwords must be stored using a memory-hard salted hash.
+- Password-reset links must be single-use, expire after 30 minutes, and revoke existing sessions when used.
+- Signed-in users must be able to change their password by providing their current password and confirming a new password.
+- System Administrators must be able to assign or reset a user's password. The reset must revoke that user's existing sessions and may explicitly clear authenticator-app enrollment.
+- Users must be able to choose either authenticator-app TOTP or SMS text-message verification as their two-factor authentication method.
+- Authenticator-app two-factor authentication must use standard six-digit TOTP enrollment and verification.
+- SMS two-factor authentication must send a random six-digit, single-use code that expires after five minutes. Codes must be stored only as cryptographic hashes and resend requests must be rate-limited.
+- User cell-phone numbers and Twilio sender numbers must use E.164 format.
+- System Administrators must be able to configure Twilio Account SID, Auth Token, and sender phone number. The Auth Token must be encrypted at rest and never returned to the browser.
+- The management portal must display the current signed-in user's name in the upper-right header.
+- Authenticated sessions must use high-entropy server-tracked tokens, secure HTTP-only same-site cookies, an eight-hour expiration, explicit logout, and revocation.
+- Management write operations must require a per-session CSRF token.
+- Login attempts must be rate limited and recorded with outcome, IP address, user agent, and time.
+- The application must send content-security, anti-framing, MIME-sniffing, referrer, permissions-policy, and HTTPS transport-security headers.
 - Administrative actions must require role-based authorization.
 - User permissions must respect location scope.
+- Center, campus, building, room, individual-room, calendar, user, and theme data must be filtered to the signed-in user's scope.
+- Individual feature grants must be enforced in addition to role permissions.
+- Feature grants may be permanent or scheduled with an effective start and end time.
+- Only System Administrators may change standardized Available, Busy, and Buffer/Warning status colors.
 - Sensitive calendar event details must be protected.
 - Private events must not expose title, organizer, or description unless allowed by policy.
 - All create, update, delete, login, role assignment, broadcast, and conflict resolution actions must be logged.
 - Kiosk display URLs should use non-guessable identifiers or another approved access control method.
 - The system must protect against unauthorized broadcast creation.
+- The application must not accept an identity from `X-User-Id` or fall back to an implicit administrator.
+
+### 8.1 Data Architecture and Concurrency
+
+- Runtime PostgreSQL persistence must use versioned, per-domain normalized tables rather than one shared `application_state` JSONB row.
+- First startup after upgrade must transactionally import the legacy `application_state` record or JSON file without changing existing entity IDs or kiosk routes.
+- Database migrations must be ordered, recorded in `schema_migrations`, and executed transactionally.
+- Writes must use PostgreSQL transactions, advisory locking, and revision checks to prevent silent lost updates across application instances.
+- Frequently queried room codes, user emails, hierarchy fields, calendar times, sessions, notifications, feature grants, and audit times must be indexed.
+- Large management collections must expose paginated API access with bounded page sizes.
+- Calendar synchronization, conflict processing, notifications, broadcast lifecycle, and schedule reconciliation must run through workers.
+- Redis/BullMQ must distribute jobs and kiosk refresh/broadcast events across multiple application instances, with in-process fallback for a single-server outage mode.
 
 ## 9. Audit and Reporting Requirements
 
@@ -550,6 +673,8 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Authorized users must be able to refresh a kiosk page from the management portal.
 - Management-portal-triggered refreshes should update schedule, status, template, and broadcast content without requiring physical access to the kiosk device.
 - Management portal list views should support search, filtering, and pagination.
+- The Calendars management page must provide separate Calendar Sync, Calendar Assignment, and Conflict Resolution tabs.
+- Registered Kiosk Devices must support filtering by search text, room, registration state, and health state.
 - The system should support multiple campuses, buildings, and rooms without major performance degradation.
 
 ### 10.3 Accessibility
@@ -569,9 +694,17 @@ Sample HTML/CSS previews for the refined Classic Institutional, Event Formal, an
 - Recommended kiosk browsers are Google Chrome, Microsoft Edge, or Chromium-based kiosk browsers.
 - Kiosk devices must be configured to allow audio autoplay for `https://signage.bapswest.org`.
 - iPhone and iPad Safari may still require one user tap on the kiosk page before alert audio can play; the kiosk page must show a full-screen "Enable Sound" setup control for this case.
-- Kiosk pages should require device registration in addition to the unique room URL for production use.
-- Device registration should bind a physical kiosk device to a room, record device name, device type, last check-in time, browser, IP address, and active status.
-- The unique room URL may be sufficient for early testing and pilot use.
+- Kiosk pages must continue working without device registration.
+- Optional device registration must add health monitoring, orientation, browser/platform details, last contact, last successful data time, audio status, and remote refresh/reload controls.
+- A new device must display a six-digit pairing code and remain pending until approved.
+- System Administrators and Center Administrators responsible for the room's center may approve pairing.
+- Center Administrators may approve only kiosk devices assigned to rooms in their own center scope.
+- Registration must generate a high-entropy device token, return it only to the physical kiosk, store only a one-way token hash, and validate subsequent heartbeats using timing-safe comparison.
+- Device health is online when the last check-in is within two minutes, stale after two minutes, and offline after ten minutes.
+- The management portal must show device name, assigned room, device type, browser, platform, viewport, orientation, last IP address, audio state, last contact, and last successful data time.
+- Authorized administrators may reassign a pending or active device to another room within their permitted scope. An online kiosk must automatically navigate to its newly assigned room.
+- Authorized administrators may revoke a device. Revocation must invalidate its token immediately and prevent silent re-registration until the revoked record is explicitly removed.
+- The supported kiosk test matrix is ChromeOS/Chrome, Windows/Edge, iPad/Safari, Android/Chrome, and Raspberry Pi/Chromium.
 
 ### 10.5 Server Hardware Requirements
 
@@ -604,7 +737,7 @@ Recommended software stack:
 - Deployment: Docker and Docker Compose.
 - Database: PostgreSQL.
 - Queue/cache/live-message support: Redis.
-- Background processing: worker and scheduler containers.
+- Background processing: BullMQ worker and scheduler processes may run inside the application container for the first release and may be separated into dedicated containers when scaling requires it.
 - Public access: Cloudflare Tunnel pointing to local Nginx.
 - File storage: local mounted storage for first release, with future option for S3-compatible object storage or MinIO.
 - TLS: handled through Cloudflare public access, with Nginx serving the local application behind the tunnel.
@@ -616,8 +749,8 @@ Recommended software stack:
 Required application services:
 
 - Web/API service for management portal, kiosk pages, preview pages, and API routes.
-- Worker service for calendar sync, conflict detection, notifications, and broadcast processing.
-- Scheduler service for recurring jobs, template schedules, broadcast expiration, and periodic calendar refresh.
+- Application background worker for calendar sync, conflict detection, notifications, and broadcast processing.
+- Application scheduler for recurring jobs, template schedules, broadcast expiration, and periodic calendar refresh.
 - PostgreSQL database service.
 - Redis service.
 - Nginx reverse proxy.
@@ -663,10 +796,10 @@ The initial release should include:
 - Center, campus, building, and room management.
 - User and role management with basic permissions.
 - Email username and password authentication.
-- Two-factor authentication using an authenticator app.
+- Two-factor authentication using an authenticator app or SMS text message.
 - Dedicated kiosk display page per room.
-- Facility name, building name, logo, room name, current event or room status, current time, booking QR code, booking link, class name, and upcoming events.
-- Calendar sync for Google Calendar and Microsoft 365.
+- Facility name, building name, logo, room name, current event or room status, current event time, current time, booking QR code, booking link, and upcoming events.
+- Calendar sync for Google Calendar, Microsoft 365, CalDAV/iCloud, and public iCalendar URLs.
 - Read-only calendar sync through public calendar URLs.
 - Basic event conflict detection.
 - Basic theme management with the default center kiosk template.
@@ -674,11 +807,11 @@ The initial release should include:
 - Basic notifications for sync failures and conflicts.
 - Emergency broadcast creation, prepared broadcast templates, scoped target selection, and display override.
 - Production and staging/test environments on the same Proxmox server.
-- Device registration for production kiosk devices.
+- Optional pairing and monitoring for production kiosk devices.
 
 ## 13. Future Enhancements
 
-- Multi-provider calendar sync.
+- Additional calendar providers beyond Google, Microsoft 365, CalDAV/iCloud, and public iCalendar URLs.
 - External identity provider authentication.
 - SMS and push notifications.
 - Different signage devices for the same room using different templates.
@@ -697,6 +830,12 @@ The initial release should include:
 
 - Google Calendar and Microsoft 365 are required calendar providers for the first release.
 - Public calendar URLs should be supported as read-only calendar feeds where possible.
+- Google and Microsoft 365 connections support both application/service credentials and interactive OAuth.
+- OAuth connections are owned by the system and may provide multiple calendars.
+- CalDAV support initially targets iCloud using an app-specific password.
+- Calendar synchronization covers 30 days in the past and 30 days in the future.
+- Webhooks accelerate Google and Microsoft updates while polling and 15-minute reconciliation remain the reliability fallback.
+- Redis/BullMQ queues calendar sync when available; the application falls back to in-process polling if Redis is unavailable.
 - Booking from signage must happen only through the QR code and booking link, not through direct kiosk interaction.
 - Booking URLs are managed manually per room.
 - QR codes do not need to be downloadable or printable from the management portal in the first release.
@@ -704,9 +843,9 @@ The initial release should include:
 - Each connected calendar account may provide access to multiple calendars.
 - System Administrators assign calendars to rooms.
 - Recurring events and recurrence exceptions must be loaded from the source calendar.
-- If writable calendar access is available, the system may update events during conflict resolution.
-- If only read-only calendar access is available, users must resolve conflicts separately in the source calendar system.
-- Conflict resolution does not require a separate approval step.
+- Writable Google and Microsoft 365 connections support Cancel, Replace, and Move conflict actions that update source events.
+- Ignore and Resolve select deterministic signage behavior without modifying source calendars.
+- Conflict display selection does not require a separate approval step.
 - Private and rental events must display as "Private Event" on kiosk displays.
 - Rental and private events may be identified by the phrases "Rental Event" or "Private Event" in the event description.
 - Emergency broadcast ability is granted by System Admin through feature access and limited by the user's assigned role and scope.
@@ -716,15 +855,17 @@ The initial release should include:
 - Role permissions are flexible and may be modified or cloned by System Administrators.
 - A user may belong to multiple centers.
 - Audit logs, calendar sync history, and conflict history are retained for no more than 6 months.
-- System health and sync failure email notifications go to Center Administrators or users assigned to the whole center.
+- Calendar sync failure notifications go to the connection owner, System Administrators, and Center Administrators responsible for the affected center.
 - Staging/test and production environments may run on one Proxmox server if they are isolated by separate Docker Compose projects, databases, Redis instances or namespaces, environment files, and Nginx routes.
 - The test site uses `https://signage-test.bapswest.org`.
 - SMS and push notifications are not required in the first release.
 - Multiple physical signage devices may show the same room kiosk page in the first release.
 - Different signage devices for the same room with different templates are a future enhancement.
+- Kiosk registration is optional. Registered devices support health monitoring and remote commands.
+- System Administrators and responsible Center Administrators may approve kiosk pairing.
 - The first production deployment may use one on-premise Proxmox VM with Debian 12, Nginx, Docker, PostgreSQL, Redis, and Cloudflare Tunnel.
 - Public access uses `signage.bapswest.org` with path-based routes for admin, kiosk, preview, and API access.
-- Initial authentication uses email as username, encrypted or hashed password storage, and authenticator-app two-factor authentication.
+- Initial authentication uses email as username, encrypted or hashed password storage, and user-selectable authenticator-app or SMS two-factor authentication.
 - External identity provider support is a future enhancement.
 - The mandatory default logo for all center default themes is `assets/branding/aksharderi-small2.png`.
 - The logo must be rendered from an image asset.
@@ -755,16 +896,23 @@ The initial release should include:
 - The kiosk display supports Available, Busy, Buffer/Warning, and Emergency/Safety Broadcast statuses.
 - The kiosk display shows current time in the center's local time zone.
 - The kiosk display shows a booking QR code and readable booking link.
+- The booking QR code is genuine, scannable, and theme configurable with enforced contrast.
 - Booking URLs can be managed manually per room.
 - The kiosk display shows upcoming events.
+- Upcoming events span the next 30 days, use inherited configurable page size, rotate every 10 seconds, and show "No more events" when empty.
+- The kiosk continues from cached data indefinitely when offline, marks data stale after five minutes, and keeps its clock running.
+- Themes support explicit portrait/landscape orientation modes with a safe responsive fallback.
 - Calendar events sync into the system from Google Calendar and Microsoft 365 for configured rooms.
+- Calendar events sync from CalDAV/iCloud.
 - Calendar events can sync from supported public calendar URLs as read-only feeds.
 - System Administrators can connect multiple calendar accounts and assign calendars to rooms.
 - Recurring events and recurrence exceptions load from connected calendars.
 - Private and rental events display as "Private Event" on kiosk displays.
 - Conflicting events are detected and visible to authorized users.
-- Conflict resolution can be applied without a separate approval step.
-- An administrator can grant and revoke a user's access to Calendar Sync, Calendar Event Conflict Resolution, Front End Theme and Style Management, Notifications, and Emergency & Safety Broadcast.
+- An authorized user can open detailed conflict review and apply Ignore, Resolve, Cancel, Replace, or Move according to source access.
+- Unresolved conflicts display one deterministic event on kiosks.
+- Conflict decision history identifies the acting user and is retained for six months.
+- An administrator can grant and revoke a user's access to Calendar Sync, Calendar Event Conflict Resolution, Theme Editor, Theme Scheduler, Notifications, and Emergency & Safety Broadcast.
 - A System Administrator can clone and modify roles.
 - A user can belong to multiple centers.
 - An authorized user can create an emergency broadcast.
@@ -776,7 +924,7 @@ The initial release should include:
 - Active emergency broadcasts override normal room signage.
 - The dashboard shows all rooms available to the user's role and displays each room's current status.
 - The dashboard provides live signage previews for rooms available to the user's role.
-- Production kiosk devices can be registered to rooms.
+- Kiosk devices can operate unregistered or can be paired for monitoring and remote data-refresh/full-reload commands.
 - Audit logs and calendar sync history are retained for no more than 6 months.
 - Users can be assigned roles and permissions.
 - Administrative changes are recorded in audit logs.

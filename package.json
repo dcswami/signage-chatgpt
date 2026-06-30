@@ -7,16 +7,19 @@
   "scripts": {
     "start": "node src/server.mjs",
     "dev": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/storage.mjs && node --check src/email.mjs && node --check src/calendar.mjs && node --check public/admin.js && node --check public/kiosk.js",
-    "test": "node tests/integration.mjs"
+    "check": "node --check src/server.mjs && node --check src/storage.mjs && node --check src/auth.mjs && node --check src/email.mjs && node --check src/sms.mjs && node --check src/calendar.mjs && node --check src/calendar-queue.mjs && node --check src/background-queue.mjs && node --check src/conflicts.mjs && node --check public/admin.js && node --check public/kiosk.js && node --check public/kiosk-sw.js",
+    "test": "node tests/auth.mjs && node tests/sms.mjs && node tests/calendar-normalization.mjs && node tests/conflicts.mjs && node tests/integration.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
+    "bullmq": "^5.79.1",
     "google-auth-library": "^10.7.0",
     "node-ical": "^0.24.2",
     "nodemailer": "^7.0.13",
-    "pg": "^8.22.0"
+    "pg": "^8.22.0",
+    "qrcode": "^1.5.4",
+    "tsdav": "^2.2.2"
   }
 }

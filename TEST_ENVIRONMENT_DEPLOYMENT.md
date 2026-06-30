@@ -97,6 +97,9 @@ REDIS_URL=redis://redis:6379
 SESSION_SECRET=CHANGE_ME_LONG_RANDOM_TEST_SECRET
 CREDENTIAL_ENCRYPTION_KEY=CHANGE_ME_SEPARATE_LONG_RANDOM_CREDENTIAL_KEY
 TWO_FACTOR_ISSUER=BAPS Signage Test
+BOOTSTRAP_ADMIN_PASSWORD=CHANGE_ME_STRONG_INITIAL_ADMIN_PASSWORD
+POSTGRES_POOL_SIZE=15
+BACKGROUND_WORKER_CONCURRENCY=5
 ```
 
 Use strong random values for passwords and secrets.
@@ -119,7 +122,11 @@ docker compose -f docker-compose.test.yml -p signage-test up -d --force-recreate
 docker compose -f docker-compose.test.yml -p signage-test ps
 ```
 
-On first startup, the application creates its PostgreSQL state table and imports the existing `data/app-data.json`. Room codes and kiosk URLs remain unchanged. PostgreSQL becomes the primary data store, and the JSON file remains an automatically updated compatibility mirror.
+On first startup, the application runs the ordered migrations in `database/migrations`, creates per-domain PostgreSQL tables, and transactionally imports the legacy `application_state` record or `data/app-data.json`. Room codes, entity IDs, and kiosk URLs remain unchanged. Runtime writes then use the normalized tables. The JSON compatibility mirror is disabled by default so password hashes and two-factor secrets are not copied to disk.
+
+`BOOTSTRAP_ADMIN_PASSWORD` is used only when the first System Administrator does not yet have a password hash. Set a strong temporary value before the first secure startup, sign in as `admin@example.org`, enroll two-factor authentication, and then remove `BOOTSTRAP_ADMIN_PASSWORD` from `.env`.
+
+The health response should report `"storage": "postgresql-normalized"`, `"calendarQueue": "redis"`, `"backgroundQueue": "redis"`, and `"authentication": "ready"`.
 
 The test app listens locally on:
 
@@ -239,7 +246,20 @@ Check alert audio directly from the kiosk device:
 https://signage-test.bapswest.org/assets/audio/alarm.mp3
 ```
 
-In the admin portal:
+Authentication readiness:
+
+1. Open `https://signage-test.bapswest.org/admin` and confirm it redirects to `/login`.
+2. Sign in as `admin@example.org` using the temporary `BOOTSTRAP_ADMIN_PASSWORD`.
+3. Confirm the signed-in user's name appears in the upper-right portal header.
+4. Open **Configuration**, enroll an authenticator app, log out, and confirm the next login requires its six-digit code.
+5. As System Administrator, save the Twilio Account SID, Auth Token, and sender number in E.164 format, then send a test SMS.
+6. Enroll a test user for **Cell phone text message** 2FA, confirm the enrollment code, log out, and verify the next login sends a fresh six-digit code.
+7. Confirm an SMS code expires after five minutes, cannot be reused, and cannot be resent more frequently than the configured cooldown.
+8. Remove `BOOTSTRAP_ADMIN_PASSWORD` from `.env` and recreate the app container.
+9. Change the signed-in administrator password under **Configuration**, then confirm the new password works.
+10. As System Administrator, set a temporary user's password and confirm the user's older sessions are revoked.
+
+Functional readiness in the admin portal:
 
 1. Confirm the Dashboard lists all three existing test rooms.
 2. Open **Locations & Rooms** and confirm the center, campus, building, and rooms were imported.
@@ -258,32 +278,51 @@ In the admin portal:
 15. End the broadcast.
 16. Open **Users**, create a temporary invited user, and assign a role, center, and feature grants.
 17. Edit the user and confirm status, role, center, and feature changes persist.
-18. Open **Email Notifications**, save the SMTP settings, and send a test message.
-19. Send administrative emails using a specific user, role, and center target, and confirm delivery appears in Email History without duplicate recipients.
-20. Confirm the SMTP password is never displayed after saving.
-21. Confirm **Campus Manager** and **Building Manager** appear in the role list.
-22. Assign a test user to multiple campuses and buildings and confirm the access scope persists.
-23. Create, edit, and delete a Broadcast Template.
-24. Launch a broadcast from a prepared template and confirm the final publish confirmation is still required.
-25. Open **Configuration**, create a temporary role, select permissions, edit it, clone it, and delete both copies.
-26. Confirm a non-System Admin user cannot open Emergency/Safety Broadcast History.
-27. Open **Calendar Sync**, add a public iCalendar URL account, select **Verify**, assign one calendar to a temporary room, and select **Assign & Sync**.
-28. Confirm the room kiosk shows the synchronized events and that private or rental events display as **Private Event**.
-29. Confirm Calendar Sync History records the result, then remove the room assignment before deleting the account.
-30. For Google, enter service-account JSON, save the account, and select **Discover / Verify**. Confirm the displayed service-account email has been granted access to each required Google calendar.
-31. For Microsoft 365, enter the tenant ID, application client ID, client secret, calendar ID, and mailbox.
-32. Open **Theme Editor**, clone a built-in theme, modify colors and the four font groups, and confirm the live preview updates.
-33. Publish the cloned theme, assign it to a room, and confirm the kiosk updates without rebuilding the container.
-34. Publish and end a test safety broadcast, then confirm the System Admin-only history records its start, targets, status, and end time.
-35. In **Theme Editor**, switch the Preview Room dropdown and confirm the iframe changes rooms without closing the editor.
-36. Change each status color with its color picker and adjust Event Panel transparency; confirm the preview updates before saving.
-37. Leave a tablet kiosk asleep or backgrounded, change its assigned theme, then wake the device and confirm it refreshes within 10 seconds without manually reloading.
-38. Clone a theme, upload a PNG, JPEG, or WebP background image, save the theme, and confirm the image appears in all three preview states.
-39. Rebuild the application container and confirm the uploaded background still loads from the persistent `./data/theme-assets` volume.
-40. Change the upcoming-event tile background, title, and detail colors and confirm the preview updates.
-41. Open **Theme Scheduler**, schedule a published theme for one or more eligible targets, and confirm the owner name appears.
-42. Confirm the scheduled theme overrides Room Management during the active window and automatically returns to the room theme afterward.
-43. Confirm completed schedules appear under **Past Schedules** and records older than two years are not displayed.
+18. Open **Calendars** and confirm the Calendar Sync, Calendar Assignment, and Conflict Resolution tabs show their expected sections.
+19. Open **Kiosk Devices** and filter registered devices by search, room, registration state, and health state.
+20. Open **Email Notifications**, save the SMTP settings, and send a test message.
+21. Send administrative emails using a specific user, role, and center target, and confirm delivery appears in Email History without duplicate recipients.
+22. Confirm the SMTP password is never displayed after saving.
+23. Confirm **Campus Manager** and **Building Manager** appear in the role list.
+24. Assign a test user to multiple campuses and buildings and confirm the access scope persists.
+25. Create, edit, and delete a Broadcast Template.
+26. Launch a broadcast from a prepared template and confirm the final publish confirmation is still required.
+27. Open **Configuration**, create a temporary role, select permissions, edit it, clone it, and delete both copies.
+28. Confirm a non-System Admin user cannot open Emergency/Safety Broadcast History.
+29. Open **Calendars > Calendar Sync**, add a public iCalendar URL account, select **Verify**, assign one calendar to a temporary room, and select **Assign & Sync**.
+30. Confirm the sync imports events inside the previous 30 days and next 30 days and that deleted source events disappear after another sync.
+31. Confirm the room kiosk shows synchronized events and that private or rental events display as **Private Event** without a description.
+32. Create overlapping events and confirm the conflict dashboard shows one overlap group while the kiosk displays only one deterministic event.
+33. Open detailed conflict review. Test **Ignore** and **Resolve Display** on a read-only source, then confirm **Cancel**, **Replace Others**, and **Move Selected** are disabled.
+34. Repeat with writable Google and Microsoft test calendars. Confirm Cancel deletes the selected source event, Replace keeps the selected event and deletes the other overlap, and Move writes the room-timezone start/end values back correctly.
+35. Confirm Conflict Decision History records user, action, source-change status, selection, and move time, and that Calendar Sync History records the resulting sync.
+36. Remove the room assignment before deleting the account.
+37. For Google, test service-account discovery and OAuth authorization URL generation. Confirm the connected account has access to each required calendar.
+38. For Microsoft 365, test application credentials and OAuth authorization URL generation using the tenant/client configuration.
+39. Add an iCloud CalDAV account using an app-specific password and verify calendar discovery.
+40. Confirm `/api/health` reports `"calendarQueue": "redis"`.
+41. Stop Redis briefly and confirm the app remains healthy with `"calendarQueue": "in-process"`, then restart Redis, trigger a calendar sync, and confirm the health response returns to `"calendarQueue": "redis"`.
+42. Open a kiosk and scan its generated booking QR code.
+43. Disconnect the kiosk network for more than five minutes and confirm cached signage continues, the clock advances, and offline/stale status is visible.
+44. Test the kiosk in landscape and portrait orientation.
+45. Pair a kiosk with its six-digit code, approve it as System Admin or the responsible Center Admin, and test remote data refresh and full reload.
+46. Confirm the device record shows its detected device type, browser, viewport, IP address, audio state, last contact, and online health.
+47. Stop the kiosk heartbeat and confirm it becomes stale after two minutes and offline after ten minutes.
+48. Reassign the kiosk to another permitted room and confirm the open device automatically navigates to the new room URL.
+49. Revoke the kiosk and confirm its heartbeat is rejected and the device displays a revoked-registration message.
+50. Remove the revoked record, reload the kiosk, and confirm it receives a new pairing code and can be paired again.
+51. Open **Theme Editor**, clone a built-in theme, modify colors and the four font groups, and confirm the live preview updates.
+52. Publish the cloned theme, assign it to a room, and confirm the kiosk updates without rebuilding the container.
+53. Publish and end a test safety broadcast, then confirm the System Admin-only history records its start, targets, status, and end time.
+54. In **Theme Editor**, switch the Preview Room dropdown and confirm the iframe changes rooms without closing the editor.
+55. Change each status color with its color picker and adjust Event Panel transparency; confirm the preview updates before saving.
+56. Leave a tablet kiosk asleep or backgrounded, change its assigned theme, then wake the device and confirm it refreshes within 10 seconds without manually reloading.
+57. Clone a theme, upload a PNG, JPEG, or WebP background image, save the theme, and confirm the image appears in all three preview states.
+58. Rebuild the application container and confirm the uploaded background still loads from the persistent `./data/theme-assets` volume.
+59. Change the upcoming-event tile background, title, and detail colors and confirm the preview updates.
+60. Open **Theme Scheduler**, schedule a published theme for one or more eligible targets, and confirm the owner name appears.
+61. Confirm the scheduled theme overrides Room Management during the active window and automatically returns to the room theme afterward.
+62. Confirm completed schedules appear under **Past Schedules** and records older than two years are not displayed.
 
 ## 9. Configure SMTP Email
 
@@ -342,5 +381,5 @@ Only use `down -v` when you intentionally want to delete the test database and R
 - PostgreSQL is the primary application data store.
 - `data/app-data.json` is retained as an automatically updated compatibility mirror and migration source.
 - Uploaded theme background images are retained in `data/theme-assets`; include this directory in backups.
-- Redis is included for future multi-instance broadcast fan-out and background jobs.
-- Authentication and production role enforcement remain future implementation layers.
+- Redis runs BullMQ calendar synchronization jobs and remains available for future multi-instance broadcast fan-out.
+- Real Google, Microsoft 365, and iCloud credentials must be validated in the test environment before production use.

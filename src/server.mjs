@@ -4,9 +4,35 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
+import QRCode from "qrcode";
 import { createStore } from "./storage.mjs";
-import { encryptCredential, publicEmailSettings, sendEmail, verifySmtp } from "./email.mjs";
-import { inspectCalendarAccount, syncCalendar } from "./calendar.mjs";
+import { decryptCredential, encryptCredential, publicEmailSettings, sendEmail, verifySmtp } from "./email.mjs";
+import { maskPhoneNumber, publicTwilioSettings, sendSms, validPhoneNumber } from "./sms.mjs";
+import {
+  calendarAuthorizationUrl,
+  deleteCalendarEvent,
+  exchangeCalendarAuthorizationCode,
+  inspectCalendarAccount,
+  registerCalendarWebhook,
+  syncCalendar,
+  writeCalendarEvent
+} from "./calendar.mjs";
+import { createCalendarQueue } from "./calendar-queue.mjs";
+import { createBackgroundQueue } from "./background-queue.mjs";
+import { deterministicConflictEvent, eventsForKiosk } from "./conflicts.mjs";
+import {
+  clearSessionCookie,
+  generateTotpSecret,
+  hashPassword,
+  numericCode,
+  otpauthUri,
+  parseCookies,
+  randomToken,
+  sessionCookie,
+  tokenHash,
+  verifyPassword,
+  verifyTotp
+} from "./auth.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -17,12 +43,18 @@ const assetVersion = process.env.APP_BUILD_VERSION || Date.now().toString(36);
 const themeAssetsDir = process.env.THEME_ASSETS_DIR || path.join(rootDir, "assets", "uploads", "themes");
 
 const clients = new Map();
+const instanceId = crypto.randomUUID();
+let backgroundQueue = null;
 const permissionCatalog = [
   "dashboard.view",
   "center.manage",
+  "center.edit",
   "campus.manage",
+  "campus.edit",
   "building.manage",
+  "building.edit",
   "room.manage",
+  "room.edit",
   "room.status.change",
   "user.manage",
   "role.manage",
@@ -35,6 +67,16 @@ const permissionCatalog = [
   "broadcast.history.view",
   "audit.view",
   "settings.manage"
+];
+
+const legacyThemeFeature = "Front End Theme and Style Management";
+const systemFeatures = [
+  "Calendar Sync",
+  "Calendar Event Conflict Resolution",
+  "Theme Editor",
+  "Theme Scheduler",
+  "Notifications",
+  "Emergency & Safety Broadcast"
 ];
 
 const defaultThemeTokens = {
@@ -50,6 +92,12 @@ const defaultThemeTokens = {
   upcomingTileBg: "rgba(255, 255, 255, 0.58)",
   upcomingTitleText: "#202020",
   upcomingDetailText: "rgba(32, 32, 32, 0.68)",
+  qrForeground: "#000000",
+  qrBackground: "#ffffff",
+  qrTransparent: "false",
+  qrSize: "132",
+  qrBorder: "0",
+  qrMargin: "2",
   backgroundImage: "",
   headerFont: "Arial, Helvetica, sans-serif",
   footerFont: "Arial, Helvetica, sans-serif",
@@ -72,23 +120,59 @@ const seedData = {
       fromName: "Signage Management System",
       fromEmail: "",
       replyTo: ""
+    },
+    twilio: {
+      enabled: false,
+      accountSid: "",
+      encryptedAuthToken: "",
+      fromPhoneNumber: "",
+      lastTestAt: null,
+      lastTestStatus: "",
+      lastTestError: ""
     }
   },
-  features: [
-    "Calendar Sync",
-    "Calendar Event Conflict Resolution",
-    "Front End Theme and Style Management",
-    "Notifications",
-    "Emergency & Safety Broadcast"
-  ],
+  features: systemFeatures,
   centers: [
-    { id: "center-la", name: "BAPS LA Center", timezone: "America/Los_Angeles", defaultThemeId: "classic-institutional" }
+    {
+      id: "center-la",
+      name: "BAPS LA Center",
+      description: "",
+      logoUrl: "/assets/branding/aksharderi-small2.png",
+      contactName: "",
+      contactEmail: "",
+      contactPhone: "",
+      bookingUrl: "https://lamandir.site/erf",
+      upcomingEventCount: 5,
+      showEventDescription: false,
+      timezone: "America/Los_Angeles",
+      defaultThemeId: "classic-institutional"
+    }
   ],
   campuses: [
-    { id: "campus-la-main", centerId: "center-la", name: "Los Angeles Mandir Campus" }
+    {
+      id: "campus-la-main",
+      centerId: "center-la",
+      name: "Los Angeles Mandir Campus",
+      address: "",
+      contactName: "",
+      contactEmail: "",
+      contactPhone: "",
+      bookingUrl: "",
+      defaultThemeId: ""
+    }
   ],
   buildings: [
-    { id: "building-shishu", campusId: "campus-la-main", name: "Shishu Building" }
+    {
+      id: "building-shishu",
+      campusId: "campus-la-main",
+      name: "Shishu Building",
+      code: "",
+      address: "",
+      floors: "",
+      timezone: "",
+      bookingUrl: "",
+      defaultThemeId: ""
+    }
   ],
   rooms: [
     {
@@ -100,6 +184,12 @@ const seedData = {
       buildingId: "building-shishu",
       bookingUrl: "https://lamandir.site/erf",
       themeId: "classic-institutional",
+      roomNumber: "108",
+      floor: "",
+      equipment: "",
+      accessibilityNotes: "",
+      maintenanceStatus: "available",
+      privacyMode: "standard",
       status: "available",
       currentEventTitle: "",
       currentEventUntil: "4:00 PM",
@@ -114,6 +204,12 @@ const seedData = {
       buildingId: "building-shishu",
       bookingUrl: "https://lamandir.site/erf",
       themeId: "event-formal",
+      roomNumber: "205",
+      floor: "",
+      equipment: "",
+      accessibilityNotes: "",
+      maintenanceStatus: "available",
+      privacyMode: "standard",
       status: "busy",
       currentEventTitle: "Gujarati Class - I",
       currentEventUntil: "2:00 PM",
@@ -128,6 +224,12 @@ const seedData = {
       buildingId: "building-shishu",
       bookingUrl: "https://lamandir.site/erf",
       themeId: "custom-background",
+      roomNumber: "301",
+      floor: "",
+      equipment: "",
+      accessibilityNotes: "",
+      maintenanceStatus: "available",
+      privacyMode: "standard",
       status: "warning",
       currentEventTitle: "Satsang Sabha Prep",
       currentEventUntil: "10 min",
@@ -135,16 +237,20 @@ const seedData = {
     }
   ],
   themes: [
-    { id: "classic-institutional", name: "Classic Institutional", builtIn: true, cloneable: true, baseThemeId: "classic-institutional", published: true, cssTokens: defaultThemeTokens },
-    { id: "event-formal", name: "Event Formal", builtIn: true, cloneable: true, baseThemeId: "event-formal", published: true, cssTokens: { ...defaultThemeTokens, footerFont: 'Georgia, "Times New Roman", serif', eventDetailFont: 'Georgia, "Times New Roman", serif' } },
-    { id: "custom-background", name: "Custom Background", builtIn: true, cloneable: true, baseThemeId: "custom-background", published: true, cssTokens: { ...defaultThemeTokens, backgroundImage: "/assets/backgrounds/background.png", upcomingTileBg: "rgba(255, 244, 219, 0.62)", upcomingTitleText: "#261407", upcomingDetailText: "rgba(38, 20, 7, 0.72)", headerFont: 'Georgia, "Times New Roman", serif', footerFont: 'Georgia, "Times New Roman", serif', eventDetailFont: 'Georgia, "Times New Roman", serif' } }
+    { id: "classic-institutional", name: "Classic Institutional", builtIn: true, cloneable: true, baseThemeId: "classic-institutional", published: true, orientationMode: "both", cssTokens: defaultThemeTokens },
+    { id: "event-formal", name: "Event Formal", builtIn: true, cloneable: true, baseThemeId: "event-formal", published: true, orientationMode: "both", cssTokens: { ...defaultThemeTokens, footerFont: 'Georgia, "Times New Roman", serif', eventDetailFont: 'Georgia, "Times New Roman", serif' } },
+    { id: "custom-background", name: "Custom Background", builtIn: true, cloneable: true, baseThemeId: "custom-background", published: true, orientationMode: "both", cssTokens: { ...defaultThemeTokens, backgroundImage: "/assets/backgrounds/background.png", upcomingTileBg: "rgba(255, 244, 219, 0.62)", upcomingTitleText: "#261407", upcomingDetailText: "rgba(38, 20, 7, 0.72)", headerFont: 'Georgia, "Times New Roman", serif', footerFont: 'Georgia, "Times New Roman", serif', eventDetailFont: 'Georgia, "Times New Roman", serif' } }
   ],
   roles: [
     { id: "system-admin", name: "System Admin", builtIn: true, cloneable: true, active: true, permissions: permissionCatalog },
     { id: "center-admin", name: "Center Admin", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "center.manage", "campus.manage", "building.manage", "room.manage", "room.status.change", "user.manage", "calendar.manage", "calendar.sync", "theme.manage", "notification.manage", "broadcast.publish", "broadcast.history.view"] },
     { id: "campus-manager", name: "Campus Manager", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "campus.manage", "building.manage", "room.manage", "room.status.change", "calendar.sync", "broadcast.publish"] },
     { id: "building-manager", name: "Building Manager", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "building.manage", "room.manage", "room.status.change", "calendar.sync", "broadcast.publish"] },
-    { id: "room-manager", name: "Room Manager", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "room.manage", "room.status.change"] }
+    { id: "room-manager", name: "Room Manager", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "room.manage", "room.status.change"] },
+    { id: "center-edit", name: "Center Edit", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "center.edit"] },
+    { id: "campus-edit", name: "Campus Edit", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "campus.edit"] },
+    { id: "building-edit", name: "Building Edit", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "building.edit"] },
+    { id: "room-edit", name: "Room Edit", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "room.edit"] }
   ],
   users: [
     {
@@ -158,7 +264,8 @@ const seedData = {
       features: [
         "Calendar Sync",
         "Calendar Event Conflict Resolution",
-        "Front End Theme and Style Management",
+        "Theme Editor",
+        "Theme Scheduler",
         "Notifications",
         "Emergency & Safety Broadcast"
       ],
@@ -171,8 +278,11 @@ const seedData = {
   calendarAccounts: [],
   calendarAssignments: [],
   calendarEvents: [],
+  calendarConflicts: [],
+  calendarConflictHistory: [],
   calendarSyncHistory: [],
   themeSchedules: [],
+  roomGroups: [],
   upcomingEvents: [
     { roomId: "room-108", title: "iB Parent's Meeting", detail: "Mon, Jun 22, 4:00 PM - 5:00 PM" },
     { roomId: "room-108", title: "Karyakar Meeting", detail: "Mon, Jun 22, 5:00 PM - 5:30 PM" },
@@ -235,9 +345,25 @@ const seedData = {
     }
   ],
   emailNotifications: [],
+  notifications: [],
+  kioskDevices: [],
+  kioskPairingCodes: [],
   activeBroadcast: null,
   auditLogs: []
 };
+
+function normalizeFeatureList(features = []) {
+  const names = new Set();
+  for (const feature of features || []) {
+    if (feature === legacyThemeFeature) {
+      names.add("Theme Editor");
+      names.add("Theme Scheduler");
+      continue;
+    }
+    if (systemFeatures.includes(feature)) names.add(feature);
+  }
+  return [...names];
+}
 
 function normalizeData(data) {
   const normalized = {
@@ -250,42 +376,107 @@ function normalizeData(data) {
       email: {
         ...seedData.settings.email,
         ...data.settings?.email
+      },
+      twilio: {
+        ...seedData.settings.twilio,
+        ...data.settings?.twilio
       }
     }
   };
-  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "calendarAccounts", "calendarAssignments", "calendarEvents", "calendarSyncHistory", "themeSchedules", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "auditLogs"]) {
+  for (const key of ["features", "centers", "campuses", "buildings", "rooms", "themes", "roles", "users", "sessions", "passwordResetTokens", "oauthStates", "featureGrants", "calendarAccounts", "calendarAssignments", "calendarEvents", "calendarConflicts", "calendarConflictHistory", "calendarSyncHistory", "themeSchedules", "roomGroups", "upcomingEvents", "broadcasts", "broadcastTemplates", "emailNotifications", "notifications", "kioskDevices", "kioskPairingCodes", "auditLogs", "loginAudit"]) {
     if (!Array.isArray(normalized[key])) normalized[key] = structuredClone(seedData[key] || []);
   }
-  normalized.centers = normalized.centers.map(center => ({ active: true, ...center }));
-  normalized.campuses = normalized.campuses.map(campus => ({ active: true, address: "", ...campus }));
-  normalized.buildings = normalized.buildings.map(building => ({ active: true, code: "", ...building }));
+  normalized.features = systemFeatures;
+  normalized.centers = normalized.centers.map(center => ({
+    active: true,
+    description: "",
+    logoUrl: "/assets/branding/aksharderi-small2.png",
+    contactName: "",
+    contactEmail: "",
+    contactPhone: "",
+    bookingUrl: "",
+    upcomingEventCount: 5,
+    showEventDescription: false,
+    ...center
+  }));
+  normalized.campuses = normalized.campuses.map(campus => ({
+    active: true,
+    address: "",
+    contactName: "",
+    contactEmail: "",
+    contactPhone: "",
+    bookingUrl: "",
+    defaultThemeId: "",
+    upcomingEventCount: null,
+    showEventDescription: null,
+    ...campus
+  }));
+  normalized.buildings = normalized.buildings.map(building => ({
+    active: true,
+    code: "",
+    address: "",
+    floors: "",
+    timezone: "",
+    bookingUrl: "",
+    defaultThemeId: "",
+    upcomingEventCount: null,
+    showEventDescription: null,
+    ...building
+  }));
   normalized.rooms = normalized.rooms.map(room => ({
     active: true,
+    kioskIdentifier: randomToken(18),
     roomType: "Classroom",
     capacity: null,
+    roomNumber: "",
+    floor: "",
+    equipment: "",
+    accessibilityNotes: "",
+    maintenanceStatus: "available",
+    privacyMode: "standard",
+    bookingUrl: "",
+    themeId: "",
+    upcomingEventCount: null,
+    showEventDescription: null,
     ...room
   }));
   normalized.themes = normalized.themes.map(theme => ({
     baseThemeId: theme.sourceThemeId || theme.id,
     published: true,
     archived: false,
+    orientationMode: "both",
     cssTokens: structuredClone(defaultThemeTokens),
     ...theme,
     cssTokens: { ...defaultThemeTokens, ...theme.cssTokens }
   }));
-  normalized.users = normalized.users.map(user => ({
-    status: "active",
-    roleIds: [],
-    centerIds: [],
-    campusIds: [],
-    buildingIds: [],
-    features: [],
-    twoFactorEnabled: false,
-    invitedAt: null,
-    lastEmailAt: null,
-    ...user,
-    email: String(user.email || "").toLowerCase()
-  }));
+  normalized.users = normalized.users.map(user => {
+    const features = normalizeFeatureList(user.features);
+    return {
+      status: "active",
+      roleIds: [],
+      centerIds: [],
+      campusIds: [],
+      buildingIds: [],
+      roomIds: [],
+      features: [],
+      passwordHash: "",
+      twoFactorEnabled: false,
+      twoFactorMethod: "",
+      phoneNumber: "",
+      phoneVerifiedAt: null,
+      encryptedTwoFactorSecret: "",
+      encryptedPendingTwoFactorSecret: "",
+      pendingTwoFactorMethod: "",
+      pendingPhoneNumber: "",
+      pendingSmsCodeHash: "",
+      pendingSmsCodeExpiresAt: null,
+      invitedAt: null,
+      lastEmailAt: null,
+      ...user,
+      features,
+      email: String(user.email || "").toLowerCase()
+    };
+  });
   for (const role of seedData.roles) {
     const existing = normalized.roles.find(item => item.id === role.id);
     if (!existing) normalized.roles.push(structuredClone(role));
@@ -299,14 +490,23 @@ function normalizeData(data) {
     ...role
   }));
   normalized.calendarAccounts = normalized.calendarAccounts
-    .filter(account => ["google", "microsoft365", "public-url"].includes(account.provider))
+    .filter(account => ["google", "microsoft365", "caldav", "public-url"].includes(account.provider))
     .map(account => ({
       accessLevel: "read-only",
+      authMode: account.provider === "google" ? "service-account" : account.provider === "microsoft365" ? "application" : account.provider === "caldav" ? "app-password" : "public-url",
       active: true,
       encryptedCredential: "",
+      clientId: "",
+      tenantId: "",
+      serverUrl: "",
+      username: "",
       principalEmail: "",
       calendars: [],
       syncIntervalMinutes: 15,
+      ownerUserId: null,
+      webhookStatus: "not-configured",
+      webhookLastAt: null,
+      webhookError: "",
       lastSuccessfulSyncAt: null,
       lastSyncError: "",
       lastVerifiedAt: null,
@@ -319,6 +519,34 @@ function normalizeData(data) {
     lastSyncError: "",
     ...assignment
   }));
+  normalized.calendarConflicts = normalized.calendarConflicts.map(conflict => ({
+    resolution: null,
+    resolvedBy: null,
+    resolvedAt: null,
+    ...conflict,
+    status: conflict.status === "display-selected" ? "resolved" : conflict.status || "unresolved",
+    selectedExternalEventId: conflict.selectedExternalEventId || conflict.selectedEventId || null
+  }));
+  normalized.kioskDevices = normalized.kioskDevices.map(device => ({
+    status: "pending",
+    deviceType: "unknown",
+    approvedBy: null,
+    approvedAt: null,
+    revokedBy: null,
+    revokedAt: null,
+    reassignedBy: null,
+    reassignedAt: null,
+    lastSeenAt: null,
+    lastDataAt: null,
+    lastIpAddress: "",
+    audioEnabled: false,
+    pendingCommand: null,
+    ...device,
+    deviceToken: undefined,
+    deviceTokenHash: device.deviceTokenHash || (device.deviceToken
+      ? crypto.createHash("sha256").update(String(device.deviceToken)).digest("hex")
+      : "")
+  }));
   normalized.themeSchedules = normalized.themeSchedules.map(schedule => ({
     centerIds: [],
     campusIds: [],
@@ -330,6 +558,23 @@ function normalizeData(data) {
     updatedAt: null,
     ...schedule
   }));
+  normalized.featureGrants = normalized.featureGrants.flatMap(grant =>
+    normalizeFeatureList([grant.featureName]).map(featureName => ({
+      ...grant,
+      id: grant.featureName === featureName
+        ? grant.id
+        : `${grant.id}-${featureName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`,
+      featureName
+    }))
+  );
+  normalized.roomGroups = normalized.roomGroups.map(group => ({
+    description: "",
+    roomIds: [],
+    active: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: null,
+    ...group
+  }));
   normalized.broadcastTemplates = normalized.broadcastTemplates.map(template => ({
     severity: "urgent",
     visualStyle: "emergency",
@@ -340,20 +585,78 @@ function normalizeData(data) {
     ...template,
     approvalRequired: true
   }));
-  normalized.broadcasts = normalized.broadcasts.map(broadcast => ({
-    endedAt: null,
-    endedBy: null,
-    status: broadcast.endedAt ? "ended" : "active",
-    ...broadcast
-  }));
+  if (normalized.activeBroadcast && !normalized.broadcasts.some(item => item.id === normalized.activeBroadcast.id)) {
+    normalized.broadcasts.unshift(normalized.activeBroadcast);
+  }
+  normalized.broadcasts = normalized.broadcasts.map(broadcast => {
+    const startsAt = broadcast.startsAt || broadcast.startedAt || broadcast.createdAt || new Date().toISOString();
+    const endsAt = broadcast.endsAt || null;
+    const targetRoomCodes = cleanIdArray(broadcast.targetRoomCodes);
+    return {
+      templateId: null,
+      title: "IMPORTANT SYSTEM OVERRIDE",
+      message: "",
+      severity: "urgent",
+      centerIds: [],
+      campusIds: [],
+      buildingIds: [],
+      roomGroupIds: [],
+      roomIds: targetRoomCodes.map(code => normalized.rooms.find(room => room.code === code)?.id).filter(Boolean),
+      targetRoomCodes,
+      startsAt,
+      endsAt,
+      startedAt: broadcast.startedAt || startsAt,
+      endedAt: null,
+      endedBy: null,
+      updatedAt: null,
+      updatedBy: null,
+      status: broadcast.endedAt ? "ended" : "active",
+      activationNotifiedAt: null,
+      endingNotifiedAt: null,
+      ...broadcast,
+      startsAt,
+      endsAt
+    };
+  });
+  normalized.activeBroadcast = null;
   const cutoff = Date.now() - 183 * 24 * 60 * 60 * 1000;
   normalized.calendarSyncHistory = normalized.calendarSyncHistory.filter(item => new Date(item.createdAt).getTime() >= cutoff);
+  normalized.calendarConflictHistory = normalized.calendarConflictHistory.filter(item => new Date(item.createdAt).getTime() >= cutoff);
   normalized.auditLogs = normalized.auditLogs.filter(item => new Date(item.createdAt).getTime() >= cutoff);
+  normalized.loginAudit = normalized.loginAudit.filter(item => new Date(item.createdAt).getTime() >= cutoff);
+  normalized.sessions = normalized.sessions.filter(item =>
+    new Date(item.expiresAt).getTime() > Date.now() - 24 * 60 * 60 * 1000
+    && (!item.revokedAt || new Date(item.revokedAt).getTime() > Date.now() - 24 * 60 * 60 * 1000)
+  );
+  normalized.passwordResetTokens = normalized.passwordResetTokens.filter(item =>
+    new Date(item.expiresAt).getTime() > Date.now() - 24 * 60 * 60 * 1000
+  );
+  normalized.oauthStates = normalized.oauthStates.filter(item => new Date(item.expiresAt).getTime() > Date.now());
   return normalized;
 }
 
 const store = await createStore({ rootDir, seedData, normalize: normalizeData });
 let db = store.state;
+
+const bootstrapAdminPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD || "";
+if (bootstrapAdminPassword) {
+  const bootstrapAdmin = db.users.find(user => user.roleIds?.includes("system-admin") && !user.passwordHash);
+  if (bootstrapAdmin) {
+    bootstrapAdmin.passwordHash = await hashPassword(bootstrapAdminPassword);
+    bootstrapAdmin.updatedAt = new Date().toISOString();
+    await store.save(db);
+  }
+}
+function authenticationIsReady() {
+  return db.users.some(user =>
+    user.status === "active"
+    && user.roleIds?.includes("system-admin")
+    && user.passwordHash
+  );
+}
+if (!authenticationIsReady()) {
+  console.warn("No active System Administrator has a password. Set BOOTSTRAP_ADMIN_PASSWORD and restart before using the management portal.");
+}
 
 async function saveData(nextDb = db) {
   await store.save(nextDb);
@@ -405,6 +708,87 @@ function scheduleTargetRooms(schedule) {
   );
 }
 
+function roomLocation(room) {
+  const center = db.centers.find(item => item.id === room.centerId);
+  const campus = db.campuses.find(item => item.id === room.campusId);
+  const building = db.buildings.find(item => item.id === room.buildingId);
+  return { center, campus, building };
+}
+
+function effectiveRoomSettings(room) {
+  const { center, campus, building } = roomLocation(room);
+  const inheritedNumber = (roomValue, buildingValue, campusValue, centerValue, fallback) => {
+    for (const value of [roomValue, buildingValue, campusValue, centerValue]) {
+      if (value !== null && value !== undefined && value !== "") return Number(value);
+    }
+    return fallback;
+  };
+  const inheritedBoolean = (roomValue, buildingValue, campusValue, centerValue, fallback) => {
+    for (const value of [roomValue, buildingValue, campusValue, centerValue]) {
+      if (typeof value === "boolean") return value;
+    }
+    return fallback;
+  };
+  return {
+    bookingUrl: room.bookingUrl || building?.bookingUrl || campus?.bookingUrl || center?.bookingUrl || "",
+    themeId: room.themeId || building?.defaultThemeId || campus?.defaultThemeId || center?.defaultThemeId || db.themes[0]?.id || "",
+    timezone: building?.timezone || center?.timezone || "UTC",
+    logoUrl: center?.logoUrl || "/assets/branding/aksharderi-small2.png",
+    upcomingEventCount: Math.max(1, Math.min(10, inheritedNumber(
+      room.upcomingEventCount,
+      building?.upcomingEventCount,
+      campus?.upcomingEventCount,
+      center?.upcomingEventCount,
+      5
+    ))),
+    showEventDescription: inheritedBoolean(
+      room.showEventDescription,
+      building?.showEventDescription,
+      campus?.showEventDescription,
+      center?.showEventDescription,
+      false
+    )
+  };
+}
+
+function broadcastTargetRooms(broadcast) {
+  const directCodes = new Set(broadcast.targetRoomCodes || []);
+  const groupRoomIds = new Set(
+    db.roomGroups
+      .filter(group => group.active !== false && broadcast.roomGroupIds?.includes(group.id))
+      .flatMap(group => group.roomIds || [])
+  );
+  return db.rooms.filter(room =>
+    directCodes.has(room.code)
+    || broadcast.roomIds?.includes(room.id)
+    || groupRoomIds.has(room.id)
+    || broadcast.buildingIds?.includes(room.buildingId)
+    || broadcast.campusIds?.includes(room.campusId)
+    || broadcast.centerIds?.includes(room.centerId)
+  );
+}
+
+function broadcastStatusAt(broadcast, at = new Date()) {
+  if (["ended", "cancelled"].includes(broadcast.status) || broadcast.endedAt) return broadcast.status || "ended";
+  const timestamp = at.getTime();
+  const startsAt = new Date(broadcast.startsAt || broadcast.startedAt || broadcast.createdAt).getTime();
+  const endsAt = broadcast.endsAt ? new Date(broadcast.endsAt).getTime() : Number.POSITIVE_INFINITY;
+  if (timestamp < startsAt) return "scheduled";
+  if (timestamp >= endsAt) return "ended";
+  return "active";
+}
+
+function activeBroadcastsForRoom(room, at = new Date()) {
+  const priority = { emergency: 5, critical: 4, urgent: 3, warning: 2, informational: 1 };
+  return db.broadcasts
+    .filter(broadcast => broadcastStatusAt(broadcast, at) === "active")
+    .filter(broadcast => broadcastTargetRooms(broadcast).some(target => target.id === room.id))
+    .sort((a, b) =>
+      (priority[b.severity] || 0) - (priority[a.severity] || 0)
+      || String(b.startsAt).localeCompare(String(a.startsAt))
+    );
+}
+
 function activeThemeSchedule(room, at = new Date()) {
   const timestamp = at.getTime();
   return db.themeSchedules
@@ -431,16 +815,22 @@ function publicThemeSchedule(schedule) {
   };
 }
 
-function publicRoom(room, themeOverrideId = "", stateOverride = "") {
-  const center = db.centers.find(item => item.id === room.centerId);
-  const campus = db.campuses.find(item => item.id === room.campusId);
-  const building = db.buildings.find(item => item.id === room.buildingId);
+function publicRoom(room, themeOverrideId = "", stateOverride = "", includeManagement = true) {
+  const { center, campus, building } = roomLocation(room);
+  const effective = effectiveRoomSettings(room);
   const scheduledTheme = themeOverrideId ? null : activeThemeSchedule(room);
-  const requestedThemeId = themeOverrideId || scheduledTheme?.themeId || room.themeId;
+  const requestedThemeId = themeOverrideId || scheduledTheme?.themeId || effective.themeId;
   const theme = db.themes.find(item => item.id === requestedThemeId && (themeOverrideId || (item.published !== false && item.archived !== true)))
-    || db.themes.find(item => item.id === room.themeId)
+    || db.themes.find(item => item.id === effective.themeId)
     || db.themes[0];
-  const events = db.upcomingEvents.filter(item => item.roomId === room.id).slice(0, 4);
+  const events = db.upcomingEvents
+    .filter(item => item.roomId === room.id)
+    .slice(0, 100)
+    .map(event => room.privacyMode === "hide-details"
+      ? { ...event, title: "Private Event", detail: "" }
+      : room.privacyMode === "private-title"
+        ? { ...event, title: "Private Event" }
+        : event);
   const previewState = ["available", "busy", "warning"].includes(stateOverride) ? stateOverride : "";
   const previewValues = previewState === "available"
     ? { status: "available", currentEventTitle: "", currentEventUntil: "4:00 PM" }
@@ -449,15 +839,21 @@ function publicRoom(room, themeOverrideId = "", stateOverride = "") {
       : previewState === "busy"
         ? { status: "busy", currentEventTitle: "Sample Current Event", currentEventUntil: "2:00 PM" }
         : {};
+  const activeBroadcasts = activeBroadcastsForRoom(room).map(publicBroadcast);
   return {
     ...room,
+    kioskIdentifier: includeManagement ? room.kioskIdentifier : undefined,
     ...previewValues,
     centerName: center?.name || "Center",
     campusName: campus?.name || "Campus",
     buildingName: building?.name || "Building",
-    timezone: center?.timezone || "UTC",
+    bookingUrl: effective.bookingUrl,
+    configuredBookingUrl: room.bookingUrl || "",
+    configuredThemeId: room.themeId || "",
+    timezone: effective.timezone,
+    logoUrl: effective.logoUrl,
     currentTime: new Intl.DateTimeFormat("en-US", {
-      timeZone: center?.timezone || "UTC",
+      timeZone: effective.timezone,
       hour: "numeric",
       minute: "2-digit"
     }).format(new Date()),
@@ -466,9 +862,14 @@ function publicRoom(room, themeOverrideId = "", stateOverride = "") {
     themeCssTokens: theme?.cssTokens || defaultThemeTokens,
     scheduledThemeId: scheduledTheme?.themeId || null,
     activeThemeScheduleId: scheduledTheme?.id || null,
+    themeOrientationMode: theme?.orientationMode || "both",
     buildVersion: assetVersion,
+    upcomingEventPageSize: effective.upcomingEventCount,
+    upcomingEventPageSeconds: 10,
+    showEventDescription: effective.showEventDescription,
     upcomingEvents: events,
-    activeBroadcast: db.activeBroadcast?.targetRoomCodes?.includes(room.code) ? db.activeBroadcast : null
+    activeBroadcasts,
+    activeBroadcast: activeBroadcasts[0] || null
   };
 }
 
@@ -476,16 +877,32 @@ function publicCalendarAccount(account) {
   return {
     id: account.id,
     provider: account.provider,
+    authMode: account.authMode,
     accountName: account.accountName,
     accessLevel: account.accessLevel,
     active: account.active,
     tenantId: account.tenantId || "",
     clientId: account.clientId || "",
     mailbox: account.mailbox || "",
+    serverUrl: account.serverUrl || "",
+    username: account.username || "",
     principalEmail: account.principalEmail || "",
     hasCredential: Boolean(account.encryptedCredential),
-    calendars: account.calendars || [],
+    calendars: (account.calendars || []).map(calendar => ({
+      id: calendar.id,
+      name: calendar.name,
+      externalId: calendar.externalId,
+      mailbox: calendar.mailbox || "",
+      accessRole: calendar.accessRole || "",
+      webhookStatus: calendar.webhookStatus || "not-configured",
+      webhookExpiration: calendar.webhookExpiration || null
+    })),
     syncIntervalMinutes: account.syncIntervalMinutes || 15,
+    ownerUserId: account.ownerUserId || null,
+    webhookStatus: account.webhookStatus || "not-configured",
+    webhookLastAt: account.webhookLastAt || null,
+    webhookExpiration: account.webhookExpiration || null,
+    webhookError: account.webhookError || "",
     lastSuccessfulSyncAt: account.lastSuccessfulSyncAt || null,
     lastSyncError: account.lastSyncError || "",
     lastVerifiedAt: account.lastVerifiedAt || null
@@ -494,18 +911,73 @@ function publicCalendarAccount(account) {
 
 function publicBroadcast(broadcast) {
   const createdBy = db.users.find(user => user.id === broadcast.createdBy);
+  const updatedBy = db.users.find(user => user.id === broadcast.updatedBy);
   const endedBy = db.users.find(user => user.id === broadcast.endedBy);
+  const targetRooms = broadcastTargetRooms(broadcast);
   return {
     ...broadcast,
+    status: broadcastStatusAt(broadcast),
     createdByName: createdBy?.name || "System",
+    updatedByName: broadcast.updatedAt ? updatedBy?.name || "System" : "",
+    resolvedRoomIds: targetRooms.map(room => room.id),
+    resolvedRoomCodes: targetRooms.map(room => room.code),
+    resolvedRoomCount: targetRooms.length,
     endedByName: broadcast.endedAt ? endedBy?.name || "System" : ""
   };
 }
 
+function publicKioskDevice(device, includePairingCode = false) {
+  const room = db.rooms.find(item => item.id === device.roomId);
+  const age = device.lastSeenAt ? Date.now() - new Date(device.lastSeenAt).getTime() : Infinity;
+  const healthStatus = device.status === "revoked"
+    ? "revoked"
+    : age <= 2 * 60 * 1000
+      ? "online"
+      : age <= 10 * 60 * 1000
+        ? "stale"
+        : "offline";
+  return {
+    id: device.id,
+    clientDeviceId: device.clientDeviceId,
+    roomId: device.roomId,
+    roomCode: room?.code || "",
+    roomName: room?.name || "Unknown room",
+    name: device.name || "",
+    status: device.status,
+    healthStatus,
+    pairingCode: includePairingCode && device.status === "pending" ? device.pairingCode : "",
+    deviceType: device.deviceType || "unknown",
+    browser: device.browser || "",
+    platform: device.platform || "",
+    viewport: device.viewport || "",
+    orientation: device.orientation || "",
+    audioEnabled: Boolean(device.audioEnabled),
+    lastIpAddress: device.lastIpAddress || "",
+    lastSeenAt: device.lastSeenAt || null,
+    lastDataAt: device.lastDataAt || null,
+    approvedAt: device.approvedAt || null,
+    revokedAt: device.revokedAt || null,
+    reassignedAt: device.reassignedAt || null,
+    pendingCommand: device.pendingCommand || null
+  };
+}
+
+function currentSession(req) {
+  const token = parseCookies(req).signage_session;
+  if (!token) return null;
+  const hash = tokenHash(token);
+  const now = Date.now();
+  return db.sessions.find(session =>
+    session.tokenHash === hash
+    && !session.revokedAt
+    && new Date(session.expiresAt).getTime() > now
+  ) || null;
+}
+
 function currentViewer(req) {
-  const requestedId = String(req.headers["x-user-id"] || "");
-  if (requestedId) return db.users.find(user => user.id === requestedId) || null;
-  return db.users.find(user => user.roleIds.includes("system-admin")) || db.users[0] || null;
+  const session = currentSession(req);
+  if (!session) return null;
+  return db.users.find(user => user.id === session.userId && user.status === "active") || null;
 }
 
 function viewerPermissions(user) {
@@ -521,9 +993,43 @@ function viewerIsSystemAdmin(user) {
   return Boolean(user?.roleIds?.includes("system-admin"));
 }
 
+const permissionFeatures = {
+  "calendar.manage": "Calendar Sync",
+  "calendar.sync": "Calendar Sync",
+  "notification.manage": "Notifications",
+  "broadcast.publish": "Emergency & Safety Broadcast",
+  "broadcast.template.manage": "Emergency & Safety Broadcast",
+  "broadcast.history.view": "Emergency & Safety Broadcast"
+};
+
+function activeFeatureNames(user, now = Date.now()) {
+  const names = new Set(user?.features || []);
+  for (const grant of db.featureGrants || []) {
+    if (grant.userId !== user?.id || grant.active === false) continue;
+    if (grant.startsAt && new Date(grant.startsAt).getTime() > now) continue;
+    if (grant.endsAt && new Date(grant.endsAt).getTime() <= now) continue;
+    names.add(grant.featureName);
+  }
+  return names;
+}
+
+function viewerHasFeature(user, feature) {
+  return viewerIsSystemAdmin(user) || activeFeatureNames(user).has(feature);
+}
+
 function viewerHasPermission(req, permission) {
   const viewer = currentViewer(req);
-  return viewerIsSystemAdmin(viewer) || viewerPermissions(viewer).has(permission);
+  if (viewerIsSystemAdmin(viewer)) return true;
+  if (!viewerPermissions(viewer).has(permission)) return false;
+  const requiredFeature = permissionFeatures[permission];
+  return !requiredFeature || viewerHasFeature(viewer, requiredFeature);
+}
+
+function viewerHasRolePermission(user, permissions) {
+  if (viewerIsSystemAdmin(user)) return true;
+  const required = Array.isArray(permissions) ? permissions : [permissions];
+  const available = viewerPermissions(user);
+  return required.some(permission => available.has(permission));
 }
 
 function viewerCanAccessRoom(user, room) {
@@ -532,21 +1038,113 @@ function viewerCanAccessRoom(user, room) {
     user?.centerIds?.includes(room.centerId)
     || user?.campusIds?.includes(room.campusId)
     || user?.buildingIds?.includes(room.buildingId)
+    || user?.roomIds?.includes(room.id)
   );
 }
 
+function viewerCanAccessCenter(user, center) {
+  return viewerIsSystemAdmin(user)
+    || user?.centerIds?.includes(center.id)
+    || db.campuses.some(campus => campus.centerId === center.id && user?.campusIds?.includes(campus.id))
+    || db.buildings.some(building => {
+      const campus = db.campuses.find(item => item.id === building.campusId);
+      return campus?.centerId === center.id && user?.buildingIds?.includes(building.id);
+    })
+    || db.rooms.some(room => room.centerId === center.id && user?.roomIds?.includes(room.id));
+}
+
+function viewerCanAccessCampus(user, campus) {
+  return viewerIsSystemAdmin(user)
+    || user?.centerIds?.includes(campus.centerId)
+    || user?.campusIds?.includes(campus.id)
+    || db.buildings.some(building => building.campusId === campus.id && user?.buildingIds?.includes(building.id))
+    || db.rooms.some(room => room.campusId === campus.id && user?.roomIds?.includes(room.id));
+}
+
+function viewerCanAccessBuilding(user, building) {
+  const campus = db.campuses.find(item => item.id === building.campusId);
+  return viewerIsSystemAdmin(user)
+    || user?.centerIds?.includes(campus?.centerId)
+    || user?.campusIds?.includes(building.campusId)
+    || user?.buildingIds?.includes(building.id)
+    || db.rooms.some(room => room.buildingId === building.id && user?.roomIds?.includes(room.id));
+}
+
+function viewerCanManageUser(viewer, target) {
+  if (viewerIsSystemAdmin(viewer)) return true;
+  if (viewerIsSystemAdmin(target)) return false;
+  const targetRooms = db.rooms.filter(room => viewerCanAccessRoom(target, room));
+  return targetRooms.length > 0 && targetRooms.every(room => viewerCanAccessRoom(viewer, room));
+}
+
+function viewerCanAccessTheme(user, theme) {
+  if (viewerIsSystemAdmin(user) || theme.builtIn || theme.createdBy === user?.id) return true;
+  return db.rooms.some(room => effectiveRoomSettings(room).themeId === theme.id && viewerCanAccessRoom(user, room));
+}
+
+function viewerCanManageTheme(user, theme) {
+  return viewerIsSystemAdmin(user) || (!theme?.builtIn && theme?.createdBy === user?.id);
+}
+
+function viewerCanPairRoom(user, room) {
+  return viewerIsSystemAdmin(user)
+    || (viewerPermissions(user).has("center.manage") && user?.centerIds?.includes(room.centerId));
+}
+
 function requirePermission(req, res, permission) {
+  if (!currentViewer(req)) {
+    json(res, 401, { error: "Authentication required." });
+    return false;
+  }
   if (viewerHasPermission(req, permission)) return true;
   json(res, 403, { error: `Permission required: ${permission}` });
   return false;
 }
 
-function publicViewer(user) {
+function requireAnyPermission(req, res, permissions) {
+  if (!currentViewer(req)) {
+    json(res, 401, { error: "Authentication required." });
+    return false;
+  }
+  if (permissions.some(permission => viewerHasPermission(req, permission))) return true;
+  json(res, 403, { error: `Permission required: ${permissions.join(" or ")}` });
+  return false;
+}
+
+function requireFeature(req, res, feature) {
+  const viewer = currentViewer(req);
+  if (!viewer) {
+    json(res, 401, { error: "Authentication required." });
+    return false;
+  }
+  if (viewerHasFeature(viewer, feature)) return true;
+  json(res, 403, { error: `Feature access required: ${feature}` });
+  return false;
+}
+
+function requireRolePermission(req, res, permissions) {
+  const viewer = currentViewer(req);
+  if (!viewer) {
+    json(res, 401, { error: "Authentication required." });
+    return false;
+  }
+  if (viewerHasRolePermission(viewer, permissions)) return true;
+  json(res, 403, { error: `Permission required: ${Array.isArray(permissions) ? permissions.join(" or ") : permissions}` });
+  return false;
+}
+
+function publicViewer(user, session = null) {
   return {
     id: user?.id || "",
     name: user?.name || "",
+    email: user?.email || "",
+    phoneNumber: user?.phoneNumber || "",
+    twoFactorEnabled: Boolean(user?.twoFactorEnabled),
+    twoFactorMethod: user?.twoFactorMethod || (user?.twoFactorEnabled && user?.encryptedTwoFactorSecret ? "authenticator" : ""),
     isSystemAdmin: viewerIsSystemAdmin(user),
     permissions: [...viewerPermissions(user)],
+    features: [...activeFeatureNames(user)],
+    csrfToken: session?.csrfToken || "",
     accessibleRoomIds: db.rooms.filter(room => viewerCanAccessRoom(user, room)).map(room => room.id)
   };
 }
@@ -559,32 +1157,175 @@ function calendarDetailLine(event, timezone) {
   return `${day}, ${time(start)} - ${time(end)}`;
 }
 
+function eventDisplayTitle(event) {
+  return event.privacy === "private" || /(?:private|rental) events?/i.test(event.description || "")
+    ? "Private Event"
+    : event.originalTitle || event.title || "Untitled Event";
+}
+
+function calendarEventSummary(events, now = new Date()) {
+  const nowMs = now.getTime();
+  const valid = events.filter(event =>
+    Number.isFinite(new Date(event.startsAt).getTime())
+    && Number.isFinite(new Date(event.endsAt).getTime())
+  );
+  const chronological = [...valid].sort((left, right) => left.startsAt.localeCompare(right.startsAt));
+  const future = chronological.filter(event => new Date(event.startsAt).getTime() > nowMs);
+  return {
+    eventCount: valid.length,
+    invalidEventCount: events.length - valid.length,
+    pastEventCount: valid.filter(event => new Date(event.endsAt).getTime() <= nowMs).length,
+    currentEventCount: valid.filter(event =>
+      new Date(event.startsAt).getTime() <= nowMs
+      && new Date(event.endsAt).getTime() > nowMs
+    ).length,
+    futureEventCount: future.length,
+    firstEventAt: chronological[0]?.startsAt || null,
+    lastEventAt: chronological.at(-1)?.endsAt || null,
+    nextEventAt: future[0]?.startsAt || null
+  };
+}
+
+function detectRoomConflicts(roomId, events) {
+  const previous = new Map(db.calendarConflicts.filter(item => item.roomId === roomId).map(item => [item.id, item]));
+  const sorted = [...events].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  const clusters = [];
+  let cluster = [];
+  let clusterEnd = 0;
+  for (const event of sorted) {
+    const startsAt = new Date(event.startsAt).getTime();
+    const endsAt = new Date(event.endsAt).getTime();
+    if (cluster.length && startsAt >= clusterEnd) {
+      if (cluster.length > 1) clusters.push(cluster);
+      cluster = [];
+      clusterEnd = 0;
+    }
+    cluster.push(event);
+    clusterEnd = Math.max(clusterEnd, endsAt);
+  }
+  if (cluster.length > 1) clusters.push(cluster);
+  const conflicts = clusters.map(items => {
+    const externalIds = items.map(item => item.externalEventId).sort();
+    const id = `calendar-conflict-${crypto.createHash("sha256").update(`${roomId}:${externalIds.join("|")}`).digest("hex").slice(0, 24)}`;
+    const prior = previous.get(id);
+    return {
+      id,
+      roomId,
+      eventIds: items.map(item => item.id),
+      externalEventIds: externalIds,
+      startsAt: items.map(item => item.startsAt).sort()[0],
+      endsAt: items.map(item => item.endsAt).sort().at(-1),
+      status: prior?.status || "unresolved",
+      selectedExternalEventId: prior?.selectedExternalEventId || null,
+      resolution: prior?.resolution || null,
+      resolvedBy: prior?.resolvedBy || null,
+      resolvedAt: prior?.resolvedAt || null,
+      createdAt: prior?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+  });
+  db.calendarConflicts = [
+    ...db.calendarConflicts.filter(item => item.roomId !== roomId),
+    ...conflicts
+  ];
+  return conflicts;
+}
+
+function conflictEvents(conflict) {
+  return conflict.eventIds.map(id => db.calendarEvents.find(event => event.id === id)).filter(Boolean);
+}
+
+function conflictWriteContext(event) {
+  const assignment = db.calendarAssignments.find(item => item.id === event.assignmentId);
+  const account = db.calendarAccounts.find(item => item.id === assignment?.accountId);
+  const calendar = account?.calendars?.find(item => item.id === assignment?.calendarId);
+  if (!assignment || !account || !calendar) throw new Error("The source calendar assignment is unavailable.");
+  if (account.accessLevel !== "writable" || !["google", "microsoft365"].includes(account.provider)) {
+    throw new Error("This action requires a writable Google or Microsoft 365 calendar.");
+  }
+  return { assignment, account, calendar };
+}
+
+function recordConflictDecision(conflict, action, viewer, details = {}) {
+  const room = db.rooms.find(item => item.id === conflict.roomId);
+  const decision = {
+    id: entityId("calendar-conflict-decision"),
+    conflictId: conflict.id,
+    roomId: conflict.roomId,
+    roomName: room?.name || "",
+    action,
+    actorUserId: viewer?.id || null,
+    actorName: viewer?.name || "System",
+    selectedExternalEventId: details.selectedExternalEventId || null,
+    targetExternalEventId: details.targetExternalEventId || null,
+    previousStartsAt: details.previousStartsAt || null,
+    previousEndsAt: details.previousEndsAt || null,
+    newStartsAt: details.newStartsAt || null,
+    newEndsAt: details.newEndsAt || null,
+    sourceWrite: Boolean(details.sourceWrite),
+    eventSnapshots: conflictEvents(conflict).map(event => ({
+      externalEventId: event.externalEventId,
+      title: eventDisplayTitle(event),
+      startsAt: event.startsAt,
+      endsAt: event.endsAt,
+      provider: event.provider
+    })),
+    createdAt: new Date().toISOString()
+  };
+  db.calendarConflictHistory.unshift(decision);
+  const cutoff = Date.now() - 183 * 24 * 60 * 60 * 1000;
+  db.calendarConflictHistory = db.calendarConflictHistory.filter(item => new Date(item.createdAt).getTime() >= cutoff);
+  return decision;
+}
+
 function refreshRoomEvents(roomId) {
   const room = db.rooms.find(item => item.id === roomId);
   if (!room) return;
-  const center = db.centers.find(item => item.id === room.centerId);
-  const timezone = center?.timezone || "UTC";
+  const effective = effectiveRoomSettings(room);
+  const timezone = effective.timezone;
   const now = new Date();
+  const futureLimit = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
   const events = db.calendarEvents
-    .filter(item => item.roomId === roomId && new Date(item.endsAt) >= now)
+    .filter(item => item.roomId === roomId && new Date(item.endsAt) >= now && new Date(item.startsAt) <= futureLimit)
     .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  const conflicts = detectRoomConflicts(roomId, events);
+  const displayEvents = eventsForKiosk(events, conflicts);
   db.upcomingEvents = db.upcomingEvents.filter(item => item.roomId !== roomId);
-  db.upcomingEvents.push(...events.slice(0, 4).map(event => ({
+  db.upcomingEvents.push(...displayEvents.filter(event => new Date(event.startsAt) > now).slice(0, 100).map(event => ({
     roomId,
-    title: event.title,
-    detail: calendarDetailLine(event, timezone)
+    eventId: event.id,
+    title: eventDisplayTitle(event),
+    detail: calendarDetailLine(event, timezone),
+    startsAt: event.startsAt,
+    endsAt: event.endsAt,
+    description: effective.showEventDescription && eventDisplayTitle(event) !== "Private Event" ? event.description || "" : ""
   })));
-  const current = events.find(event => new Date(event.startsAt) <= now && new Date(event.endsAt) > now);
+  const currentEvents = events.filter(event => new Date(event.startsAt) <= now && new Date(event.endsAt) > now);
+  const currentConflict = conflicts.find(conflict => currentEvents.some(event => conflict.eventIds.includes(event.id)));
+  const current = currentConflict
+    ? deterministicConflictEvent(
+      currentEvents.filter(event => currentConflict.eventIds.includes(event.id)),
+      currentConflict.selectedExternalEventId
+    )
+    : currentEvents[0];
   if (current) {
     const remainingMinutes = Math.max(0, Math.ceil((new Date(current.endsAt) - now) / 60000));
-    room.currentEventTitle = current.title;
+    room.currentEventTitle = eventDisplayTitle(current);
+    room.currentEventStartsAt = current.startsAt;
+    room.currentEventEndsAt = current.endsAt;
+    room.currentEventTime = calendarDetailLine(current, timezone);
+    room.currentEventDescription = effective.showEventDescription && room.currentEventTitle !== "Private Event" ? current.description || "" : "";
     room.currentEventUntil = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit" }).format(new Date(current.endsAt));
     room.status = remainingMinutes <= (new Date(current.endsAt) - new Date(current.startsAt) > 30 * 60000 ? 10 : 5) ? "warning" : "busy";
   } else {
     room.status = "available";
     room.currentEventTitle = "";
-    room.currentEventUntil = events[0]
-      ? new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit" }).format(new Date(events[0].startsAt))
+    room.currentEventStartsAt = null;
+    room.currentEventEndsAt = null;
+    room.currentEventTime = "";
+    room.currentEventDescription = "";
+    room.currentEventUntil = displayEvents[0]
+      ? new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit" }).format(new Date(displayEvents[0].startsAt))
       : "";
   }
 }
@@ -597,25 +1338,34 @@ async function syncAssignment(assignment) {
   const startedAt = new Date();
   assignment.lastAttemptAt = startedAt.toISOString();
   try {
-    const events = await syncCalendar(account, calendar, new Date(startedAt.getTime() - 24 * 60 * 60 * 1000), new Date(startedAt.getTime() + 90 * 24 * 60 * 60 * 1000));
+    const events = await syncCalendar(
+      account,
+      calendar,
+      new Date(startedAt.getTime() - 30 * 24 * 60 * 60 * 1000),
+      new Date(startedAt.getTime() + 30 * 24 * 60 * 60 * 1000)
+    );
+    const summary = calendarEventSummary(events, startedAt);
     db.calendarEvents = db.calendarEvents.filter(item => item.roomId !== room.id || item.assignmentId !== assignment.id);
     db.calendarEvents.push(...events.map(event => ({ ...event, id: entityId("calendar-event"), assignmentId: assignment.id, roomId: room.id, provider: account.provider })));
     assignment.lastSuccessfulSyncAt = new Date().toISOString();
     assignment.lastSyncError = "";
     account.lastSuccessfulSyncAt = assignment.lastSuccessfulSyncAt;
     account.lastSyncError = "";
+    account.webhookStatus = account.webhookStatus === "failed" ? "polling-fallback" : account.webhookStatus;
     db.calendarSyncHistory.unshift({
       id: entityId("calendar-sync"),
       assignmentId: assignment.id,
       roomId: room.id,
       accountId: account.id,
       status: "success",
-      eventCount: events.length,
+      ...summary,
       createdAt: new Date().toISOString()
     });
     refreshRoomEvents(room.id);
+    summary.displayedUpcomingEventCount = db.upcomingEvents.filter(item => item.roomId === room.id).length;
+    db.calendarSyncHistory[0].displayedUpcomingEventCount = summary.displayedUpcomingEventCount;
     notifyRoom(room.code);
-    return { eventCount: events.length };
+    return summary;
   } catch (error) {
     assignment.lastSyncError = cleanText(error.message, 500);
     account.lastSyncError = assignment.lastSyncError;
@@ -628,26 +1378,93 @@ async function syncAssignment(assignment) {
       error: assignment.lastSyncError,
       createdAt: new Date().toISOString()
     });
+    await notifyCalendarSyncFailure(account, room, assignment.lastSyncError);
     throw error;
   } finally {
     db.calendarSyncHistory = db.calendarSyncHistory.slice(0, 500);
   }
 }
 
+async function processCalendarAssignment(assignmentId) {
+  if (store.type === "postgresql-normalized") db = await store.refresh();
+  const assignment = db.calendarAssignments.find(item => item.id === assignmentId && item.active !== false);
+  if (!assignment) return { skipped: true };
+  const result = await syncAssignment(assignment);
+  await saveData();
+  const room = db.rooms.find(item => item.id === assignment.roomId);
+  if (room) notifyRoom(room.code, "data-refresh");
+  return result;
+}
+
+let calendarQueue;
+try {
+  calendarQueue = await createCalendarQueue({
+    redisUrl: process.env.REDIS_URL || "",
+    processAssignment: processCalendarAssignment
+  });
+} catch (error) {
+  console.warn(`Redis calendar queue unavailable; using in-process polling: ${error.message}`);
+  calendarQueue = {
+    enabled: false,
+    enqueue: processCalendarAssignment,
+    async close() {}
+  };
+}
+
+backgroundQueue = await createBackgroundQueue({
+  redisUrl: process.env.REDIS_URL || "",
+  handlers: {
+    async "broadcast-lifecycle"() {
+      if (store.type === "postgresql-normalized") db = await store.refresh();
+      await runBroadcastLifecycle();
+      return { completed: true };
+    },
+    async "scheduled-calendar-sync"() {
+      if (store.type === "postgresql-normalized") db = await store.refresh();
+      await runScheduledCalendarSync();
+      return { completed: true };
+    },
+    async "broadcast-notification"({ broadcast, eventType }) {
+      if (store.type === "postgresql-normalized") db = await store.refresh();
+      await notifyBroadcastEvent(broadcast, eventType);
+      await saveData();
+      return { completed: true };
+    },
+    async "schedule-reconciliation"() {
+      if (store.type === "postgresql-normalized") db = await store.refresh();
+      return { distributedEvent: { type: "all-rooms-command", command: "data-refresh" } };
+    }
+  },
+  async onDistributedEvent(event) {
+    if (event?.origin === instanceId) return;
+    if (store.type === "postgresql-normalized") db = await store.refresh();
+    if (event?.type === "room-command") notifyLocalRoom(event.roomCode, event.command, event.deviceId);
+    if (event?.type === "all-rooms-command") {
+      for (const room of db.rooms) notifyLocalRoom(room.code, event.command || "data-refresh");
+    }
+  }
+});
+
 function publicUser(user) {
   return {
     id: user.id,
     name: user.name,
     email: user.email,
+    phoneNumber: user.phoneNumber || "",
+    phoneVerifiedAt: user.phoneVerifiedAt || null,
     status: user.status,
     roleIds: user.roleIds,
     centerIds: user.centerIds,
     campusIds: user.campusIds,
     buildingIds: user.buildingIds,
+    roomIds: user.roomIds,
     features: user.features,
+    featureGrants: db.featureGrants.filter(grant => grant.userId === user.id),
     twoFactorEnabled: Boolean(user.twoFactorEnabled),
+    twoFactorMethod: user.twoFactorMethod || (user.twoFactorEnabled && user.encryptedTwoFactorSecret ? "authenticator" : ""),
     invitedAt: user.invitedAt || null,
     lastEmailAt: user.lastEmailAt || null,
+    lastLoginAt: user.lastLoginAt || null,
     createdAt: user.createdAt || null,
     updatedAt: user.updatedAt || null
   };
@@ -660,6 +1477,49 @@ function validEmail(value) {
 function validIds(values, collection) {
   const allowed = new Set(collection.map(item => item.id));
   return Array.isArray(values) && values.every(value => allowed.has(value));
+}
+
+function assignmentsWithinViewerScope(viewer, body) {
+  if (viewerIsSystemAdmin(viewer)) return true;
+  const centers = (body.centerIds || []).map(id => db.centers.find(item => item.id === id));
+  const campuses = (body.campusIds || []).map(id => db.campuses.find(item => item.id === id));
+  const buildings = (body.buildingIds || []).map(id => db.buildings.find(item => item.id === id));
+  const rooms = (body.roomIds || []).map(id => db.rooms.find(item => item.id === id));
+  return centers.every(item => item && viewerCanAccessCenter(viewer, item))
+    && campuses.every(item => item && viewerCanAccessCampus(viewer, item))
+    && buildings.every(item => item && viewerCanAccessBuilding(viewer, item))
+    && rooms.every(item => item && viewerCanAccessRoom(viewer, item));
+}
+
+function roleAssignmentsAllowed(viewer, roleIds) {
+  if (viewerIsSystemAdmin(viewer)) return true;
+  const viewerPermissionSet = viewerPermissions(viewer);
+  return roleIds.every(roleId => {
+    if (roleId === "system-admin") return false;
+    const role = db.roles.find(item => item.id === roleId);
+    return role && role.permissions.every(permission => viewerPermissionSet.has(permission));
+  });
+}
+
+function rolePermissionsAllowed(viewer, permissions) {
+  if (viewerIsSystemAdmin(viewer)) return true;
+  const allowed = viewerPermissions(viewer);
+  return permissions.every(permission => allowed.has(permission));
+}
+
+function featureAssignmentsAllowed(viewer, features) {
+  if (viewerIsSystemAdmin(viewer)) return true;
+  const allowed = activeFeatureNames(viewer);
+  return features.every(feature => allowed.has(feature));
+}
+
+function validCalendarAuthMode(provider, authMode) {
+  return {
+    google: ["service-account", "oauth"],
+    microsoft365: ["application", "oauth"],
+    caldav: ["app-password"],
+    "public-url": ["public-url"]
+  }[provider]?.includes(authMode);
 }
 
 function recordEmail({ to, subject, type, status, error = "", userId = null, source = "administrative" }) {
@@ -690,12 +1550,145 @@ async function deliverTrackedEmail({ to, subject, text, html, type, userId = nul
   }
 }
 
+async function notifyCalendarSyncFailure(account, room, error) {
+  const recipients = db.users.filter(user =>
+    user.status === "active"
+    && (
+      user.id === account.ownerUserId
+      || viewerIsSystemAdmin(user)
+      || (user.roleIds?.includes("center-admin") && user.centerIds?.includes(room.centerId))
+    )
+  );
+  const title = `Calendar sync failed: ${room.name}`;
+  const message = `${account.accountName}: ${error}`;
+  const createdAt = new Date().toISOString();
+  for (const user of recipients) {
+    db.notifications.unshift({
+      id: entityId("notification"),
+      userId: user.id,
+      title,
+      message,
+      severity: "warning",
+      source: "calendar-sync",
+      sourceId: account.id,
+      actionUrl: "/admin#calendars",
+      readAt: null,
+      createdAt
+    });
+  }
+  db.notifications = db.notifications.slice(0, 1000);
+  if (!db.settings.email.enabled) return;
+  await Promise.allSettled(recipients
+    .filter(user => validEmail(user.email))
+    .map(user => deliverTrackedEmail({
+      to: user.email,
+      subject: title,
+      text: message,
+      html: `<p>${escapeHtml(message)}</p>`,
+      type: "calendar-sync-failure",
+      userId: user.id,
+      source: "calendar-sync"
+    })));
+}
+
+function broadcastRecipientUsers(broadcast) {
+  const roomIds = new Set(broadcastTargetRooms(broadcast).map(room => room.id));
+  return db.users.filter(user =>
+    user.status === "active"
+    && (viewerIsSystemAdmin(user) || viewerHasFeature(user, "Notifications") || viewerHasFeature(user, "Emergency & Safety Broadcast"))
+    && (viewerIsSystemAdmin(user) || db.rooms.some(room => roomIds.has(room.id) && viewerCanAccessRoom(user, room)))
+  );
+}
+
+async function notifyBroadcastEvent(broadcast, eventType) {
+  const labels = {
+    activated: "Broadcast active",
+    updated: "Broadcast updated",
+    ended: "Broadcast ended",
+    cancelled: "Broadcast cancelled"
+  };
+  const title = `${labels[eventType] || "Broadcast notice"}: ${broadcast.title}`;
+  const targetCount = broadcastTargetRooms(broadcast).length;
+  const message = `${broadcast.message}\n\nSeverity: ${broadcast.severity}. Target rooms: ${targetCount}.`;
+  const recipients = broadcastRecipientUsers(broadcast);
+  const createdAt = new Date().toISOString();
+  for (const user of recipients) {
+    db.notifications.unshift({
+      id: entityId("notification"),
+      userId: user.id,
+      title,
+      message,
+      severity: broadcast.severity,
+      source: "broadcast",
+      sourceId: broadcast.id,
+      actionUrl: "/admin#broadcast",
+      readAt: null,
+      createdAt
+    });
+  }
+  db.notifications = db.notifications.slice(0, 1000);
+  if (!db.settings.email.enabled) return;
+  await Promise.allSettled(recipients
+    .filter(user => validEmail(user.email))
+    .map(user => deliverTrackedEmail({
+      to: user.email,
+      subject: title,
+      text: message,
+      html: `<p>${escapeHtml(broadcast.message)}</p><p><strong>Severity:</strong> ${escapeHtml(broadcast.severity)}<br /><strong>Target rooms:</strong> ${targetCount}</p>`,
+      type: `broadcast-${eventType}`,
+      userId: user.id,
+      source: "broadcast"
+    })));
+}
+
+let broadcastLifecycleRunning = false;
+
+async function runBroadcastLifecycle() {
+  if (broadcastLifecycleRunning) return;
+  broadcastLifecycleRunning = true;
+  try {
+    const changedRoomCodes = new Set();
+    const notificationJobs = [];
+    let changed = false;
+    for (const broadcast of db.broadcasts) {
+      const nextStatus = broadcastStatusAt(broadcast);
+      if (nextStatus === broadcast.status) continue;
+      const previousStatus = broadcast.status;
+      broadcast.status = nextStatus;
+      if (nextStatus === "active") {
+        broadcast.startedAt ||= new Date().toISOString();
+        if (!broadcast.activationNotifiedAt) {
+          broadcast.activationNotifiedAt = new Date().toISOString();
+          notificationJobs.push(notifyBroadcastEvent(broadcast, "activated"));
+        }
+      } else if (nextStatus === "ended" && previousStatus !== "ended") {
+        broadcast.endedAt ||= broadcast.endsAt || new Date().toISOString();
+        if (!broadcast.endingNotifiedAt) {
+          broadcast.endingNotifiedAt = new Date().toISOString();
+          notificationJobs.push(notifyBroadcastEvent(broadcast, "ended"));
+        }
+      }
+      for (const room of broadcastTargetRooms(broadcast)) changedRoomCodes.add(room.code);
+      changed = true;
+    }
+    if (changed) {
+      await saveData();
+      notifyChangedRooms([...changedRoomCodes]);
+      await Promise.allSettled(notificationJobs);
+      await saveData();
+    }
+  } finally {
+    broadcastLifecycleRunning = false;
+  }
+}
+
 function invitationMessage(user) {
-  const portalUrl = `${baseUrl.replace(/\/+$/, "")}/admin`;
+  const portalUrl = `${baseUrl.replace(/\/+$/, "")}/login`;
+  const resetUrl = `${baseUrl.replace(/\/+$/, "")}/forgot-password`;
   return {
     subject: "Your Signage Management System account",
-    text: `Hello ${user.name},\n\nAn account has been provisioned for ${user.email} in the Signage Management System.\n\nManagement portal: ${portalUrl}\n\nYour administrator will provide login activation instructions when authentication enrollment is enabled.\n`,
-    html: `<p>Hello ${escapeHtml(user.name)},</p><p>An account has been provisioned for <strong>${escapeHtml(user.email)}</strong> in the Signage Management System.</p><p><a href="${escapeHtml(portalUrl)}">Open management portal</a></p><p>Your administrator will provide login activation instructions when authentication enrollment is enabled.</p>`
+    text: `Hello ${user.name},\n\nAn account has been provisioned for ${user.email} in the Signage Management System.\n\nSet your password: ${resetUrl}\nSign in: ${portalUrl}\n`,
+    html: `<p>Hello ${escapeHtml(user.name)},</p><p>An account has been provisioned for <strong>${escapeHtml(user.email)}</strong> in the Signage Management System.</p><p><a href="${escapeHtml(resetUrl)}">Set your password</a></p><p><a href="${escapeHtml(portalUrl)}">Open management portal</a></p>`
   };
 }
 
@@ -725,8 +1718,64 @@ function validUrl(value) {
   }
 }
 
+function qrColor(value, fallback) {
+  return /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(String(value || "")) ? String(value) : fallback;
+}
+
+function colorLuminance(hex) {
+  const channels = hex.slice(1, 7).match(/.{2}/g).map(value => {
+    const channel = parseInt(value, 16) / 255;
+    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+function contrastRatio(foreground, background) {
+  const values = [colorLuminance(foreground), colorLuminance(background)].sort((a, b) => b - a);
+  return (values[0] + 0.05) / (values[1] + 0.05);
+}
+
+function secureTokenEqual(left, right) {
+  const leftHash = crypto.createHash("sha256").update(String(left || "")).digest();
+  const rightHash = crypto.createHash("sha256").update(String(right || "")).digest();
+  return crypto.timingSafeEqual(leftHash, rightHash);
+}
+
+function hashDeviceToken(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function requestIp(req) {
+  const forwarded = String(req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return cleanText(forwarded || req.socket.remoteAddress || "", 80);
+}
+
+function calendarWebhookToken(calendar) {
+  if (calendar.encryptedWebhookToken) {
+    try {
+      return decryptCredential(calendar.encryptedWebhookToken);
+    } catch {
+      return "";
+    }
+  }
+  return calendar.webhookToken || "";
+}
+
 function cleanIdArray(value) {
   return Array.isArray(value) ? [...new Set(value.map(item => cleanText(item, 160)).filter(Boolean))] : [];
+}
+
+function nullableInteger(value, minimum = 1, maximum = 10) {
+  if (value === "" || value === null || value === undefined) return null;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= minimum && number <= maximum ? number : null;
+}
+
+function nullableBoolean(value) {
+  if (value === "" || value === null || value === undefined) return null;
+  if (value === true || value === "true") return true;
+  if (value === false || value === "false") return false;
+  return null;
 }
 
 function scheduleFromBody(body, existing = {}) {
@@ -742,9 +1791,54 @@ function scheduleFromBody(body, existing = {}) {
   };
 }
 
+function broadcastFromBody(body, existing = {}) {
+  return {
+    ...existing,
+    templateId: cleanText(body.templateId, 160) || null,
+    title: cleanText(body.title, 200),
+    message: cleanText(body.message, 5000),
+    severity: cleanText(body.severity, 30) || "emergency",
+    audibleAlert: body.audibleAlert !== false,
+    startsAt: cleanText(body.startsAt, 80),
+    endsAt: cleanText(body.endsAt, 80) || null,
+    centerIds: cleanIdArray(body.centerIds),
+    campusIds: cleanIdArray(body.campusIds),
+    buildingIds: cleanIdArray(body.buildingIds),
+    roomGroupIds: cleanIdArray(body.roomGroupIds),
+    roomIds: cleanIdArray(body.roomIds),
+    targetRoomCodes: cleanIdArray(body.targetRoomCodes)
+  };
+}
+
+function validateBroadcast(broadcast, viewer) {
+  if (!broadcast.title) return "Broadcast title is required.";
+  if (!broadcast.message) return "Broadcast message is required.";
+  if (!["informational", "warning", "urgent", "critical", "emergency"].includes(broadcast.severity)) {
+    return "Select a valid severity.";
+  }
+  const startsAt = new Date(broadcast.startsAt);
+  if (!Number.isFinite(startsAt.getTime())) return "Enter a valid broadcast start time.";
+  if (broadcast.endsAt) {
+    const endsAt = new Date(broadcast.endsAt);
+    if (!Number.isFinite(endsAt.getTime())) return "Enter a valid broadcast end time.";
+    if (endsAt <= startsAt) return "Broadcast end time must be after its start time.";
+  }
+  if (broadcast.centerIds.some(id => !db.centers.some(item => item.id === id))) return "One or more selected centers are invalid.";
+  if (broadcast.campusIds.some(id => !db.campuses.some(item => item.id === id))) return "One or more selected campuses are invalid.";
+  if (broadcast.buildingIds.some(id => !db.buildings.some(item => item.id === id))) return "One or more selected buildings are invalid.";
+  if (broadcast.roomGroupIds.some(id => !db.roomGroups.some(item => item.id === id && item.active !== false))) return "One or more selected room groups are invalid.";
+  if (broadcast.roomIds.some(id => !db.rooms.some(item => item.id === id))) return "One or more selected rooms are invalid.";
+  if (broadcast.targetRoomCodes.some(code => !db.rooms.some(item => item.code === code))) return "One or more selected room codes are invalid.";
+  const targetRooms = broadcastTargetRooms(broadcast);
+  if (!targetRooms.length) return "Select at least one center, campus, building, room group, or room.";
+  if (targetRooms.some(room => !viewerCanAccessRoom(viewer, room))) return "One or more selected targets include rooms outside your assigned scope.";
+  return "";
+}
+
 function validateThemeSchedule(schedule, viewer) {
   const theme = db.themes.find(item => item.id === schedule.themeId && item.published !== false && item.archived !== true);
   if (!theme) return "Select an available published theme.";
+  if (!viewerCanAccessTheme(viewer, theme)) return "The selected theme is outside your assigned scope.";
   if (!Number.isFinite(new Date(schedule.startsAt).getTime()) || !Number.isFinite(new Date(schedule.endsAt).getTime())) {
     return "Enter valid schedule start and end times.";
   }
@@ -793,11 +1887,20 @@ function notifyChangedRooms(roomCodes = []) {
   for (const code of new Set(roomCodes)) notifyRoom(code);
 }
 
-function notifyRoom(roomCode) {
+function notifyLocalRoom(roomCode, command = "data-refresh", deviceId = "") {
   const set = clients.get(roomCode);
   if (!set) return;
-  for (const res of set) {
-    res.write(`event: refresh\ndata: ${JSON.stringify({ roomCode, at: new Date().toISOString() })}\n\n`);
+  for (const client of set) {
+    const entry = client?.res ? client : { res: client, deviceId: "" };
+    if (deviceId && entry.deviceId !== deviceId) continue;
+    entry.res.write(`event: refresh\ndata: ${JSON.stringify({ roomCode, command, at: new Date().toISOString() })}\n\n`);
+  }
+}
+
+function notifyRoom(roomCode, command = "data-refresh", deviceId = "") {
+  notifyLocalRoom(roomCode, command, deviceId);
+  if (backgroundQueue?.enabled) {
+    backgroundQueue.distribute({ type: "room-command", roomCode, command, deviceId, origin: instanceId }).catch(() => {});
   }
 }
 
@@ -832,19 +1935,22 @@ function adminPage() {
           <h1>Management Portal</h1>
         </div>
         <div class="header-actions">
+          <span id="currentUserName" class="current-user"></span>
           <span id="storageBadge" class="storage-badge"></span>
           <a href="/room-108-shishu" target="_blank">Open Kiosk</a>
+          <button type="button" class="secondary" id="logoutButton">Log Out</button>
         </div>
       </header>
       <nav class="admin-tabs" aria-label="Management sections">
         <button type="button" class="active" data-tab="dashboard">Dashboard</button>
         <button type="button" data-tab="locations">Locations & Rooms</button>
         <button type="button" data-tab="users">Users</button>
-        <button type="button" data-tab="calendars">Calendar Sync</button>
-        <button type="button" data-tab="themes">Theme Editor</button>
-        <button type="button" data-tab="theme-scheduler">Theme Scheduler</button>
-        <button type="button" data-tab="notifications">Email Notifications</button>
-        <button type="button" data-tab="broadcast">Emergency Broadcast</button>
+        <button type="button" data-tab="calendars" data-any-feature="Calendar Sync|Calendar Event Conflict Resolution">Calendars</button>
+        <button type="button" data-tab="devices">Kiosk Devices</button>
+        <button type="button" data-tab="themes" data-feature="Theme Editor">Theme Editor</button>
+        <button type="button" data-tab="theme-scheduler" data-feature="Theme Scheduler">Theme Scheduler</button>
+        <button type="button" data-tab="notifications" data-feature="Notifications">Email Notifications</button>
+        <button type="button" data-tab="broadcast" data-feature="Emergency & Safety Broadcast">Emergency Broadcast</button>
         <button type="button" data-tab="configuration">Configuration</button>
       </nav>
 
@@ -902,6 +2008,10 @@ function adminPage() {
             <div class="panel-heading"><div><h2>Rooms</h2><p>Manage kiosk code, booking link, and assigned theme.</p></div><button type="button" data-new="room">New</button></div>
             <div id="roomList" class="entity-list"></div>
           </section>
+          <section class="panel span-2">
+            <div class="panel-heading"><div><h2>Room Groups</h2><p>Create reusable groups for broadcast targeting.</p></div><button type="button" data-new="roomGroup">New Group</button></div>
+            <div id="roomGroupList" class="entity-list"></div>
+          </section>
         </section>
       </section>
 
@@ -930,8 +2040,13 @@ function adminPage() {
         </section>
       </section>
 
-      <section class="tab-panel" data-panel="calendars">
-        <section class="management-grid">
+      <section class="tab-panel" data-panel="calendars" data-any-feature="Calendar Sync|Calendar Event Conflict Resolution">
+        <nav class="section-tabs" aria-label="Calendar sections">
+          <button type="button" class="active" data-calendar-tab="sync" data-feature="Calendar Sync">Calendar Sync</button>
+          <button type="button" data-calendar-tab="assignment" data-feature="Calendar Sync">Calendar Assignment</button>
+          <button type="button" data-calendar-tab="conflicts" data-feature="Calendar Event Conflict Resolution">Conflict Resolution</button>
+        </nav>
+        <section class="calendar-subpanel active" data-calendar-panel="sync" data-feature="Calendar Sync">
           <section class="panel">
             <div class="panel-heading">
               <div><h2>Calendar Accounts</h2><p>Google service accounts, Microsoft 365 applications, and public calendar URLs.</p></div>
@@ -939,6 +2054,8 @@ function adminPage() {
             </div>
             <div id="calendarAccountList" class="entity-list"></div>
           </section>
+        </section>
+        <section class="calendar-subpanel" data-calendar-panel="assignment" data-feature="Calendar Sync">
           <section class="panel">
             <div class="panel-heading"><div><h2>Room Calendar Assignment</h2><p>Each room maps to one calendar source in this release.</p></div></div>
             <form id="calendarAssignmentForm">
@@ -949,17 +2066,74 @@ function adminPage() {
             </form>
             <div id="calendarAssignmentList" class="entity-list assignment-list"></div>
           </section>
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Sync History</h2><p>Manual and scheduled synchronization results retained for up to six months.</p></div></div>
+            <div class="table-wrap"><table>
+              <thead><tr><th>Time</th><th>Room</th><th>Account</th><th>Status</th><th>Events</th></tr></thead>
+              <tbody id="calendarSyncRows"></tbody>
+            </table></div>
+          </section>
         </section>
-        <section class="panel">
-          <div class="panel-heading"><div><h2>Sync History</h2><p>Manual and scheduled synchronization results retained for up to six months.</p></div></div>
-          <div class="table-wrap"><table>
-            <thead><tr><th>Time</th><th>Room</th><th>Account</th><th>Status</th><th>Events</th></tr></thead>
-            <tbody id="calendarSyncRows"></tbody>
-          </table></div>
+        <section class="calendar-subpanel" data-calendar-panel="conflicts" data-feature="Calendar Event Conflict Resolution">
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Calendar Conflict Dashboard</h2><p>Review overlaps, choose deterministic signage behavior, or update writable Google and Microsoft calendars.</p></div></div>
+            <div id="calendarConflictSummary" class="summary-grid compact-summary"></div>
+            <div id="calendarConflictList" class="entity-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Conflict Decision History</h2><p>Ignore, resolve, cancel, replace, and move decisions retained for six months.</p></div></div>
+            <div class="table-wrap"><table>
+              <thead><tr><th>Time</th><th>Room</th><th>User</th><th>Action</th><th>Source Change</th><th>Selection</th></tr></thead>
+              <tbody id="calendarConflictHistoryRows"></tbody>
+            </table></div>
+          </section>
         </section>
       </section>
 
-      <section class="tab-panel" data-panel="themes">
+      <section class="tab-panel" data-panel="devices">
+        <section class="panel">
+          <div class="panel-heading"><div><h2>Scoped Kiosk Refresh</h2><p>Refresh schedule data or fully reload kiosk application assets.</p></div></div>
+          <form id="kioskRefreshForm">
+            <div class="scheduler-target-grid">
+              <label>Centers <select name="centerIds" id="kioskRefreshCenters" multiple></select></label>
+              <label>Campuses <select name="campusIds" id="kioskRefreshCampuses" multiple></select></label>
+              <label>Buildings <select name="buildingIds" id="kioskRefreshBuildings" multiple></select></label>
+              <label>Room Groups <select name="roomGroupIds" id="kioskRefreshRoomGroups" multiple></select></label>
+              <label>Rooms <select name="roomIds" id="kioskRefreshRooms" multiple></select></label>
+            </div>
+            <label>Refresh Mode <select name="command">
+              <option value="data-refresh">Refresh data only</option>
+              <option value="reload">Reload page, assets, and data</option>
+            </select></label>
+            <button type="submit">Send Refresh</button>
+            <p id="kioskRefreshStatus" class="form-status" role="status"></p>
+          </form>
+        </section>
+        <section class="panel">
+          <div class="panel-heading"><div><h2>Registered Kiosk Devices</h2><p>Approve pairing, monitor device health, reassign trusted kiosks, or revoke access. Online means contact within 2 minutes; stale means 2-10 minutes; offline means more than 10 minutes.</p></div><button type="button" class="secondary" id="refreshKioskDevices">Refresh Status</button></div>
+          <div id="kioskDeviceSummary" class="summary-grid compact-summary"></div>
+          <div class="filters device-filters">
+            <label>Search <input id="kioskDeviceSearch" type="search" placeholder="Device, room, browser, type, or IP" /></label>
+            <label>Room <select id="kioskDeviceRoomFilter"><option value="">All rooms</option></select></label>
+            <label>Registration <select id="kioskDeviceStatusFilter">
+              <option value="">All registration states</option>
+              <option value="pending">Pending</option>
+              <option value="active">Active</option>
+              <option value="revoked">Revoked</option>
+            </select></label>
+            <label>Health <select id="kioskDeviceHealthFilter">
+              <option value="">All health states</option>
+              <option value="online">Online</option>
+              <option value="stale">Stale</option>
+              <option value="offline">Offline</option>
+              <option value="revoked">Revoked</option>
+            </select></label>
+          </div>
+          <div id="kioskDeviceList" class="entity-list"></div>
+        </section>
+      </section>
+
+      <section class="tab-panel" data-panel="themes" data-feature="Theme Editor">
         <section class="management-grid theme-editor-grid">
           <section class="panel">
             <div class="panel-heading"><div><h2>Themes</h2><p>Clone built-in themes, then edit and publish the custom copy.</p></div></div>
@@ -978,6 +2152,11 @@ function adminPage() {
             <form id="themeEditorForm" hidden>
               <input type="hidden" name="themeId" />
               <label>Theme Name <input name="name" required /></label>
+              <label>Supported Orientation <select name="orientationMode">
+                <option value="both">Landscape and portrait</option>
+                <option value="landscape">Landscape primary</option>
+                <option value="portrait">Portrait primary</option>
+              </select></label>
               <fieldset class="theme-background-field">
                 <legend>Background Image</legend>
                 <img id="themeBackgroundPreview" alt="Theme background preview" hidden />
@@ -1000,7 +2179,7 @@ function adminPage() {
         </section>
       </section>
 
-      <section class="tab-panel" data-panel="theme-scheduler">
+      <section class="tab-panel" data-panel="theme-scheduler" data-feature="Theme Scheduler">
         <section class="panel">
           <div class="panel-heading"><div><h2>Schedule Theme Override</h2><p>Scheduled themes temporarily override each room's default theme.</p></div></div>
           <form id="themeScheduleForm">
@@ -1036,7 +2215,7 @@ function adminPage() {
         </section>
       </section>
 
-      <section class="tab-panel" data-panel="notifications">
+      <section class="tab-panel" data-panel="notifications" data-feature="Notifications">
         <section class="management-grid email-grid">
           <section class="panel">
             <div class="panel-heading"><div><h2>SMTP Settings</h2><p>Credentials are encrypted before storage and are never displayed again.</p></div></div>
@@ -1085,26 +2264,58 @@ function adminPage() {
             </table>
           </div>
         </section>
+        <section class="panel">
+          <div class="panel-heading"><div><h2>In-App Notifications</h2><p>Broadcast and operational notifications for the signed-in user.</p></div></div>
+          <div id="inAppNotificationList" class="entity-list"></div>
+        </section>
       </section>
 
-      <section class="tab-panel" data-panel="broadcast">
+      <section class="tab-panel" data-panel="broadcast" data-feature="Emergency & Safety Broadcast">
         <section class="panel broadcast-panel">
           <div class="panel-heading">
             <div><h2>Emergency & Safety Broadcast</h2><p>Prepared templates still require confirmation before publishing.</p></div>
           </div>
           <form id="broadcastForm">
+            <input type="hidden" name="broadcastId" />
             <label>Prepared Template <select name="templateId" id="broadcastTemplateSelect"><option value="">Custom message</option></select></label>
             <label>Title <input name="title" value="IMPORTANT SYSTEM OVERRIDE" /></label>
             <label>Message <textarea name="message">ADMINISTRATIVE OVERRIDE: ACTIVE ALARM DRILL RUNNING. VACATE BUILDING ACCORDING TO DRILL PROTOCOLS.</textarea></label>
-            <label>Severity <select name="severity">
-              <option value="urgent">Urgent</option>
-              <option value="critical">Critical</option>
-              <option value="warning">Warning</option>
-            </select></label>
-            <label>Target Rooms <select name="targetRoomCodes" multiple id="targetRooms"></select></label>
-            <button type="submit">Confirm & Publish</button>
-            <button type="button" id="endBroadcast">End Broadcast</button>
+            <div class="form-grid">
+              <label>Severity <select name="severity">
+                <option value="informational">Informational</option>
+                <option value="warning">Warning</option>
+                <option value="urgent">Urgent</option>
+                <option value="critical">Critical</option>
+                <option value="emergency" selected>Emergency</option>
+              </select></label>
+              <label class="check-label"><input name="audibleAlert" type="checkbox" checked /> Play kiosk alert sound</label>
+              <label>Start <input name="startsAt" type="datetime-local" required /></label>
+              <label>End <input name="endsAt" type="datetime-local" /></label>
+            </div>
+            <div class="scheduler-target-grid broadcast-target-grid">
+              <label>Centers <select name="centerIds" id="broadcastCenters" multiple></select></label>
+              <label>Campuses <select name="campusIds" id="broadcastCampuses" multiple></select></label>
+              <label>Buildings <select name="buildingIds" id="broadcastBuildings" multiple></select></label>
+              <label>Room Groups <select name="roomGroupIds" id="broadcastRoomGroups" multiple></select></label>
+              <label>Rooms <select name="roomIds" multiple id="targetRooms"></select></label>
+            </div>
+            <p class="help-text">Select one or more scopes. The resolved room list is captured when the broadcast is saved.</p>
+            <div class="button-row">
+              <button type="submit" id="saveBroadcast">Confirm & Publish</button>
+              <button type="button" class="secondary" id="cancelBroadcastEdit" hidden>Cancel Edit</button>
+            </div>
+            <p id="broadcastFormStatus" class="form-status" role="status"></p>
           </form>
+        </section>
+        <section class="management-grid">
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Active Broadcasts</h2><p>Alerts currently overriding signage.</p></div></div>
+            <div id="activeBroadcastList" class="entity-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Scheduled Broadcasts</h2><p>Future alerts awaiting automatic activation.</p></div></div>
+            <div id="scheduledBroadcastList" class="entity-list"></div>
+          </section>
         </section>
         <section class="panel">
           <div class="panel-heading">
@@ -1116,7 +2327,7 @@ function adminPage() {
         <section class="panel" id="broadcastHistoryPanel" hidden>
           <div class="panel-heading"><div><h2>Broadcast History</h2><p>System Administrator view of broadcast lifecycle and targets.</p></div></div>
           <div class="table-wrap"><table>
-            <thead><tr><th>Started</th><th>Published By</th><th>Title</th><th>Severity</th><th>Targets</th><th>Status</th><th>Ended</th></tr></thead>
+            <thead><tr><th>Effective Time</th><th>Owner / Update</th><th>Title</th><th>Severity</th><th>Targets</th><th>Status</th><th>Ended</th></tr></thead>
             <tbody id="broadcastHistoryRows"></tbody>
           </table></div>
         </section>
@@ -1124,9 +2335,65 @@ function adminPage() {
 
       <section class="tab-panel" data-panel="configuration">
         <section class="admin-grid">
-          <section class="panel span-2">
+          <section class="panel">
+            <div class="panel-heading"><div><h2>Account Security</h2><p>Protect this management account with SMS or an authenticator app.</p></div></div>
+            <form id="changePasswordForm">
+              <label>Current Password <input name="currentPassword" type="password" autocomplete="current-password" required /></label>
+              <div class="form-grid">
+                <label>New Password <input name="newPassword" type="password" autocomplete="new-password" minlength="12" required /></label>
+                <label>Confirm New Password <input name="confirmPassword" type="password" autocomplete="new-password" minlength="12" required /></label>
+              </div>
+              <button type="submit">Change Password</button>
+              <p id="changePasswordStatus" class="form-status" role="status"></p>
+            </form>
+            <h3>Two-Factor Authentication</h3>
+            <p id="twoFactorCurrentStatus" class="help-text"></p>
+            <div class="form-grid">
+              <label>Verification Method <select id="twoFactorMethod">
+                <option value="authenticator">Authenticator app</option>
+                <option value="sms">Cell phone text message</option>
+              </select></label>
+              <label id="twoFactorPhoneField" hidden>Cell Phone <input id="twoFactorPhoneNumber" type="tel" autocomplete="tel" placeholder="+13125550123" /></label>
+            </div>
+            <button type="button" id="setupTwoFactor">Start Two-Factor Setup</button>
+            <div id="twoFactorSetup" hidden>
+              <div id="authenticatorSetupFields">
+                <label>Authenticator Secret <input id="twoFactorSecret" readonly /></label>
+                <label>Authenticator URI <textarea id="twoFactorUri" readonly></textarea></label>
+              </div>
+              <p id="smsSetupMessage" class="help-text" hidden></p>
+              <form id="confirmTwoFactorForm">
+                <label>Six-Digit Code <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required /></label>
+                <button type="submit">Confirm Two-Factor Authentication</button>
+              </form>
+            </div>
+            <p id="twoFactorStatus" class="form-status" role="status"></p>
+            <h3>Active Sessions</h3>
+            <div id="sessionList" class="entity-list"></div>
+          </section>
+          <section class="panel" id="twilioSettingsPanel" hidden>
+            <div class="panel-heading"><div><h2>Twilio SMS Settings</h2><p>System Administrator configuration for cell-phone verification codes.</p></div></div>
+            <form id="twilioForm">
+              <label class="check-label"><input name="enabled" type="checkbox" /> Enable Twilio SMS</label>
+              <label>Account SID <input name="accountSid" autocomplete="off" placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" /></label>
+              <label>Auth Token <input name="authToken" type="password" autocomplete="new-password" placeholder="Leave blank to keep stored token" /></label>
+              <label>Twilio Phone Number <input name="fromPhoneNumber" type="tel" autocomplete="tel" placeholder="+13125550123" /></label>
+              <p id="twilioTokenStatus" class="help-text"></p>
+              <button type="submit">Save Twilio Settings</button>
+              <p id="twilioStatus" class="form-status" role="status"></p>
+            </form>
+            <form id="twilioTestForm" class="subform">
+              <label>Test Recipient <input name="recipient" type="tel" placeholder="+13125550123" required /></label>
+              <button type="submit" class="secondary">Send Test SMS</button>
+            </form>
+          </section>
+          <section class="panel span-2" id="roleEditorPanel">
             <div class="panel-heading"><div><h2>Permission & Role Editor</h2><p>Configure module and action permissions, clone roles, and protect assignments.</p></div><button type="button" data-new="role">New Role</button></div>
             <div id="roleManagerList" class="entity-list"></div>
+          </section>
+          <section class="panel span-2" id="loginAuditPanel">
+            <div class="panel-heading"><div><h2>Login Audit</h2><p>Recent successful, failed, rate-limited, reset, and two-factor authentication activity.</p></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Time</th><th>Email</th><th>Outcome</th><th>IP Address</th><th>Browser</th></tr></thead><tbody id="loginAuditRows"></tbody></table></div>
           </section>
           <section class="panel"><h2>Recent Audit Activity</h2><div id="auditList"></div></section>
         </section>
@@ -1141,6 +2408,41 @@ function adminPage() {
         <div id="entityFields"></div>
         <p id="formError" class="form-error" role="alert"></p>
         <div class="dialog-actions"><button type="button" class="secondary" id="cancelDialog">Cancel</button><button type="submit">Save</button></div>
+      </form>
+    </dialog>
+    <dialog id="conflictDialog" class="wide-dialog">
+      <form id="conflictActionForm">
+        <div class="dialog-heading"><h2 id="conflictDialogTitle">Review Calendar Conflict</h2><button type="button" class="icon-button" id="closeConflictDialog" aria-label="Close">&times;</button></div>
+        <input type="hidden" name="conflictId" />
+        <div id="conflictReviewBody"></div>
+        <fieldset class="conflict-move-fields">
+          <legend>Move selected event</legend>
+          <div class="form-grid">
+            <label>New Start <input name="startsAt" type="datetime-local" /></label>
+            <label>New End <input name="endsAt" type="datetime-local" /></label>
+          </div>
+        </fieldset>
+        <p id="conflictFormStatus" class="form-status" role="status"></p>
+        <div class="dialog-actions conflict-dialog-actions">
+          <button type="button" class="secondary" data-conflict-action="ignore">Ignore</button>
+          <button type="button" data-conflict-action="resolve">Resolve Display</button>
+          <button type="button" class="danger-text source-conflict-action" data-conflict-action="cancel">Cancel Selected</button>
+          <button type="button" class="danger-text source-conflict-action" data-conflict-action="replace">Replace Others</button>
+          <button type="button" class="secondary source-conflict-action" data-conflict-action="move">Move Selected</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="passwordDialog">
+      <form id="adminPasswordForm">
+        <div class="dialog-heading"><h2>Set User Password</h2><button type="button" class="icon-button" id="closePasswordDialog" aria-label="Close">&times;</button></div>
+        <input type="hidden" name="userId" />
+        <p id="passwordDialogUser" class="help-text"></p>
+        <label>New Password <input name="newPassword" type="password" autocomplete="new-password" minlength="12" required /></label>
+        <label>Confirm New Password <input name="confirmPassword" type="password" autocomplete="new-password" minlength="12" required /></label>
+        <label class="check-label"><input name="resetTwoFactor" type="checkbox" /> Reset two-factor authentication enrollment</label>
+        <p class="help-text">All existing sessions for this user will be revoked.</p>
+        <p id="adminPasswordStatus" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button type="button" class="secondary" id="cancelPasswordDialog">Cancel</button><button type="submit">Set Password</button></div>
       </form>
     </dialog>
 
@@ -1161,7 +2463,9 @@ function kioskPage(roomCode, preview = false, themeOverrideId = "", stateOverrid
     <link rel="stylesheet" href="/static/kiosk.css?v=${assetVersion}" />
   </head>
   <body>
-    <main id="kiosk" class="kiosk-frame" data-room-code="${escapeHtml(room.code)}" data-preview="${preview ? "true" : "false"}" data-theme-override="${escapeHtml(themeOverrideId)}" data-state-override="${escapeHtml(stateOverride)}" data-build-version="${escapeHtml(assetVersion)}">
+    <div id="connectionStatus" class="connection-status" role="status" aria-live="polite" hidden></div>
+    <div id="deviceStatus" class="device-status" role="status" aria-live="polite" ${preview ? "hidden" : ""}></div>
+    <main id="kiosk" class="kiosk-frame" data-room-code="${escapeHtml(room.code)}" data-kiosk-identifier="${escapeHtml(room.kioskIdentifier)}" data-preview="${preview ? "true" : "false"}" data-theme-override="${escapeHtml(themeOverrideId)}" data-state-override="${escapeHtml(stateOverride)}" data-build-version="${escapeHtml(assetVersion)}">
       <section class="loading">Loading room signage...</section>
     </main>
     <section id="soundGate" class="sound-gate" ${preview ? "hidden" : ""}>
@@ -1217,46 +2521,709 @@ async function serveFile(req, res, basePath, prefix) {
   }
 }
 
+function clientIp(req) {
+  return cleanText(String(req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim(), 80);
+}
+
+function recordLoginAudit({ email = "", userId = null, outcome, req, details = {} }) {
+  db.loginAudit.unshift({
+    id: entityId("login-audit"),
+    email: cleanText(email, 255).toLowerCase(),
+    userId,
+    outcome,
+    ipAddress: clientIp(req),
+    userAgent: cleanText(req.headers["user-agent"], 500),
+    details,
+    createdAt: new Date().toISOString()
+  });
+  db.loginAudit = db.loginAudit.slice(0, 2000);
+}
+
+function loginRateLimited(req, email) {
+  const cutoff = Date.now() - 15 * 60 * 1000;
+  const normalizedEmail = String(email || "").toLowerCase();
+  const ipAddress = clientIp(req);
+  return db.loginAudit.filter(item =>
+    item.email === normalizedEmail
+    && item.ipAddress === ipAddress
+    && ["failed", "two-factor-failed", "rate-limited"].includes(item.outcome)
+    && new Date(item.createdAt).getTime() >= cutoff
+  ).length >= 8;
+}
+
+function smsTwoFactorRateLimited(userId) {
+  const cutoff = Date.now() - 15 * 60 * 1000;
+  return db.loginAudit.filter(item =>
+    item.userId === userId
+    && ["two-factor-sms-sent", "two-factor-enrollment-sms-sent"].includes(item.outcome)
+    && new Date(item.createdAt).getTime() >= cutoff
+  ).length >= 8;
+}
+
+function secureHashMatch(left, right) {
+  const leftBuffer = Buffer.from(String(left || ""));
+  const rightBuffer = Buffer.from(String(right || ""));
+  return Boolean(leftBuffer.length && leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer));
+}
+
+function createAuthenticatedSession(user, req) {
+  const token = randomToken();
+  const now = Date.now();
+  const session = {
+    id: entityId("session"),
+    userId: user.id,
+    tokenHash: tokenHash(token),
+    csrfToken: randomToken(24),
+    ipAddress: clientIp(req),
+    userAgent: cleanText(req.headers["user-agent"], 500),
+    createdAt: new Date(now).toISOString(),
+    lastSeenAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + 8 * 60 * 60 * 1000).toISOString(),
+    revokedAt: null
+  };
+  db.sessions.push(session);
+  user.lastLoginAt = new Date(now).toISOString();
+  return { token, session };
+}
+
+function effectiveTwoFactorMethod(user) {
+  if (!user?.twoFactorEnabled) return "";
+  if (user.twoFactorMethod === "sms" || user.twoFactorMethod === "authenticator") return user.twoFactorMethod;
+  return user.encryptedTwoFactorSecret ? "authenticator" : "";
+}
+
+function twoFactorSmsBody(code) {
+  return `${db.settings.appName} verification code: ${code}. It expires in 5 minutes. Do not share this code.`;
+}
+
+async function sendLoginSmsChallenge(user, challenge) {
+  const code = numericCode();
+  await sendSms(db.settings.twilio, {
+    to: user.phoneNumber,
+    body: twoFactorSmsBody(code)
+  });
+  challenge.codeHash = tokenHash(code);
+  challenge.lastSentAt = new Date().toISOString();
+  challenge.sendCount = Number(challenge.sendCount || 0) + 1;
+}
+
+function loginPage(message = "") {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Signage Management Login</title>
+    <style>
+      :root { color-scheme: light; font-family: Arial, Helvetica, sans-serif; }
+      body { align-items: center; background: #edf2f3; color: #173848; display: grid; min-height: 100vh; margin: 0; padding: 24px; }
+      main { background: #fff; border: 1px solid #cad7db; border-radius: 8px; box-shadow: 0 18px 55px rgb(23 56 72 / 14%); margin: auto; max-width: 420px; padding: 32px; width: 100%; }
+      h1 { font-size: 28px; margin: 0 0 8px; }
+      p { color: #58717c; line-height: 1.45; }
+      form { display: grid; gap: 16px; margin-top: 24px; }
+      .step { display: grid; gap: 16px; }
+      label { display: grid; font-size: 14px; font-weight: 700; gap: 7px; }
+      input { border: 1px solid #9eb2ba; border-radius: 4px; font: inherit; padding: 12px; }
+      button { background: #173848; border: 0; border-radius: 4px; color: #fff; font: 700 15px inherit; padding: 12px; }
+      button.secondary { background: #eef3f4; color: #173848; }
+      a { color: #28657e; }
+      .account-summary { background: #eef3f4; border-radius: 4px; color: #173848; font-size: 14px; margin: 0; padding: 10px 12px; }
+      #status { color: #9b2430; min-height: 20px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Signage Management</h1>
+      <p>Sign in with your assigned email address.</p>
+      <form id="loginForm">
+        <div id="passwordStep" class="step">
+          <label>Email <input name="email" type="email" autocomplete="username" required /></label>
+          <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
+        </div>
+        <div id="twoFactorStep" class="step" hidden>
+          <p id="accountSummary" class="account-summary"></p>
+          <label><span id="codeLabel">Verification Code</span><input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" /></label>
+        </div>
+        <input name="challengeToken" type="hidden" />
+        <button type="submit">Sign In</button>
+        <button id="resendCode" type="button" class="secondary" hidden>Resend Code</button>
+        <button id="backToPassword" type="button" class="secondary" hidden>Use Different Account</button>
+        <p id="status" role="alert">${escapeHtml(message)}</p>
+      </form>
+      <p><a href="/forgot-password">Forgot password?</a></p>
+    </main>
+    <script>
+      const form = document.querySelector("#loginForm");
+      const passwordStep = document.querySelector("#passwordStep");
+      const twoFactorStep = document.querySelector("#twoFactorStep");
+      const submitButton = form.querySelector('button[type="submit"]');
+      function resetPasswordStep() {
+        form.elements.challengeToken.value = "";
+        form.elements.code.value = "";
+        form.elements.code.required = false;
+        form.elements.email.disabled = false;
+        form.elements.password.disabled = false;
+        passwordStep.hidden = false;
+        twoFactorStep.hidden = true;
+        submitButton.textContent = "Sign In";
+        document.querySelector("#resendCode").hidden = true;
+        document.querySelector("#backToPassword").hidden = true;
+        document.querySelector("#status").textContent = "";
+        form.elements.email.focus();
+      }
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        const values = Object.fromEntries(new FormData(form));
+        const verifying = Boolean(values.challengeToken);
+        const response = await fetch(verifying ? "/api/auth/verify-2fa" : "/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(values)
+        });
+        const result = await response.json().catch(() => ({}));
+        if (response.ok && result.authenticated) return location.assign("/admin");
+        if (response.ok && result.twoFactorRequired) {
+          form.elements.challengeToken.value = result.challengeToken;
+          document.querySelector("#accountSummary").textContent = values.email;
+          passwordStep.hidden = true;
+          twoFactorStep.hidden = false;
+          submitButton.textContent = "Verify Code";
+          document.querySelector("#backToPassword").hidden = false;
+          form.elements.email.disabled = true;
+          form.elements.password.disabled = true;
+          form.elements.code.required = true;
+          form.elements.code.focus();
+          document.querySelector("#codeLabel").textContent = result.twoFactorMethod === "sms" ? "SMS Verification Code" : "Authenticator Code";
+          document.querySelector("#resendCode").hidden = result.twoFactorMethod !== "sms";
+          document.querySelector("#status").textContent = result.message || "Enter your six-digit verification code.";
+          return;
+        }
+        document.querySelector("#status").textContent = result.error || "Sign-in failed.";
+      });
+      document.querySelector("#backToPassword").addEventListener("click", resetPasswordStep);
+      document.querySelector("#resendCode").addEventListener("click", async () => {
+        const response = await fetch("/api/auth/resend-2fa", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ challengeToken: form.elements.challengeToken.value })
+        });
+        const result = await response.json().catch(() => ({}));
+        document.querySelector("#status").textContent = result.message || result.error || "Request complete.";
+      });
+    </script>
+  </body>
+</html>`;
+}
+
+function passwordPage(mode, token = "") {
+  const forgot = mode === "forgot";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${forgot ? "Reset Password" : "Choose New Password"}</title><style>
+  body{background:#edf2f3;color:#173848;font-family:Arial,sans-serif;margin:0;padding:24px}main{background:#fff;border:1px solid #cad7db;border-radius:8px;margin:10vh auto;max-width:430px;padding:30px}form,label{display:grid;gap:12px}input,button{font:inherit;padding:12px}button{background:#173848;color:#fff;border:0}a{color:#28657e}</style></head>
+  <body><main><h1>${forgot ? "Reset Password" : "Choose New Password"}</h1>
+  <form id="passwordForm">${forgot
+    ? '<label>Email <input name="email" type="email" required /></label>'
+    : `<input name="token" type="hidden" value="${escapeHtml(token)}" /><label>New Password <input name="password" type="password" minlength="12" required /></label>`}
+  <button type="submit">${forgot ? "Send Reset Link" : "Set Password"}</button><p id="status"></p></form><p><a href="/login">Return to login</a></p></main>
+  <script>document.querySelector("#passwordForm").addEventListener("submit",async event=>{event.preventDefault();const response=await fetch("${forgot ? "/api/auth/request-reset" : "/api/auth/reset-password"}",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(Object.fromEntries(new FormData(event.currentTarget)))});const result=await response.json().catch(()=>({}));document.querySelector("#status").textContent=result.message||result.error||"Request complete.";if(response.ok&&!${forgot})setTimeout(()=>location.assign("/login"),1200);});</script>
+  </body></html>`;
+}
+
+async function handleAuthApi(req, res, url) {
+  if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    if (store.type === "postgresql-normalized") db = await store.refresh();
+    const body = await readBody(req);
+    const email = cleanText(body.email, 255).toLowerCase();
+    if (loginRateLimited(req, email)) {
+      recordLoginAudit({ email, outcome: "rate-limited", req });
+      await saveData();
+      return json(res, 429, { error: "Too many sign-in attempts. Try again later." });
+    }
+    const user = db.users.find(item => item.email === email && item.status === "active");
+    const valid = user?.passwordHash && await verifyPassword(body.password, user.passwordHash);
+    if (!valid) {
+      recordLoginAudit({ email, userId: user?.id || null, outcome: "failed", req });
+      await saveData();
+      return json(res, 401, { error: "Email or password is incorrect." });
+    }
+    const twoFactorMethod = effectiveTwoFactorMethod(user);
+    if (user.twoFactorEnabled) {
+      if (!twoFactorMethod) {
+        recordLoginAudit({ email, userId: user.id, outcome: "two-factor-misconfigured", req });
+        await saveData();
+        return json(res, 503, { error: "Two-factor authentication is not configured correctly. Contact a System Administrator." });
+      }
+      const challengeToken = randomToken();
+      const challenge = {
+        id: entityId("login-challenge"),
+        userId: user.id,
+        challengeHash: tokenHash(challengeToken),
+        status: "pending-2fa",
+        twoFactorMethod,
+        attempts: 0,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString()
+      };
+      if (twoFactorMethod === "authenticator" && !user.encryptedTwoFactorSecret) {
+        return json(res, 503, { error: "Authenticator-app verification is not configured correctly. Contact a System Administrator." });
+      }
+      if (twoFactorMethod === "sms") {
+        if (!validPhoneNumber(user.phoneNumber)) {
+          return json(res, 503, { error: "SMS verification is not configured with a valid phone number. Contact a System Administrator." });
+        }
+        if (smsTwoFactorRateLimited(user.id)) {
+          recordLoginAudit({ email, userId: user.id, outcome: "rate-limited", req, details: { channel: "sms-2fa" } });
+          await saveData();
+          return json(res, 429, { error: "Too many verification messages were requested. Try again later." });
+        }
+        try {
+          await sendLoginSmsChallenge(user, challenge);
+          recordLoginAudit({ email, userId: user.id, outcome: "two-factor-sms-sent", req });
+        } catch (error) {
+          recordLoginAudit({ email, userId: user.id, outcome: "two-factor-send-failed", req, details: { error: cleanText(error.message, 300) } });
+          await saveData();
+          return json(res, 503, { error: "The verification code could not be sent. Contact a System Administrator." });
+        }
+      }
+      db.sessions.push(challenge);
+      recordLoginAudit({ email, userId: user.id, outcome: "password-accepted", req });
+      await saveData();
+      return json(res, 200, {
+        twoFactorRequired: true,
+        twoFactorMethod,
+        challengeToken,
+        message: twoFactorMethod === "sms"
+          ? `Enter the six-digit code sent to ${maskPhoneNumber(user.phoneNumber)}.`
+          : "Enter the six-digit code from your authenticator app."
+      });
+    }
+    const { token } = createAuthenticatedSession(user, req);
+    recordLoginAudit({ email, userId: user.id, outcome: "success", req });
+    await saveData();
+    res.setHeader("Set-Cookie", sessionCookie(token, { secure: baseUrl.startsWith("https://") }));
+    return json(res, 200, { authenticated: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/verify-2fa") {
+    if (store.type === "postgresql-normalized") db = await store.refresh();
+    const body = await readBody(req);
+    const challenge = db.sessions.find(item =>
+      item.status === "pending-2fa"
+      && item.challengeHash === tokenHash(body.challengeToken)
+      && new Date(item.expiresAt).getTime() > Date.now()
+    );
+    const user = db.users.find(item => item.id === challenge?.userId && item.status === "active");
+    let validCode = false;
+    if (challenge && user && challenge.twoFactorMethod === "sms") {
+      validCode = secureHashMatch(tokenHash(String(body.code || "").replace(/\s/g, "")), challenge.codeHash);
+    } else if (challenge && user) {
+      let twoFactorSecret = "";
+      try {
+        twoFactorSecret = user.encryptedTwoFactorSecret ? decryptCredential(user.encryptedTwoFactorSecret) : "";
+      } catch {
+        twoFactorSecret = "";
+      }
+      validCode = Boolean(twoFactorSecret && verifyTotp(twoFactorSecret, body.code));
+    }
+    if (!challenge || !user || !validCode) {
+      if (challenge) {
+        challenge.attempts = Number(challenge.attempts || 0) + 1;
+        if (challenge.attempts >= 5) db.sessions = db.sessions.filter(item => item.id !== challenge.id);
+      }
+      recordLoginAudit({ email: user?.email, userId: user?.id, outcome: "two-factor-failed", req });
+      await saveData();
+      return json(res, 401, { error: "Verification code is invalid or expired." });
+    }
+    db.sessions = db.sessions.filter(item => item.id !== challenge.id);
+    const { token } = createAuthenticatedSession(user, req);
+    recordLoginAudit({ email: user.email, userId: user.id, outcome: "success-2fa", req });
+    await saveData();
+    res.setHeader("Set-Cookie", sessionCookie(token, { secure: baseUrl.startsWith("https://") }));
+    return json(res, 200, { authenticated: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/resend-2fa") {
+    if (store.type === "postgresql-normalized") db = await store.refresh();
+    const body = await readBody(req);
+    const challenge = db.sessions.find(item =>
+      item.status === "pending-2fa"
+      && item.twoFactorMethod === "sms"
+      && item.challengeHash === tokenHash(body.challengeToken)
+      && new Date(item.expiresAt).getTime() > Date.now()
+    );
+    const user = db.users.find(item => item.id === challenge?.userId && item.status === "active");
+    if (!challenge || !user) return json(res, 404, { error: "SMS verification challenge was not found or has expired." });
+    if (smsTwoFactorRateLimited(user.id)) return json(res, 429, { error: "Too many verification messages were requested. Try again later." });
+    if (challenge.lastSentAt && Date.now() - new Date(challenge.lastSentAt).getTime() < 30_000) {
+      return json(res, 429, { error: "Wait 30 seconds before requesting another code." });
+    }
+    if (Number(challenge.sendCount || 0) >= 5) return json(res, 429, { error: "The maximum number of verification messages has been reached." });
+    try {
+      await sendLoginSmsChallenge(user, challenge);
+      recordLoginAudit({ email: user.email, userId: user.id, outcome: "two-factor-sms-sent", req });
+      await saveData();
+      return json(res, 200, { message: `A new code was sent to ${maskPhoneNumber(user.phoneNumber)}.` });
+    } catch (error) {
+      recordLoginAudit({ email: user.email, userId: user.id, outcome: "two-factor-send-failed", req, details: { error: cleanText(error.message, 300) } });
+      await saveData();
+      return json(res, 503, { error: "The verification code could not be sent." });
+    }
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+    if (!csrfValid(req)) return json(res, 403, { error: "Invalid CSRF token." });
+    const session = currentSession(req);
+    if (session) session.revokedAt = new Date().toISOString();
+    await saveData();
+    res.setHeader("Set-Cookie", clearSessionCookie({ secure: baseUrl.startsWith("https://") }));
+    return json(res, 200, { loggedOut: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/request-reset") {
+    if (store.type === "postgresql-normalized") db = await store.refresh();
+    const body = await readBody(req);
+    const resetCutoff = Date.now() - 15 * 60 * 1000;
+    const resetRequests = db.loginAudit.filter(item =>
+      item.outcome === "password-reset-request"
+      && item.ipAddress === clientIp(req)
+      && new Date(item.createdAt).getTime() >= resetCutoff
+    ).length;
+    if (resetRequests >= 5) return json(res, 429, { error: "Too many password-reset requests. Try again later." });
+    const user = db.users.find(item =>
+      item.email === cleanText(body.email, 255).toLowerCase()
+      && ["active", "invited"].includes(item.status)
+    );
+    if (user) {
+      const rawToken = randomToken();
+      db.passwordResetTokens.push({
+        id: entityId("password-reset"),
+        userId: user.id,
+        tokenHash: tokenHash(rawToken),
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+        usedAt: null,
+        createdAt: new Date().toISOString()
+      });
+      if (db.settings.email.enabled) {
+        const link = `${baseUrl.replace(/\/+$/, "")}/reset-password?token=${encodeURIComponent(rawToken)}`;
+        await deliverTrackedEmail({
+          to: user.email,
+          subject: "Reset your Signage Management password",
+          text: `Use this link within 30 minutes to reset your password: ${link}`,
+          html: `<p>Use this link within 30 minutes to reset your password:</p><p><a href="${escapeHtml(link)}">Reset password</a></p>`,
+          type: "password-reset",
+          userId: user.id,
+          source: "authentication"
+        }).catch(() => {});
+      }
+    }
+    recordLoginAudit({ email: body.email, userId: user?.id || null, outcome: "password-reset-request", req });
+    await saveData();
+    return json(res, 200, { message: "If the account exists, a reset link has been sent." });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/reset-password") {
+    if (store.type === "postgresql-normalized") db = await store.refresh();
+    const body = await readBody(req);
+    const reset = db.passwordResetTokens.find(item =>
+      item.tokenHash === tokenHash(body.token)
+      && !item.usedAt
+      && new Date(item.expiresAt).getTime() > Date.now()
+    );
+    const user = db.users.find(item => item.id === reset?.userId);
+    if (!reset || !user) return json(res, 400, { error: "Reset link is invalid or expired." });
+    try {
+      user.passwordHash = await hashPassword(body.password);
+    } catch (error) {
+      return validationError(res, error.message);
+    }
+    reset.usedAt = new Date().toISOString();
+    if (user.status === "invited") user.status = "active";
+    db.sessions.forEach(session => {
+      if (session.userId === user.id) session.revokedAt = new Date().toISOString();
+    });
+    recordLoginAudit({ email: user.email, userId: user.id, outcome: "password-reset", req });
+    await saveData();
+    return json(res, 200, { message: "Password updated. You may now sign in." });
+  }
+  const viewer = currentViewer(req);
+  if (!viewer) return json(res, 401, { error: "Authentication required." });
+  if (req.method === "POST" && url.pathname === "/api/auth/change-password") {
+    if (!csrfValid(req)) return json(res, 403, { error: "Invalid CSRF token." });
+    const body = await readBody(req);
+    if (!viewer.passwordHash || !await verifyPassword(body.currentPassword, viewer.passwordHash)) {
+      recordLoginAudit({ email: viewer.email, userId: viewer.id, outcome: "password-change-failed", req });
+      await saveData();
+      return json(res, 401, { error: "Current password is incorrect." });
+    }
+    if (body.newPassword !== body.confirmPassword) return validationError(res, "New passwords do not match.");
+    try {
+      viewer.passwordHash = await hashPassword(body.newPassword);
+    } catch (error) {
+      return validationError(res, error.message);
+    }
+    const current = currentSession(req);
+    for (const session of db.sessions) {
+      if (session.userId === viewer.id && session.id !== current?.id) session.revokedAt = new Date().toISOString();
+    }
+    viewer.updatedAt = new Date().toISOString();
+    addAudit("user.password.change", { userId: viewer.id });
+    recordLoginAudit({ email: viewer.email, userId: viewer.id, outcome: "password-changed", req });
+    await saveData();
+    return json(res, 200, { changed: true });
+  }
+  const authSessionMatch = url.pathname.match(/^\/api\/auth\/sessions\/([^/]+)$/);
+  if (req.method === "DELETE" && authSessionMatch) {
+    if (!csrfValid(req)) return json(res, 403, { error: "Invalid CSRF token." });
+    const session = db.sessions.find(item => item.id === authSessionMatch[1] && item.userId === viewer.id);
+    if (!session) return json(res, 404, { error: "Session not found." });
+    session.revokedAt = new Date().toISOString();
+    await saveData();
+    return json(res, 200, { revoked: true });
+  }
+  if (!csrfValid(req)) return json(res, 403, { error: "Invalid CSRF token." });
+  if (req.method === "POST" && url.pathname === "/api/auth/2fa/setup") {
+    const body = await readBody(req);
+    const method = cleanText(body.method, 30) || "authenticator";
+    if (!["authenticator", "sms"].includes(method)) return validationError(res, "Select a valid two-factor authentication method.");
+    if (method === "sms") {
+      const phoneNumber = cleanText(body.phoneNumber, 30);
+      if (!validPhoneNumber(phoneNumber)) return validationError(res, "Enter the phone number in E.164 format, such as +13125550123.");
+      if (smsTwoFactorRateLimited(viewer.id)) return json(res, 429, { error: "Too many verification messages were requested. Try again later." });
+      const code = numericCode();
+      try {
+        await sendSms(db.settings.twilio, {
+          to: phoneNumber,
+          body: twoFactorSmsBody(code)
+        });
+      } catch (error) {
+        return json(res, 503, { error: cleanText(error.message, 300) });
+      }
+      viewer.pendingTwoFactorMethod = method;
+      viewer.pendingPhoneNumber = phoneNumber;
+      viewer.pendingSmsCodeHash = tokenHash(code);
+      viewer.pendingSmsCodeExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+      viewer.encryptedPendingTwoFactorSecret = "";
+      recordLoginAudit({ email: viewer.email, userId: viewer.id, outcome: "two-factor-enrollment-sms-sent", req });
+      await saveData();
+      return json(res, 200, {
+        method,
+        destination: maskPhoneNumber(phoneNumber),
+        message: `A six-digit code was sent to ${maskPhoneNumber(phoneNumber)}.`
+      });
+    }
+    const secret = generateTotpSecret();
+    viewer.pendingTwoFactorMethod = method;
+    viewer.pendingPhoneNumber = "";
+    viewer.pendingSmsCodeHash = "";
+    viewer.pendingSmsCodeExpiresAt = null;
+    viewer.encryptedPendingTwoFactorSecret = encryptCredential(secret);
+    await saveData();
+    return json(res, 200, {
+      method,
+      secret,
+      otpauthUri: otpauthUri({
+        secret,
+        email: viewer.email,
+        issuer: process.env.TWO_FACTOR_ISSUER || db.settings.appName
+      })
+    });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/2fa/confirm") {
+    const body = await readBody(req);
+    const method = viewer.pendingTwoFactorMethod || "authenticator";
+    if (method === "sms") {
+      const codeHash = tokenHash(String(body.code || "").replace(/\s/g, ""));
+      if (
+        !viewer.pendingSmsCodeHash
+        || !secureHashMatch(codeHash, viewer.pendingSmsCodeHash)
+        || new Date(viewer.pendingSmsCodeExpiresAt).getTime() <= Date.now()
+      ) {
+        return validationError(res, "SMS verification code is invalid or expired.");
+      }
+      viewer.phoneNumber = viewer.pendingPhoneNumber;
+      viewer.phoneVerifiedAt = new Date().toISOString();
+      viewer.twoFactorMethod = "sms";
+      viewer.encryptedTwoFactorSecret = "";
+    } else {
+      let pendingSecret = "";
+      try {
+        pendingSecret = decryptCredential(viewer.encryptedPendingTwoFactorSecret);
+      } catch {
+        pendingSecret = "";
+      }
+      if (!pendingSecret || !verifyTotp(pendingSecret, body.code)) {
+        return validationError(res, "Authenticator code is invalid.");
+      }
+      viewer.encryptedTwoFactorSecret = viewer.encryptedPendingTwoFactorSecret;
+      viewer.twoFactorMethod = "authenticator";
+    }
+    viewer.encryptedPendingTwoFactorSecret = "";
+    viewer.pendingTwoFactorMethod = "";
+    viewer.pendingPhoneNumber = "";
+    viewer.pendingSmsCodeHash = "";
+    viewer.pendingSmsCodeExpiresAt = null;
+    viewer.twoFactorEnabled = true;
+    const current = currentSession(req);
+    for (const session of db.sessions) {
+      if (session.userId === viewer.id && session.id !== current?.id) session.revokedAt = new Date().toISOString();
+    }
+    addAudit("user.two-factor.enable", { userId: viewer.id, method: viewer.twoFactorMethod });
+    await saveData();
+    return json(res, 200, { enabled: true, method: viewer.twoFactorMethod });
+  }
+  return json(res, 404, { error: "Authentication endpoint not found." });
+}
+
+function csrfValid(req) {
+  const session = currentSession(req);
+  const supplied = String(req.headers["x-csrf-token"] || "");
+  const expectedBuffer = Buffer.from(session?.csrfToken || "");
+  const suppliedBuffer = Buffer.from(supplied);
+  return Boolean(expectedBuffer.length && expectedBuffer.length === suppliedBuffer.length && crypto.timingSafeEqual(expectedBuffer, suppliedBuffer));
+}
+
+function publicApiPath(req, url) {
+  if (req.method === "GET" && url.pathname === "/api/health") return true;
+  if (req.method === "GET" && /^\/api\/rooms\/[^/]+(?:\/events)?$/.test(url.pathname)) return true;
+  if (req.method === "GET" && /^\/api\/rooms\/[^/]+\/qr\.svg$/.test(url.pathname)) return true;
+  if (req.method === "POST" && ["/api/kiosk-devices/register", "/api/kiosk-devices/heartbeat"].includes(url.pathname)) return true;
+  if (req.method === "GET" && /^\/api\/calendar-oauth\/(google|microsoft365)\/callback$/.test(url.pathname)) return true;
+  if (url.pathname.startsWith("/api/calendar-webhooks/")) return true;
+  return false;
+}
+
 async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/health") {
-    return json(res, 200, { status: "healthy", app: "signage", storage: store.type, time: new Date().toISOString() });
+    return json(res, 200, {
+      status: "healthy",
+      app: "signage",
+      storage: store.type,
+      calendarQueue: calendarQueue.enabled ? "redis" : "in-process",
+      backgroundQueue: backgroundQueue?.enabled ? "redis" : "in-process",
+      authentication: authenticationIsReady() ? "ready" : "bootstrap-required",
+      time: new Date().toISOString()
+    });
+  }
+  const pagedDataMatch = url.pathname.match(/^\/api\/data\/(rooms|users|notifications|calendar-events|audit-logs)$/);
+  if (req.method === "GET" && pagedDataMatch) {
+    const viewer = currentViewer(req);
+    const page = Math.max(1, Number(url.searchParams.get("page") || 1));
+    const pageSize = Math.max(1, Math.min(100, Number(url.searchParams.get("pageSize") || 25)));
+    const search = cleanText(url.searchParams.get("search"), 200).toLowerCase();
+    let items = {
+      rooms: db.rooms.filter(room => viewerCanAccessRoom(viewer, room)).map(publicRoom),
+      users: db.users.filter(user => viewerCanManageUser(viewer, user)).map(publicUser),
+      notifications: db.notifications.filter(item => item.userId === viewer?.id),
+      "calendar-events": db.calendarEvents.filter(event => {
+        const room = db.rooms.find(item => item.id === event.roomId);
+        return room && viewerCanAccessRoom(viewer, room);
+      }),
+      "audit-logs": viewerIsSystemAdmin(viewer) ? db.auditLogs : []
+    }[pagedDataMatch[1]];
+    if (search) items = items.filter(item => JSON.stringify(item).toLowerCase().includes(search));
+    const total = items.length;
+    const offset = (page - 1) * pageSize;
+    return json(res, 200, {
+      items: items.slice(offset, offset + pageSize),
+      pagination: { page, pageSize, total, pages: Math.max(1, Math.ceil(total / pageSize)) }
+    });
   }
   if (req.method === "GET" && url.pathname === "/api/state") {
+    await runBroadcastLifecycle();
     const viewer = currentViewer(req);
+    const session = currentSession(req);
+    const accessibleRooms = db.rooms.filter(room => viewerCanAccessRoom(viewer, room));
+    const accessibleRoomIds = new Set(accessibleRooms.map(room => room.id));
+    const accessibleCenters = db.centers.filter(center => viewerCanAccessCenter(viewer, center));
+    const accessibleCampuses = db.campuses.filter(campus => viewerCanAccessCampus(viewer, campus));
+    const accessibleBuildings = db.buildings.filter(building => viewerCanAccessBuilding(viewer, building));
+    const accessibleAccountIds = new Set(db.calendarAssignments
+      .filter(assignment => accessibleRoomIds.has(assignment.roomId))
+      .map(assignment => assignment.accountId));
+    const canCalendarSync = viewerHasFeature(viewer, "Calendar Sync");
+    const canCalendarConflicts = viewerHasFeature(viewer, "Calendar Event Conflict Resolution");
+    const canThemeScheduler = viewerHasFeature(viewer, "Theme Scheduler");
+    const canBroadcast = viewerHasFeature(viewer, "Emergency & Safety Broadcast");
+    const canNotifications = viewerHasFeature(viewer, "Notifications");
+    const accessibleBroadcasts = db.broadcasts
+      .filter(broadcast => broadcastTargetRooms(broadcast).some(room => viewerCanAccessRoom(viewer, room)))
+      .map(publicBroadcast);
     return json(res, 200, {
       settings: {
         ...db.settings,
-        email: publicEmailSettings(db.settings.email)
+        email: canNotifications
+          ? publicEmailSettings(db.settings.email)
+          : { enabled: Boolean(db.settings.email?.enabled) },
+        twilio: viewerIsSystemAdmin(viewer)
+          ? publicTwilioSettings(db.settings.twilio)
+          : { enabled: Boolean(db.settings.twilio?.enabled) }
       },
       storageType: store.type,
-      centers: db.centers,
-      campuses: db.campuses,
-      buildings: db.buildings,
-      rooms: db.rooms.map(publicRoom),
-      themes: db.themes,
+      calendarQueueEnabled: calendarQueue.enabled,
+      centers: accessibleCenters,
+      campuses: accessibleCampuses,
+      buildings: accessibleBuildings,
+      rooms: accessibleRooms.map(publicRoom),
+      themes: db.themes.filter(theme => viewerCanAccessTheme(viewer, theme)),
       features: db.features,
       permissionCatalog,
       roles: db.roles,
-      users: db.users.map(publicUser),
-      broadcastTemplates: db.broadcastTemplates,
-      calendarAccounts: db.calendarAccounts.map(publicCalendarAccount),
-      calendarAssignments: db.calendarAssignments,
-      calendarSyncHistory: db.calendarSyncHistory.slice(0, 50),
-      themeSchedules: db.themeSchedules
+      users: db.users.filter(user => viewerCanManageUser(viewer, user)).map(publicUser),
+      broadcastTemplates: canBroadcast ? db.broadcastTemplates : [],
+      calendarAccounts: canCalendarSync ? db.calendarAccounts.filter(account =>
+        viewerIsSystemAdmin(viewer) || accessibleAccountIds.has(account.id) || account.ownerUserId === viewer?.id
+      ).map(publicCalendarAccount) : [],
+      calendarAssignments: canCalendarSync ? db.calendarAssignments.filter(assignment => accessibleRoomIds.has(assignment.roomId)) : [],
+      calendarEvents: canCalendarConflicts ? db.calendarEvents.filter(event => {
+        return accessibleRoomIds.has(event.roomId);
+      }) : [],
+      calendarConflicts: canCalendarConflicts ? db.calendarConflicts.filter(conflict => {
+        const room = db.rooms.find(item => item.id === conflict.roomId);
+        return room && viewerCanAccessRoom(viewer, room);
+      }) : [],
+      calendarConflictHistory: canCalendarConflicts ? db.calendarConflictHistory.filter(decision => {
+        const room = db.rooms.find(item => item.id === decision.roomId);
+        return room && viewerCanAccessRoom(viewer, room);
+      }).slice(0, 200) : [],
+      calendarSyncHistory: canCalendarSync ? db.calendarSyncHistory.filter(item => accessibleRoomIds.has(item.roomId)).slice(0, 50) : [],
+      kioskDevices: db.kioskDevices.filter(device => {
+        const room = db.rooms.find(item => item.id === device.roomId);
+        return room && viewerCanAccessRoom(viewer, room);
+      }).map(device => publicKioskDevice(device, viewerCanPairRoom(viewer, db.rooms.find(item => item.id === device.roomId)))),
+      roomGroups: db.roomGroups.filter(group =>
+        group.roomIds.length > 0 && group.roomIds.every(roomId => {
+          const room = db.rooms.find(item => item.id === roomId);
+          return room && viewerCanAccessRoom(viewer, room);
+        })
+      ),
+      themeSchedules: canThemeScheduler ? db.themeSchedules
         .filter(schedule => new Date(schedule.endsAt).getTime() >= Date.now() - 2 * 365 * 24 * 60 * 60 * 1000)
         .filter(schedule => scheduleTargetRooms(schedule).some(room => viewerCanAccessRoom(viewer, room)))
-        .map(publicThemeSchedule),
-      activeBroadcast: db.activeBroadcast,
-      broadcastHistory: viewerIsSystemAdmin(viewer) ? db.broadcasts.slice(0, 100).map(publicBroadcast) : [],
-      emailNotifications: db.emailNotifications.slice(0, 50),
+        .map(publicThemeSchedule) : [],
+      activeBroadcasts: canBroadcast ? accessibleBroadcasts.filter(broadcast => broadcast.status === "active") : [],
+      scheduledBroadcasts: canBroadcast ? accessibleBroadcasts.filter(broadcast => broadcast.status === "scheduled") : [],
+      broadcastHistory: canBroadcast && viewerHasPermission(req, "broadcast.history.view") ? accessibleBroadcasts.slice(0, 200) : [],
+      emailNotifications: canNotifications && viewerIsSystemAdmin(viewer)
+        ? db.emailNotifications.slice(0, 50)
+        : canNotifications ? db.emailNotifications.filter(item => item.userId === viewer?.id).slice(0, 50) : [],
+      notifications: db.notifications.filter(item => item.userId === viewer?.id).slice(0, 100),
       auditLogs: viewerIsSystemAdmin(viewer) ? db.auditLogs.slice(0, 20) : [],
-      viewer: publicViewer(viewer)
+      loginAudit: viewerIsSystemAdmin(viewer) ? db.loginAudit.slice(0, 100) : [],
+      sessions: db.sessions.filter(item => item.userId === viewer?.id && item.tokenHash).map(item => ({
+        id: item.id,
+        ipAddress: item.ipAddress,
+        userAgent: item.userAgent,
+        createdAt: item.createdAt,
+        lastSeenAt: item.lastSeenAt,
+        expiresAt: item.expiresAt,
+        revokedAt: item.revokedAt,
+        current: item.id === session?.id
+      })),
+      viewer: publicViewer(viewer, session)
     });
   }
   if (req.method === "GET" && url.pathname === "/api/broadcasts/history") {
     const viewer = currentViewer(req);
-    if (!viewerIsSystemAdmin(viewer)) return json(res, 403, { error: "System Administrator access is required." });
-    return json(res, 200, db.broadcasts.slice(0, 500).map(publicBroadcast));
+    if (!viewerHasPermission(req, "broadcast.history.view")) return json(res, 403, { error: "Broadcast history permission is required." });
+    return json(res, 200, db.broadcasts
+      .filter(broadcast => broadcastTargetRooms(broadcast).some(room => viewerCanAccessRoom(viewer, room)))
+      .slice(0, 500)
+      .map(publicBroadcast));
   }
   if (req.method === "POST" && url.pathname === "/api/roles") {
     if (!requirePermission(req, res, "role.manage")) return;
@@ -1264,6 +3231,7 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     const permissions = Array.isArray(body.permissions) ? [...new Set(body.permissions)].filter(item => permissionCatalog.includes(item)) : [];
     if (!name) return validationError(res, "Role name is required.");
+    if (!rolePermissionsAllowed(currentViewer(req), permissions)) return json(res, 403, { error: "One or more permissions exceed your access." });
     const role = { id: entityId("role"), name, builtIn: false, cloneable: true, active: body.active !== false, permissions };
     db.roles.push(role);
     addAudit("role.create", { roleId: role.id, name });
@@ -1279,6 +3247,7 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     const permissions = Array.isArray(body.permissions) ? [...new Set(body.permissions)].filter(item => permissionCatalog.includes(item)) : [];
     if (!name) return validationError(res, "Role name is required.");
+    if (!rolePermissionsAllowed(currentViewer(req), permissions)) return json(res, 403, { error: "One or more permissions exceed your access." });
     Object.assign(role, { name, permissions, active: body.active !== false });
     addAudit("role.update", { roleId: role.id, name });
     await saveData();
@@ -1302,6 +3271,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "role.manage")) return;
     const source = db.roles.find(item => item.id === roleCloneMatch[1]);
     if (!source) return json(res, 404, { error: "Role not found" });
+    if (!rolePermissionsAllowed(currentViewer(req), source.permissions || [])) return json(res, 403, { error: "This role exceeds your access." });
     const body = await readBody(req);
     const role = {
       ...structuredClone(source),
@@ -1317,15 +3287,18 @@ async function handleApi(req, res, url) {
     return json(res, 201, role);
   }
   if (req.method === "POST" && url.pathname === "/api/calendar-accounts") {
-    if (!requirePermission(req, res, "calendar.manage")) return;
+    if (!requirePermission(req, res, "calendar.sync")) return;
     const body = await readBody(req);
     const provider = cleanText(body.provider, 30);
+    const authMode = cleanText(body.authMode, 40)
+      || (provider === "google" ? "service-account" : provider === "microsoft365" ? "application" : provider === "caldav" ? "app-password" : "public-url");
     const accountName = cleanText(body.accountName);
-    if (!["google", "microsoft365", "public-url"].includes(provider)) return validationError(res, "Select a valid calendar provider.");
+    if (!["google", "microsoft365", "caldav", "public-url"].includes(provider)) return validationError(res, "Select a valid calendar provider.");
+    if (!validCalendarAuthMode(provider, authMode)) return validationError(res, "Select a connection method supported by this calendar provider.");
     if (!accountName) return validationError(res, "Calendar account name is required.");
     let encryptedCredential = "";
     let principalEmail = "";
-    if (provider === "google") {
+    if (provider === "google" && authMode === "service-account") {
       try {
         const credential = JSON.parse(String(body.credential || ""));
         if (!credential.client_email || !credential.private_key) throw new Error("Missing service-account fields");
@@ -1334,12 +3307,25 @@ async function handleApi(req, res, url) {
       } catch {
         return validationError(res, "Enter Google service-account JSON containing client_email and private_key.");
       }
-    } else if (provider === "microsoft365") {
+    } else if (provider === "google" && authMode === "oauth") {
+      if (!cleanText(body.clientId, 255) || !body.credential) return validationError(res, "Google OAuth Client ID and client secret are required.");
+      encryptedCredential = encryptCredential(JSON.stringify({ clientSecret: String(body.credential), tokens: null }));
+    } else if (provider === "microsoft365" && authMode === "application") {
       if (!cleanText(body.tenantId, 255) || !cleanText(body.clientId, 255)) {
         return validationError(res, "Microsoft Tenant ID and Client ID are required.");
       }
       if (!body.credential) return validationError(res, "Microsoft client secret is required.");
       encryptedCredential = encryptCredential(String(body.credential));
+    } else if (provider === "microsoft365" && authMode === "oauth") {
+      if (!cleanText(body.clientId, 255) || !body.credential) return validationError(res, "Microsoft OAuth Client ID and client secret are required.");
+      encryptedCredential = encryptCredential(JSON.stringify({ clientSecret: String(body.credential), tokens: null }));
+    } else if (provider === "caldav") {
+      if (!cleanText(body.serverUrl, 1000) || !cleanText(body.username, 255) || !body.credential) {
+        return validationError(res, "CalDAV server URL, username, and app password are required.");
+      }
+      if (!validUrl(body.serverUrl)) return validationError(res, "Enter a valid CalDAV server URL.");
+      encryptedCredential = encryptCredential(JSON.stringify({ password: String(body.credential) }));
+      principalEmail = cleanText(body.username, 255);
     }
     const calendars = Array.isArray(body.calendars) ? body.calendars.map(item => ({
       id: item.id || entityId("calendar"),
@@ -1358,15 +3344,22 @@ async function handleApi(req, res, url) {
     const account = {
       id: entityId("calendar-account"),
       provider,
+      authMode,
       accountName,
       accessLevel: provider === "public-url" ? "read-only" : (body.accessLevel === "writable" ? "writable" : "read-only"),
       tenantId: cleanText(body.tenantId, 255),
       clientId: cleanText(body.clientId, 255),
       mailbox: cleanText(body.mailbox, 255),
+      serverUrl: cleanText(body.serverUrl, 1000),
+      username: cleanText(body.username, 255),
       principalEmail,
       encryptedCredential,
       calendars,
-      syncIntervalMinutes: Math.max(5, Number(body.syncIntervalMinutes || 15)),
+      syncIntervalMinutes: Math.max(5, Math.min(1440, Number(body.syncIntervalMinutes) || 15)),
+      ownerUserId: currentViewer(req)?.id || null,
+      webhookStatus: ["google", "microsoft365"].includes(provider) ? "not-configured" : "polling",
+      webhookLastAt: null,
+      webhookError: "",
       active: body.active !== false,
       lastSuccessfulSyncAt: null,
       lastSyncError: "",
@@ -1379,13 +3372,16 @@ async function handleApi(req, res, url) {
   }
   const calendarAccountMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)$/);
   if (req.method === "PUT" && calendarAccountMatch) {
-    if (!requirePermission(req, res, "calendar.manage")) return;
+    if (!requirePermission(req, res, "calendar.sync")) return;
     const account = db.calendarAccounts.find(item => item.id === calendarAccountMatch[1]);
     if (!account) return json(res, 404, { error: "Calendar account not found" });
     const body = await readBody(req);
     const provider = cleanText(body.provider, 30);
-    const providerChanged = provider !== account.provider;
-    if (!["google", "microsoft365", "public-url"].includes(provider)) return validationError(res, "Select a valid calendar provider.");
+    const authMode = cleanText(body.authMode, 40)
+      || (provider === "google" ? "service-account" : provider === "microsoft365" ? "application" : provider === "caldav" ? "app-password" : "public-url");
+    const providerChanged = provider !== account.provider || authMode !== account.authMode;
+    if (!["google", "microsoft365", "caldav", "public-url"].includes(provider)) return validationError(res, "Select a valid calendar provider.");
+    if (!validCalendarAuthMode(provider, authMode)) return validationError(res, "Select a connection method supported by this calendar provider.");
     const accountName = cleanText(body.accountName);
     if (!accountName) return validationError(res, "Calendar account name is required.");
     const calendars = Array.isArray(body.calendars) ? body.calendars.map(item => ({
@@ -1402,13 +3398,21 @@ async function handleApi(req, res, url) {
         return true;
       }
     })) return validationError(res, "Public calendars require a valid HTTP or HTTPS URL.");
-    if (provider === "microsoft365" && (!cleanText(body.tenantId, 255) || !cleanText(body.clientId, 255))) {
-      return validationError(res, "Microsoft Tenant ID and Client ID are required.");
+    if (provider === "microsoft365" && (
+      !cleanText(body.clientId, 255)
+      || (authMode === "application" && !cleanText(body.tenantId, 255))
+    )) {
+      return validationError(res, authMode === "application"
+        ? "Microsoft Tenant ID and Client ID are required."
+        : "Microsoft OAuth Client ID is required.");
+    }
+    if (provider === "caldav" && (!validUrl(cleanText(body.serverUrl, 1000)) || !cleanText(body.username, 255))) {
+      return validationError(res, "CalDAV server URL and username are required.");
     }
     let encryptedCredential = account.encryptedCredential;
     let principalEmail = account.principalEmail || "";
     if (body.credential) {
-      if (provider === "google") {
+      if (provider === "google" && authMode === "service-account") {
         try {
           const credential = JSON.parse(String(body.credential));
           if (!credential.client_email || !credential.private_key) throw new Error("Missing service-account fields");
@@ -1416,32 +3420,103 @@ async function handleApi(req, res, url) {
         } catch {
           return validationError(res, "Enter Google service-account JSON containing client_email and private_key.");
         }
+        encryptedCredential = encryptCredential(String(body.credential));
+      } else if ((provider === "google" || provider === "microsoft365") && authMode === "oauth") {
+        encryptedCredential = encryptCredential(JSON.stringify({ clientSecret: String(body.credential), tokens: null }));
+        principalEmail = "";
+      } else if (provider === "caldav") {
+        encryptedCredential = encryptCredential(JSON.stringify({ password: String(body.credential) }));
+        principalEmail = cleanText(body.username, 255);
+      } else {
+        encryptedCredential = encryptCredential(String(body.credential));
       }
-      encryptedCredential = encryptCredential(String(body.credential));
     }
     if (provider !== "public-url" && (!encryptedCredential || (providerChanged && !body.credential))) {
       return validationError(res, "Enter a new credential when changing calendar providers.");
     }
     Object.assign(account, {
       provider,
+      authMode,
       accountName,
       accessLevel: provider === "public-url" ? "read-only" : (body.accessLevel === "writable" ? "writable" : "read-only"),
       tenantId: cleanText(body.tenantId, 255),
       clientId: cleanText(body.clientId, 255),
       mailbox: cleanText(body.mailbox, 255),
-      principalEmail: provider === "google" ? principalEmail : "",
+      serverUrl: cleanText(body.serverUrl, 1000),
+      username: cleanText(body.username, 255),
+      principalEmail,
       encryptedCredential,
       calendars,
-      syncIntervalMinutes: Math.max(5, Number(body.syncIntervalMinutes || 15)),
+      syncIntervalMinutes: Math.max(5, Math.min(1440, Number(body.syncIntervalMinutes) || 15)),
       active: body.active !== false
     });
     addAudit("calendar.account.update", { accountId: account.id, provider });
     await saveData();
     return json(res, 200, publicCalendarAccount(account));
   }
+  const calendarOauthStartMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)\/oauth\/start$/);
+  if (req.method === "GET" && calendarOauthStartMatch) {
+    if (!requirePermission(req, res, "calendar.sync")) return;
+    const account = db.calendarAccounts.find(item => item.id === calendarOauthStartMatch[1]);
+    if (!account) return json(res, 404, { error: "Calendar account not found" });
+    if (account.authMode !== "oauth" || !["google", "microsoft365"].includes(account.provider)) {
+      return validationError(res, "This calendar account is not configured for interactive OAuth.");
+    }
+    const state = crypto.randomBytes(32).toString("hex");
+    db.oauthStates.push({
+      id: entityId("oauth-state"),
+      stateHash: tokenHash(state),
+      accountId: account.id,
+      provider: account.provider,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString()
+    });
+    await saveData();
+    return json(res, 200, {
+      authorizationUrl: calendarAuthorizationUrl(account, account.provider, baseUrl, state)
+    });
+  }
+  const calendarOauthCallbackMatch = url.pathname.match(/^\/api\/calendar-oauth\/(google|microsoft365)\/callback$/);
+  if (req.method === "GET" && calendarOauthCallbackMatch) {
+    const provider = calendarOauthCallbackMatch[1];
+    const state = cleanText(url.searchParams.get("state"), 200);
+    const code = cleanText(url.searchParams.get("code"), 4000);
+    if (store.type === "postgresql-normalized") db = await store.refresh();
+    const pending = db.oauthStates.find(item => item.stateHash === tokenHash(state));
+    db.oauthStates = db.oauthStates.filter(item => item.id !== pending?.id);
+    if (!pending || pending.provider !== provider || new Date(pending.expiresAt).getTime() < Date.now()) {
+      await saveData();
+      return send(res, 400, "OAuth state expired or invalid.");
+    }
+    const account = db.calendarAccounts.find(item => item.id === pending.accountId);
+    if (!account || !code) return send(res, 400, "OAuth authorization code was not provided.");
+    try {
+      await exchangeCalendarAuthorizationCode(account, provider, baseUrl, code);
+      account.lastVerifiedAt = new Date().toISOString();
+      account.lastSyncError = "";
+      const inspection = await inspectCalendarAccount(account);
+      account.principalEmail = inspection.principalEmail || account.principalEmail;
+      for (const discovered of inspection.discovered || []) {
+        if (!account.calendars.some(calendar => calendar.externalId === discovered.externalId)) {
+          account.calendars.push({
+            id: entityId("calendar"),
+            name: cleanText(discovered.name),
+            externalId: cleanText(discovered.externalId, 1000),
+            mailbox: cleanText(discovered.mailbox, 255)
+          });
+        }
+      }
+      addAudit("calendar.oauth.connect", { accountId: account.id, provider });
+      await saveData();
+      return redirect(res, "/admin?calendarOAuth=connected#calendars");
+    } catch (error) {
+      account.lastSyncError = cleanText(error.message, 500);
+      await saveData();
+      return redirect(res, `/admin?calendarOAuth=${encodeURIComponent(account.lastSyncError)}#calendars`);
+    }
+  }
   const calendarDiscoverMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)\/discover$/);
   if (req.method === "POST" && calendarDiscoverMatch) {
-    if (!requirePermission(req, res, "calendar.manage")) return;
+    if (!requirePermission(req, res, "calendar.sync")) return;
     const account = db.calendarAccounts.find(item => item.id === calendarDiscoverMatch[1]);
     if (!account) return json(res, 404, { error: "Calendar account not found" });
     try {
@@ -1483,8 +3558,89 @@ async function handleApi(req, res, url) {
       return json(res, 502, { error: error.message });
     }
   }
+  const calendarWebhookRegisterMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)\/calendars\/([^/]+)\/webhook$/);
+  if (req.method === "POST" && calendarWebhookRegisterMatch) {
+    if (!requirePermission(req, res, "calendar.sync")) return;
+    const account = db.calendarAccounts.find(item => item.id === calendarWebhookRegisterMatch[1]);
+    const calendar = account?.calendars?.find(item => item.id === calendarWebhookRegisterMatch[2]);
+    if (!account || !calendar) return json(res, 404, { error: "Calendar connection not found" });
+    try {
+      const providerPath = account.provider === "google" ? "google" : "microsoft";
+      const result = await registerCalendarWebhook(
+        account,
+        calendar,
+        `${baseUrl.replace(/\/+$/, "")}/api/calendar-webhooks/${providerPath}`
+      );
+      Object.assign(calendar, {
+        webhookStatus: "active",
+        webhookChannelId: result.channelId || "",
+        encryptedWebhookToken: result.channelToken ? encryptCredential(result.channelToken) : "",
+        webhookResourceId: result.resourceId || "",
+        webhookSubscriptionId: result.subscriptionId || "",
+        webhookClientState: result.clientState || "",
+        webhookExpiration: result.expiration || null
+      });
+      delete calendar.webhookToken;
+      account.webhookStatus = "active";
+      account.webhookError = "";
+      account.webhookExpiration = result.expiration || null;
+      addAudit("calendar.webhook.register", { accountId: account.id, calendarId: calendar.id, provider: account.provider });
+      await saveData();
+      return json(res, 200, {
+        account: publicCalendarAccount(account),
+        calendar: publicCalendarAccount(account).calendars.find(item => item.id === calendar.id)
+      });
+    } catch (error) {
+      account.webhookStatus = "polling-fallback";
+      account.webhookError = cleanText(error.message, 500);
+      await saveData();
+      return json(res, 502, { error: `${error.message} Polling remains active.` });
+    }
+  }
+  if (req.method === "POST" && url.pathname === "/api/calendar-webhooks/google") {
+    const channelId = String(req.headers["x-goog-channel-id"] || "");
+    const channelToken = String(req.headers["x-goog-channel-token"] || "");
+    const calendarAccount = db.calendarAccounts.find(account =>
+      account.calendars.some(calendar =>
+        calendar.webhookChannelId === channelId
+        && Boolean(calendarWebhookToken(calendar))
+        && secureTokenEqual(calendarWebhookToken(calendar), channelToken)
+      )
+    );
+    if (calendarAccount) {
+      calendarAccount.webhookStatus = "active";
+      calendarAccount.webhookLastAt = new Date().toISOString();
+      for (const assignment of db.calendarAssignments.filter(item => item.accountId === calendarAccount.id && item.active !== false)) {
+        await calendarQueue.enqueue(assignment.id, "google-webhook");
+      }
+      await saveData();
+    }
+    return send(res, 204, "");
+  }
+  if (url.pathname === "/api/calendar-webhooks/microsoft" && url.searchParams.get("validationToken")) {
+    return send(res, 200, url.searchParams.get("validationToken"), "text/plain; charset=utf-8");
+  }
+  if (req.method === "POST" && url.pathname === "/api/calendar-webhooks/microsoft") {
+    const body = await readBody(req);
+    for (const notification of body.value || []) {
+      const account = db.calendarAccounts.find(item =>
+        item.calendars.some(calendar =>
+          calendar.webhookSubscriptionId === notification.subscriptionId
+          && calendar.webhookClientState === notification.clientState
+        )
+      );
+      if (!account) continue;
+      account.webhookStatus = "active";
+      account.webhookLastAt = new Date().toISOString();
+      for (const assignment of db.calendarAssignments.filter(item => item.accountId === account.id && item.active !== false)) {
+        await calendarQueue.enqueue(assignment.id, "microsoft-webhook");
+      }
+    }
+    await saveData();
+    return send(res, 202, "");
+  }
   if (req.method === "DELETE" && calendarAccountMatch) {
-    if (!requirePermission(req, res, "calendar.manage")) return;
+    if (!requirePermission(req, res, "calendar.sync")) return;
     const account = db.calendarAccounts.find(item => item.id === calendarAccountMatch[1]);
     if (!account) return json(res, 404, { error: "Calendar account not found" });
     if (db.calendarAssignments.some(item => item.accountId === account.id)) return json(res, 409, { error: "Remove room assignments before deleting this account." });
@@ -1533,7 +3689,7 @@ async function handleApi(req, res, url) {
   }
   const calendarSyncMatch = url.pathname.match(/^\/api\/calendar-assignments\/([^/]+)\/sync$/);
   if (req.method === "POST" && calendarSyncMatch) {
-    if (!requirePermission(req, res, "calendar.sync")) return;
+    if (!requireAnyPermission(req, res, ["calendar.manage", "calendar.sync"])) return;
     const assignment = db.calendarAssignments.find(item => item.id === calendarSyncMatch[1]);
     if (!assignment) return json(res, 404, { error: "Calendar assignment not found" });
     const room = db.rooms.find(item => item.id === assignment.roomId);
@@ -1542,6 +3698,7 @@ async function handleApi(req, res, url) {
       const result = await syncAssignment(assignment);
       addAudit("calendar.sync", { assignmentId: assignment.id, status: "success", eventCount: result.eventCount });
       await saveData();
+      notifyRoom(room.code, "data-refresh");
       return json(res, 200, result);
     } catch (error) {
       addAudit("calendar.sync", { assignmentId: assignment.id, status: "failed", error: cleanText(error.message, 300) });
@@ -1549,8 +3706,202 @@ async function handleApi(req, res, url) {
       return json(res, 502, { error: error.message });
     }
   }
+  const calendarEventCollectionMatch = url.pathname.match(/^\/api\/calendar-assignments\/([^/]+)\/events$/);
+  if (req.method === "POST" && calendarEventCollectionMatch) {
+    if (!requirePermission(req, res, "calendar.manage")) return;
+    const assignment = db.calendarAssignments.find(item => item.id === calendarEventCollectionMatch[1]);
+    const account = db.calendarAccounts.find(item => item.id === assignment?.accountId);
+    const calendar = account?.calendars.find(item => item.id === assignment?.calendarId);
+    const room = db.rooms.find(item => item.id === assignment?.roomId);
+    if (!assignment || !account || !calendar || !room) return json(res, 404, { error: "Calendar assignment not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
+    const body = await readBody(req);
+    if (!cleanText(body.title) || !Number.isFinite(new Date(body.startsAt).getTime()) || !Number.isFinite(new Date(body.endsAt).getTime())) {
+      return validationError(res, "Title, start time, and end time are required.");
+    }
+    if (new Date(body.endsAt) <= new Date(body.startsAt)) return validationError(res, "Event end time must be after start time.");
+    await writeCalendarEvent(account, calendar, body);
+    const result = await processCalendarAssignment(assignment.id);
+    addAudit("calendar.event.create", { assignmentId: assignment.id, roomId: room.id, title: cleanText(body.title) });
+    return json(res, 201, result);
+  }
+  const calendarEventMatch = url.pathname.match(/^\/api\/calendar-assignments\/([^/]+)\/events\/([^/]+)$/);
+  if ((req.method === "PUT" || req.method === "DELETE") && calendarEventMatch) {
+    if (!requirePermission(req, res, "calendar.manage")) return;
+    const assignment = db.calendarAssignments.find(item => item.id === calendarEventMatch[1]);
+    const account = db.calendarAccounts.find(item => item.id === assignment?.accountId);
+    const calendar = account?.calendars.find(item => item.id === assignment?.calendarId);
+    const room = db.rooms.find(item => item.id === assignment?.roomId);
+    const event = db.calendarEvents.find(item => item.id === calendarEventMatch[2] && item.assignmentId === assignment?.id);
+    if (!assignment || !account || !calendar || !room || !event) return json(res, 404, { error: "Calendar event not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
+    if (req.method === "DELETE") {
+      await deleteCalendarEvent(account, calendar, event);
+      addAudit("calendar.event.delete", { assignmentId: assignment.id, eventId: event.id });
+    } else {
+      const body = await readBody(req);
+      if (!cleanText(body.title) || !Number.isFinite(new Date(body.startsAt).getTime()) || !Number.isFinite(new Date(body.endsAt).getTime())) {
+        return validationError(res, "Title, start time, and end time are required.");
+      }
+      await writeCalendarEvent(account, calendar, body, event);
+      addAudit("calendar.event.update", { assignmentId: assignment.id, eventId: event.id });
+    }
+    const result = await processCalendarAssignment(assignment.id);
+    return json(res, 200, result);
+  }
+  const calendarConflictMatch = url.pathname.match(/^\/api\/calendar-conflicts\/([^/]+)\/select$/);
+  if (req.method === "POST" && calendarConflictMatch) {
+    if (!requireFeature(req, res, "Calendar Event Conflict Resolution")) return;
+    if (!requireRolePermission(req, res, ["calendar.sync", "calendar.manage"])) return;
+    const conflict = db.calendarConflicts.find(item => item.id === calendarConflictMatch[1]);
+    const room = db.rooms.find(item => item.id === conflict?.roomId);
+    if (!conflict || !room) return json(res, 404, { error: "Calendar conflict not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
+    const body = await readBody(req);
+    const selected = cleanText(body.externalEventId, 1000);
+    if (!conflict.externalEventIds.includes(selected)) return validationError(res, "Select an event included in this conflict.");
+    conflict.selectedExternalEventId = selected;
+    conflict.status = "resolved";
+    conflict.resolution = "resolve";
+    conflict.resolvedBy = currentViewer(req)?.id || null;
+    conflict.resolvedAt = new Date().toISOString();
+    recordConflictDecision(conflict, "resolve", currentViewer(req), { selectedExternalEventId: selected });
+    refreshRoomEvents(room.id);
+    addAudit("calendar.conflict.display-select", { conflictId: conflict.id, externalEventId: selected });
+    await saveData();
+    notifyRoom(room.code);
+    return json(res, 200, conflict);
+  }
+  const calendarConflictActionMatch = url.pathname.match(/^\/api\/calendar-conflicts\/([^/]+)\/action$/);
+  if (req.method === "POST" && calendarConflictActionMatch) {
+    if (!requireFeature(req, res, "Calendar Event Conflict Resolution")) return;
+    const conflict = db.calendarConflicts.find(item => item.id === calendarConflictActionMatch[1]);
+    const room = db.rooms.find(item => item.id === conflict?.roomId);
+    if (!conflict || !room) return json(res, 404, { error: "Calendar conflict not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
+    const body = await readBody(req);
+    const action = cleanText(body.action, 30);
+    if (!["ignore", "resolve", "cancel", "replace", "move"].includes(action)) {
+      return validationError(res, "Select a valid conflict action.");
+    }
+    if (!requireRolePermission(req, res, ["cancel", "replace", "move"].includes(action) ? "calendar.manage" : ["calendar.sync", "calendar.manage"])) return;
+    const events = conflictEvents(conflict);
+    if (events.length < 2) return validationError(res, "This conflict no longer contains overlapping events. Sync the calendar and try again.");
+    const selectedExternalEventId = cleanText(body.selectedExternalEventId, 1000);
+    const targetExternalEventId = cleanText(body.targetExternalEventId, 1000);
+    const selectedEvent = events.find(event => event.externalEventId === selectedExternalEventId);
+    const targetEvent = events.find(event => event.externalEventId === targetExternalEventId);
+    const viewer = currentViewer(req);
+
+    if (action === "ignore" || action === "resolve") {
+      const winner = action === "resolve"
+        ? selectedEvent
+        : deterministicConflictEvent(events, selectedExternalEventId);
+      if (!winner) return validationError(res, "Select an event included in this conflict.");
+      conflict.selectedExternalEventId = winner.externalEventId;
+      conflict.status = action === "ignore" ? "ignored" : "resolved";
+      conflict.resolution = action;
+      conflict.resolvedBy = viewer?.id || null;
+      conflict.resolvedAt = new Date().toISOString();
+      const decision = recordConflictDecision(conflict, action, viewer, {
+        selectedExternalEventId: winner.externalEventId
+      });
+      refreshRoomEvents(room.id);
+      addAudit(`calendar.conflict.${action}`, {
+        conflictId: conflict.id,
+        roomId: room.id,
+        selectedExternalEventId: winner.externalEventId,
+        actorUserId: viewer?.id || null
+      });
+      await saveData();
+      notifyRoom(room.code);
+      return json(res, 200, { conflict, decision });
+    }
+
+    let affectedEvents = [];
+    if (action === "cancel") {
+      if (!targetEvent) return validationError(res, "Select the event to cancel.");
+      affectedEvents = [targetEvent];
+    } else if (action === "replace") {
+      if (!selectedEvent) return validationError(res, "Select the event that should replace the other overlapping events.");
+      affectedEvents = events.filter(event => event.id !== selectedEvent.id);
+    } else if (action === "move") {
+      if (!targetEvent) return validationError(res, "Select the event to move.");
+      const startsAt = new Date(body.startsAt);
+      const endsAt = new Date(body.endsAt);
+      if (!Number.isFinite(startsAt.getTime()) || !Number.isFinite(endsAt.getTime()) || endsAt <= startsAt) {
+        return validationError(res, "Enter a valid new start and end time.");
+      }
+      affectedEvents = [targetEvent];
+    }
+
+    let contexts;
+    try {
+      contexts = affectedEvents.map(event => ({ event, ...conflictWriteContext(event) }));
+    } catch (error) {
+      return json(res, 409, { error: error.message });
+    }
+
+    try {
+      if (action === "move") {
+        const context = contexts[0];
+        await writeCalendarEvent(context.account, context.calendar, {
+          ...context.event,
+          title: context.event.originalTitle || context.event.title,
+          startsAt: new Date(body.startsAt).toISOString(),
+          endsAt: new Date(body.endsAt).toISOString()
+        }, context.event);
+      } else {
+        for (const context of contexts) {
+          await deleteCalendarEvent(context.account, context.calendar, context.event);
+        }
+      }
+    } catch (error) {
+      return json(res, 502, { error: `The source update failed and may be partially applied. Sync and review the calendar before retrying: ${error.message}` });
+    }
+
+    conflict.selectedExternalEventId = selectedEvent?.externalEventId || null;
+    conflict.status = action;
+    conflict.resolution = action;
+    conflict.resolvedBy = viewer?.id || null;
+    conflict.resolvedAt = new Date().toISOString();
+    const decision = recordConflictDecision(conflict, action, viewer, {
+      selectedExternalEventId: selectedEvent?.externalEventId || null,
+      targetExternalEventId: targetEvent?.externalEventId || null,
+      previousStartsAt: targetEvent?.startsAt || null,
+      previousEndsAt: targetEvent?.endsAt || null,
+      newStartsAt: action === "move" ? new Date(body.startsAt).toISOString() : null,
+      newEndsAt: action === "move" ? new Date(body.endsAt).toISOString() : null,
+      sourceWrite: true
+    });
+    addAudit(`calendar.conflict.${action}`, {
+      conflictId: conflict.id,
+      roomId: room.id,
+      selectedExternalEventId: selectedEvent?.externalEventId || null,
+      targetExternalEventId: targetEvent?.externalEventId || null,
+      actorUserId: viewer?.id || null
+    });
+
+    const syncWarnings = [];
+    for (const assignmentId of new Set(contexts.map(context => context.assignment.id))) {
+      const assignment = db.calendarAssignments.find(item => item.id === assignmentId);
+      if (!assignment) continue;
+      try {
+        await syncAssignment(assignment);
+      } catch (error) {
+        syncWarnings.push(error.message);
+      }
+    }
+    await saveData();
+    notifyRoom(room.code);
+    return json(res, 200, {
+      decision,
+      sourceUpdated: true,
+      syncWarnings
+    });
+  }
   if (req.method === "PUT" && url.pathname === "/api/settings/email") {
-    if (!requirePermission(req, res, "settings.manage")) return;
+    if (!requirePermission(req, res, "notification.manage")) return;
     const body = await readBody(req);
     const host = cleanText(body.host, 255);
     const username = cleanText(body.username, 255);
@@ -1596,7 +3947,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, publicEmailSettings(db.settings.email));
   }
   if (req.method === "POST" && url.pathname === "/api/settings/email/test") {
-    if (!requirePermission(req, res, "settings.manage")) return;
+    if (!requirePermission(req, res, "notification.manage")) return;
     const body = await readBody(req);
     const recipient = cleanText(body.recipient, 255).toLowerCase();
     if (recipient && !validEmail(recipient)) return validationError(res, "Enter a valid test recipient.");
@@ -1645,6 +3996,69 @@ async function handleApi(req, res, url) {
       addAudit("email.settings.test", { status: "failed", error: cleanText(error.message, 300) });
       await saveData();
       return json(res, 502, { error: `SMTP test failed: ${error.message}` });
+    }
+  }
+  if (req.method === "PUT" && url.pathname === "/api/settings/twilio") {
+    const viewer = currentViewer(req);
+    if (!viewerIsSystemAdmin(viewer)) return json(res, 403, { error: "System Administrator access is required." });
+    const body = await readBody(req);
+    const accountSid = cleanText(body.accountSid, 80);
+    const fromPhoneNumber = cleanText(body.fromPhoneNumber, 30);
+    if (accountSid && !/^AC[0-9a-fA-F]{32}$/.test(accountSid)) return validationError(res, "Enter a valid Twilio Account SID.");
+    if (fromPhoneNumber && !validPhoneNumber(fromPhoneNumber)) {
+      return validationError(res, "Enter the Twilio phone number in E.164 format, such as +13125550123.");
+    }
+    let encryptedAuthToken = db.settings.twilio.encryptedAuthToken || "";
+    if (body.authToken) {
+      try {
+        encryptedAuthToken = encryptCredential(String(body.authToken));
+      } catch (error) {
+        return validationError(res, error.message);
+      }
+    }
+    if (body.enabled === true && (!accountSid || !encryptedAuthToken || !fromPhoneNumber)) {
+      return validationError(res, "Account SID, Auth Token, and Twilio phone number are required when SMS is enabled.");
+    }
+    db.settings.twilio = {
+      ...db.settings.twilio,
+      enabled: body.enabled === true,
+      accountSid,
+      encryptedAuthToken,
+      fromPhoneNumber
+    };
+    addAudit("twilio.settings.update", {
+      enabled: db.settings.twilio.enabled,
+      accountSid,
+      fromPhoneNumber,
+      actorUserId: viewer.id
+    });
+    await saveData();
+    return json(res, 200, publicTwilioSettings(db.settings.twilio));
+  }
+  if (req.method === "POST" && url.pathname === "/api/settings/twilio/test") {
+    const viewer = currentViewer(req);
+    if (!viewerIsSystemAdmin(viewer)) return json(res, 403, { error: "System Administrator access is required." });
+    const body = await readBody(req);
+    const recipient = cleanText(body.recipient, 30);
+    if (!validPhoneNumber(recipient)) return validationError(res, "Enter a valid recipient phone number in E.164 format.");
+    try {
+      const result = await sendSms({ ...db.settings.twilio, enabled: true }, {
+        to: recipient,
+        body: `${db.settings.appName} Twilio configuration test.`
+      });
+      db.settings.twilio.lastTestAt = new Date().toISOString();
+      db.settings.twilio.lastTestStatus = "success";
+      db.settings.twilio.lastTestError = "";
+      addAudit("twilio.settings.test", { status: "success", recipient: maskPhoneNumber(recipient), messageSid: result.sid });
+      await saveData();
+      return json(res, 200, { sent: true, messageSid: result.sid, status: result.status });
+    } catch (error) {
+      db.settings.twilio.lastTestAt = new Date().toISOString();
+      db.settings.twilio.lastTestStatus = "failed";
+      db.settings.twilio.lastTestError = cleanText(error.message, 300);
+      addAudit("twilio.settings.test", { status: "failed", error: db.settings.twilio.lastTestError });
+      await saveData();
+      return json(res, 502, { error: db.settings.twilio.lastTestError });
     }
   }
   if (req.method === "POST" && url.pathname === "/api/email/send") {
@@ -1705,29 +4119,39 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     const name = cleanText(body.name);
     const email = cleanText(body.email, 255).toLowerCase();
+    const phoneNumber = cleanText(body.phoneNumber, 30);
     const status = cleanText(body.status, 30) || "invited";
     const allowedStatuses = new Set(["active", "invited", "suspended", "deactivated"]);
     if (!name) return validationError(res, "User name is required.");
     if (!validEmail(email)) return validationError(res, "Enter a valid email address.");
+    if (phoneNumber && !validPhoneNumber(phoneNumber)) return validationError(res, "Enter the phone number in E.164 format, such as +13125550123.");
     if (db.users.some(user => user.email === email)) return json(res, 409, { error: "That email address is already assigned to a user." });
     if (!allowedStatuses.has(status)) return validationError(res, "Select a valid user status.");
     if (!validIds(body.roleIds || [], db.roles)) return validationError(res, "One or more roles are invalid.");
+    if (!roleAssignmentsAllowed(currentViewer(req), body.roleIds || [])) return json(res, 403, { error: "One or more roles exceed your permissions." });
     if (!validIds(body.centerIds || [], db.centers)) return validationError(res, "One or more centers are invalid.");
     if (!validIds(body.campusIds || [], db.campuses)) return validationError(res, "One or more campuses are invalid.");
     if (!validIds(body.buildingIds || [], db.buildings)) return validationError(res, "One or more buildings are invalid.");
+    if (!validIds(body.roomIds || [], db.rooms)) return validationError(res, "One or more rooms are invalid.");
+    if (!assignmentsWithinViewerScope(currentViewer(req), body)) return json(res, 403, { error: "One or more user assignments are outside your scope." });
     const features = Array.isArray(body.features) ? body.features.filter(feature => db.features.includes(feature)) : [];
+    if (!featureAssignmentsAllowed(currentViewer(req), features)) return json(res, 403, { error: "One or more feature grants exceed your access." });
     const now = new Date().toISOString();
     const user = {
       id: entityId("user"),
       name,
       email,
+      phoneNumber,
+      phoneVerifiedAt: null,
       status,
       roleIds: body.roleIds || [],
       centerIds: body.centerIds || [],
       campusIds: body.campusIds || [],
       buildingIds: body.buildingIds || [],
+      roomIds: body.roomIds || [],
       features,
       twoFactorEnabled: false,
+      twoFactorMethod: "",
       invitedAt: null,
       lastEmailAt: null,
       createdAt: now,
@@ -1761,31 +4185,50 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "user.manage")) return;
     const user = db.users.find(item => item.id === userMatch[1]);
     if (!user) return json(res, 404, { error: "User not found" });
+    if (!viewerCanManageUser(currentViewer(req), user)) return json(res, 403, { error: "This user is outside your assigned scope." });
     const body = await readBody(req);
     const name = cleanText(body.name);
     const email = cleanText(body.email, 255).toLowerCase();
+    const phoneNumber = cleanText(body.phoneNumber, 30);
     const status = cleanText(body.status, 30);
     const allowedStatuses = new Set(["active", "invited", "suspended", "deactivated"]);
     if (!name) return validationError(res, "User name is required.");
     if (!validEmail(email)) return validationError(res, "Enter a valid email address.");
+    if (phoneNumber && !validPhoneNumber(phoneNumber)) return validationError(res, "Enter the phone number in E.164 format, such as +13125550123.");
     if (db.users.some(item => item.id !== user.id && item.email === email)) return json(res, 409, { error: "That email address is already assigned to a user." });
     if (!allowedStatuses.has(status)) return validationError(res, "Select a valid user status.");
     if (!validIds(body.roleIds || [], db.roles)) return validationError(res, "One or more roles are invalid.");
+    if (!roleAssignmentsAllowed(currentViewer(req), body.roleIds || [])) return json(res, 403, { error: "One or more roles exceed your permissions." });
     if (!validIds(body.centerIds || [], db.centers)) return validationError(res, "One or more centers are invalid.");
     if (!validIds(body.campusIds || [], db.campuses)) return validationError(res, "One or more campuses are invalid.");
     if (!validIds(body.buildingIds || [], db.buildings)) return validationError(res, "One or more buildings are invalid.");
+    if (!validIds(body.roomIds || [], db.rooms)) return validationError(res, "One or more rooms are invalid.");
+    if (!assignmentsWithinViewerScope(currentViewer(req), body)) return json(res, 403, { error: "One or more user assignments are outside your scope." });
     const features = Array.isArray(body.features) ? body.features.filter(feature => db.features.includes(feature)) : [];
+    if (!featureAssignmentsAllowed(currentViewer(req), features)) return json(res, 403, { error: "One or more feature grants exceed your access." });
+    const smsPhoneChanged = user.twoFactorMethod === "sms" && phoneNumber !== user.phoneNumber;
     Object.assign(user, {
       name,
       email,
+      phoneNumber,
+      phoneVerifiedAt: phoneNumber === user.phoneNumber ? user.phoneVerifiedAt : null,
       status,
       roleIds: body.roleIds || [],
       centerIds: body.centerIds || [],
       campusIds: body.campusIds || [],
       buildingIds: body.buildingIds || [],
+      roomIds: body.roomIds || [],
       features,
       updatedAt: new Date().toISOString()
     });
+    if (smsPhoneChanged) {
+      user.twoFactorEnabled = false;
+      user.twoFactorMethod = "";
+      user.phoneVerifiedAt = null;
+      for (const session of db.sessions) {
+        if (session.userId === user.id) session.revokedAt = new Date().toISOString();
+      }
+    }
     addAudit("user.update", { userId: user.id, email: user.email, status: user.status });
     await saveData();
     return json(res, 200, publicUser(user));
@@ -1795,6 +4238,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "user.manage")) return;
     const user = db.users.find(item => item.id === userInviteMatch[1]);
     if (!user) return json(res, 404, { error: "User not found" });
+    if (!viewerCanManageUser(currentViewer(req), user)) return json(res, 403, { error: "This user is outside your assigned scope." });
     const message = invitationMessage(user);
     try {
       await deliverTrackedEmail({
@@ -1815,14 +4259,93 @@ async function handleApi(req, res, url) {
       return json(res, 502, { error: `Invitation email failed: ${error.message}` });
     }
   }
+  const userFeatureGrantMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/feature-grants$/);
+  if (req.method === "POST" && userFeatureGrantMatch) {
+    if (!requirePermission(req, res, "user.manage")) return;
+    const user = db.users.find(item => item.id === userFeatureGrantMatch[1]);
+    if (!user) return json(res, 404, { error: "User not found" });
+    if (!viewerCanManageUser(currentViewer(req), user)) return json(res, 403, { error: "This user is outside your assigned scope." });
+    const body = await readBody(req);
+    const startsAt = new Date(body.startsAt);
+    const endsAt = new Date(body.endsAt);
+    if (!db.features.includes(body.featureName)) return validationError(res, "Select a valid feature.");
+    if (!featureAssignmentsAllowed(currentViewer(req), [body.featureName])) return json(res, 403, { error: "This feature exceeds your access." });
+    if (!Number.isFinite(startsAt.getTime()) || !Number.isFinite(endsAt.getTime()) || endsAt <= startsAt) {
+      return validationError(res, "Temporary grants require a valid start and later end time.");
+    }
+    const grant = {
+      id: entityId("feature-grant"),
+      userId: user.id,
+      featureName: body.featureName,
+      startsAt: startsAt.toISOString(),
+      endsAt: endsAt.toISOString(),
+      active: true,
+      createdBy: currentViewer(req)?.id || null,
+      createdAt: new Date().toISOString()
+    };
+    db.featureGrants.push(grant);
+    addAudit("user.feature-grant.create", { grantId: grant.id, userId: user.id, featureName: grant.featureName });
+    await saveData();
+    return json(res, 201, grant);
+  }
+  const featureGrantMatch = url.pathname.match(/^\/api\/feature-grants\/([^/]+)$/);
+  if (req.method === "DELETE" && featureGrantMatch) {
+    if (!requirePermission(req, res, "user.manage")) return;
+    const grant = db.featureGrants.find(item => item.id === featureGrantMatch[1]);
+    const user = db.users.find(item => item.id === grant?.userId);
+    if (!grant || !user) return json(res, 404, { error: "Feature grant not found" });
+    if (!viewerCanManageUser(currentViewer(req), user)) return json(res, 403, { error: "This user is outside your assigned scope." });
+    db.featureGrants = db.featureGrants.filter(item => item.id !== grant.id);
+    addAudit("user.feature-grant.delete", { grantId: grant.id, userId: user.id });
+    await saveData();
+    return json(res, 200, { deleted: true });
+  }
+  const userPasswordMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/password$/);
+  if (req.method === "POST" && userPasswordMatch) {
+    const viewer = currentViewer(req);
+    if (!viewerIsSystemAdmin(viewer)) return json(res, 403, { error: "System Administrator access is required." });
+    const user = db.users.find(item => item.id === userPasswordMatch[1]);
+    if (!user) return json(res, 404, { error: "User not found" });
+    const body = await readBody(req);
+    if (body.newPassword !== body.confirmPassword) return validationError(res, "New passwords do not match.");
+    try {
+      user.passwordHash = await hashPassword(body.newPassword);
+    } catch (error) {
+      return validationError(res, error.message);
+    }
+    if (user.status === "invited") user.status = "active";
+    user.updatedAt = new Date().toISOString();
+    if (body.resetTwoFactor === true) {
+      user.twoFactorEnabled = false;
+      user.twoFactorMethod = "";
+      user.encryptedTwoFactorSecret = "";
+      user.encryptedPendingTwoFactorSecret = "";
+      user.pendingTwoFactorMethod = "";
+      user.pendingPhoneNumber = "";
+      user.pendingSmsCodeHash = "";
+      user.pendingSmsCodeExpiresAt = null;
+      user.phoneVerifiedAt = null;
+    }
+    for (const session of db.sessions) {
+      if (session.userId === user.id) session.revokedAt = new Date().toISOString();
+    }
+    addAudit("user.password.admin-set", {
+      userId: user.id,
+      resetTwoFactor: body.resetTwoFactor === true,
+      actorUserId: viewer.id
+    });
+    recordLoginAudit({ email: user.email, userId: user.id, outcome: "password-admin-set", req, details: { actorUserId: viewer.id } });
+    await saveData();
+    return json(res, 200, publicUser(user));
+  }
   if (req.method === "POST" && url.pathname === "/api/broadcast-templates") {
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required." });
+    if (!requirePermission(req, res, "broadcast.template.manage")) return;
     const body = await readBody(req);
     const name = cleanText(body.name);
     const title = cleanText(body.title, 200);
     const message = cleanText(body.message, 5000);
     const severity = cleanText(body.severity, 30) || "urgent";
-    const allowedSeverities = new Set(["warning", "urgent", "critical"]);
+    const allowedSeverities = new Set(["informational", "warning", "urgent", "critical", "emergency"]);
     if (!name) return validationError(res, "Template name is required.");
     if (!title) return validationError(res, "Broadcast title is required.");
     if (!message) return validationError(res, "Broadcast message is required.");
@@ -1849,7 +4372,7 @@ async function handleApi(req, res, url) {
   }
   const broadcastTemplateMatch = url.pathname.match(/^\/api\/broadcast-templates\/([^/]+)$/);
   if (req.method === "PUT" && broadcastTemplateMatch) {
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required." });
+    if (!requirePermission(req, res, "broadcast.template.manage")) return;
     const template = db.broadcastTemplates.find(item => item.id === broadcastTemplateMatch[1]);
     if (!template) return json(res, 404, { error: "Broadcast template not found" });
     const body = await readBody(req);
@@ -1857,7 +4380,7 @@ async function handleApi(req, res, url) {
     const title = cleanText(body.title, 200);
     const message = cleanText(body.message, 5000);
     const severity = cleanText(body.severity, 30);
-    const allowedSeverities = new Set(["warning", "urgent", "critical"]);
+    const allowedSeverities = new Set(["informational", "warning", "urgent", "critical", "emergency"]);
     if (!name) return validationError(res, "Template name is required.");
     if (!title) return validationError(res, "Broadcast title is required.");
     if (!message) return validationError(res, "Broadcast message is required.");
@@ -1879,7 +4402,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, template);
   }
   if (req.method === "DELETE" && broadcastTemplateMatch) {
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required." });
+    if (!requirePermission(req, res, "broadcast.template.manage")) return;
     const template = db.broadcastTemplates.find(item => item.id === broadcastTemplateMatch[1]);
     if (!template) return json(res, 404, { error: "Broadcast template not found" });
     db.broadcastTemplates = db.broadcastTemplates.filter(item => item.id !== template.id);
@@ -1894,12 +4417,29 @@ async function handleApi(req, res, url) {
     const timezone = cleanText(body.timezone, 80);
     if (!name) return validationError(res, "Center name is required.");
     if (!validTimezone(timezone)) return validationError(res, "Enter a valid IANA timezone, such as America/Chicago.");
+    const bookingUrl = cleanText(body.bookingUrl, 500);
+    const contactEmail = cleanText(body.contactEmail, 255).toLowerCase();
+    const logoUrl = cleanText(body.logoUrl, 500) || "/assets/branding/aksharderi-small2.png";
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid center booking URL.");
+    if (contactEmail && !validEmail(contactEmail)) return validationError(res, "Enter a valid center contact email.");
+    if (logoUrl && !validUrl(logoUrl) && !logoUrl.startsWith("/assets/")) return validationError(res, "Enter a valid logo URL or asset path.");
     if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) {
       return validationError(res, "Select a valid default theme.");
+    }
+    if (body.defaultThemeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === body.defaultThemeId))) {
+      return json(res, 403, { error: "This theme is outside your assigned scope." });
     }
     const center = {
       id: entityId("center"),
       name,
+      description: cleanText(body.description, 2000),
+      logoUrl,
+      contactName: cleanText(body.contactName, 160),
+      contactEmail,
+      contactPhone: cleanText(body.contactPhone, 80),
+      bookingUrl,
+      upcomingEventCount: nullableInteger(body.upcomingEventCount) || 5,
+      showEventDescription: body.showEventDescription === true || body.showEventDescription === "true",
       timezone,
       defaultThemeId: body.defaultThemeId || db.themes[0]?.id || "",
       active: body.active !== false
@@ -1911,18 +4451,41 @@ async function handleApi(req, res, url) {
   }
   const centerMatch = url.pathname.match(/^\/api\/centers\/([^/]+)$/);
   if (req.method === "PUT" && centerMatch) {
-    if (!requirePermission(req, res, "center.manage")) return;
+    if (!requireAnyPermission(req, res, ["center.manage", "center.edit"])) return;
     const center = db.centers.find(item => item.id === centerMatch[1]);
     if (!center) return json(res, 404, { error: "Center not found" });
+    if (!viewerCanAccessCenter(currentViewer(req), center)) return json(res, 403, { error: "This center is outside your assigned scope." });
     const body = await readBody(req);
     const name = cleanText(body.name);
     const timezone = cleanText(body.timezone, 80);
     if (!name) return validationError(res, "Center name is required.");
     if (!validTimezone(timezone)) return validationError(res, "Enter a valid IANA timezone.");
+    const bookingUrl = cleanText(body.bookingUrl, 500);
+    const contactEmail = cleanText(body.contactEmail, 255).toLowerCase();
+    const logoUrl = cleanText(body.logoUrl, 500) || "/assets/branding/aksharderi-small2.png";
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid center booking URL.");
+    if (contactEmail && !validEmail(contactEmail)) return validationError(res, "Enter a valid center contact email.");
+    if (logoUrl && !validUrl(logoUrl) && !logoUrl.startsWith("/assets/")) return validationError(res, "Enter a valid logo URL or asset path.");
     if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) {
       return validationError(res, "Select a valid default theme.");
     }
-    Object.assign(center, { name, timezone, defaultThemeId: body.defaultThemeId || center.defaultThemeId, active: body.active !== false });
+    if (body.defaultThemeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === body.defaultThemeId))) {
+      return json(res, 403, { error: "This theme is outside your assigned scope." });
+    }
+    Object.assign(center, {
+      name,
+      description: cleanText(body.description, 2000),
+      logoUrl,
+      contactName: cleanText(body.contactName, 160),
+      contactEmail,
+      contactPhone: cleanText(body.contactPhone, 80),
+      bookingUrl,
+      upcomingEventCount: nullableInteger(body.upcomingEventCount) || 5,
+      showEventDescription: body.showEventDescription === true || body.showEventDescription === "true",
+      timezone,
+      defaultThemeId: body.defaultThemeId || center.defaultThemeId,
+      active: body.active !== false
+    });
     addAudit("center.update", { centerId: center.id, name: center.name });
     await saveData();
     notifyChangedRooms(db.rooms.filter(room => room.centerId === center.id).map(room => room.code));
@@ -1932,6 +4495,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "center.manage")) return;
     const center = db.centers.find(item => item.id === centerMatch[1]);
     if (!center) return json(res, 404, { error: "Center not found" });
+    if (!viewerCanAccessCenter(currentViewer(req), center)) return json(res, 403, { error: "This center is outside your assigned scope." });
     if (db.campuses.some(item => item.centerId === center.id) || db.rooms.some(item => item.centerId === center.id)) {
       return json(res, 409, { error: "Remove this center's campuses and rooms before deleting it." });
     }
@@ -1947,11 +4511,25 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     if (!name) return validationError(res, "Campus name is required.");
     if (!db.centers.some(center => center.id === body.centerId)) return validationError(res, "Select a valid center.");
+    if (!viewerCanAccessCenter(currentViewer(req), db.centers.find(center => center.id === body.centerId))) return json(res, 403, { error: "This center is outside your assigned scope." });
+    const bookingUrl = cleanText(body.bookingUrl, 500);
+    const contactEmail = cleanText(body.contactEmail, 255).toLowerCase();
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid campus booking URL.");
+    if (contactEmail && !validEmail(contactEmail)) return validationError(res, "Enter a valid campus contact email.");
+    if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) return validationError(res, "Select a valid campus theme.");
+    if (body.defaultThemeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === body.defaultThemeId))) return json(res, 403, { error: "This theme is outside your assigned scope." });
     const campus = {
       id: entityId("campus"),
       centerId: body.centerId,
       name,
       address: cleanText(body.address, 300),
+      contactName: cleanText(body.contactName, 160),
+      contactEmail,
+      contactPhone: cleanText(body.contactPhone, 80),
+      bookingUrl,
+      defaultThemeId: cleanText(body.defaultThemeId, 160),
+      upcomingEventCount: nullableInteger(body.upcomingEventCount),
+      showEventDescription: nullableBoolean(body.showEventDescription),
       active: body.active !== false
     };
     db.campuses.push(campus);
@@ -1961,17 +4539,37 @@ async function handleApi(req, res, url) {
   }
   const campusMatch = url.pathname.match(/^\/api\/campuses\/([^/]+)$/);
   if (req.method === "PUT" && campusMatch) {
-    if (!requirePermission(req, res, "campus.manage")) return;
+    if (!requireAnyPermission(req, res, ["campus.manage", "campus.edit"])) return;
     const campus = db.campuses.find(item => item.id === campusMatch[1]);
     if (!campus) return json(res, 404, { error: "Campus not found" });
+    if (!viewerCanAccessCampus(currentViewer(req), campus)) return json(res, 403, { error: "This campus is outside your assigned scope." });
     const body = await readBody(req);
     const name = cleanText(body.name);
     if (!name) return validationError(res, "Campus name is required.");
     if (!db.centers.some(center => center.id === body.centerId)) return validationError(res, "Select a valid center.");
+    if (!viewerCanAccessCenter(currentViewer(req), db.centers.find(center => center.id === body.centerId))) return json(res, 403, { error: "The destination center is outside your assigned scope." });
+    const bookingUrl = cleanText(body.bookingUrl, 500);
+    const contactEmail = cleanText(body.contactEmail, 255).toLowerCase();
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid campus booking URL.");
+    if (contactEmail && !validEmail(contactEmail)) return validationError(res, "Enter a valid campus contact email.");
+    if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) return validationError(res, "Select a valid campus theme.");
+    if (body.defaultThemeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === body.defaultThemeId))) return json(res, 403, { error: "This theme is outside your assigned scope." });
     if (db.buildings.some(building => building.campusId === campus.id) && body.centerId !== campus.centerId) {
       return json(res, 409, { error: "A campus with buildings cannot be moved to another center." });
     }
-    Object.assign(campus, { centerId: body.centerId, name, address: cleanText(body.address, 300), active: body.active !== false });
+    Object.assign(campus, {
+      centerId: body.centerId,
+      name,
+      address: cleanText(body.address, 300),
+      contactName: cleanText(body.contactName, 160),
+      contactEmail,
+      contactPhone: cleanText(body.contactPhone, 80),
+      bookingUrl,
+      defaultThemeId: cleanText(body.defaultThemeId, 160),
+      upcomingEventCount: nullableInteger(body.upcomingEventCount),
+      showEventDescription: nullableBoolean(body.showEventDescription),
+      active: body.active !== false
+    });
     addAudit("campus.update", { campusId: campus.id, name: campus.name });
     await saveData();
     notifyChangedRooms(db.rooms.filter(room => room.campusId === campus.id).map(room => room.code));
@@ -1981,6 +4579,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "campus.manage")) return;
     const campus = db.campuses.find(item => item.id === campusMatch[1]);
     if (!campus) return json(res, 404, { error: "Campus not found" });
+    if (!viewerCanAccessCampus(currentViewer(req), campus)) return json(res, 403, { error: "This campus is outside your assigned scope." });
     if (db.buildings.some(item => item.campusId === campus.id) || db.rooms.some(item => item.campusId === campus.id)) {
       return json(res, 409, { error: "Remove this campus's buildings and rooms before deleting it." });
     }
@@ -1996,11 +4595,25 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     if (!name) return validationError(res, "Building name is required.");
     if (!db.campuses.some(campus => campus.id === body.campusId)) return validationError(res, "Select a valid campus.");
+    if (!viewerCanAccessCampus(currentViewer(req), db.campuses.find(campus => campus.id === body.campusId))) return json(res, 403, { error: "This campus is outside your assigned scope." });
+    const timezone = cleanText(body.timezone, 80);
+    const bookingUrl = cleanText(body.bookingUrl, 500);
+    if (timezone && !validTimezone(timezone)) return validationError(res, "Enter a valid building timezone override.");
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid building booking URL.");
+    if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) return validationError(res, "Select a valid building theme.");
+    if (body.defaultThemeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === body.defaultThemeId))) return json(res, 403, { error: "This theme is outside your assigned scope." });
     const building = {
       id: entityId("building"),
       campusId: body.campusId,
       name,
       code: cleanText(body.code, 40),
+      address: cleanText(body.address, 300),
+      floors: cleanText(body.floors, 300),
+      timezone,
+      bookingUrl,
+      defaultThemeId: cleanText(body.defaultThemeId, 160),
+      upcomingEventCount: nullableInteger(body.upcomingEventCount),
+      showEventDescription: nullableBoolean(body.showEventDescription),
       active: body.active !== false
     };
     db.buildings.push(building);
@@ -2010,17 +4623,37 @@ async function handleApi(req, res, url) {
   }
   const buildingMatch = url.pathname.match(/^\/api\/buildings\/([^/]+)$/);
   if (req.method === "PUT" && buildingMatch) {
-    if (!requirePermission(req, res, "building.manage")) return;
+    if (!requireAnyPermission(req, res, ["building.manage", "building.edit"])) return;
     const building = db.buildings.find(item => item.id === buildingMatch[1]);
     if (!building) return json(res, 404, { error: "Building not found" });
+    if (!viewerCanAccessBuilding(currentViewer(req), building)) return json(res, 403, { error: "This building is outside your assigned scope." });
     const body = await readBody(req);
     const name = cleanText(body.name);
     if (!name) return validationError(res, "Building name is required.");
     if (!db.campuses.some(campus => campus.id === body.campusId)) return validationError(res, "Select a valid campus.");
+    if (!viewerCanAccessCampus(currentViewer(req), db.campuses.find(campus => campus.id === body.campusId))) return json(res, 403, { error: "The destination campus is outside your assigned scope." });
+    const timezone = cleanText(body.timezone, 80);
+    const bookingUrl = cleanText(body.bookingUrl, 500);
+    if (timezone && !validTimezone(timezone)) return validationError(res, "Enter a valid building timezone override.");
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid building booking URL.");
+    if (body.defaultThemeId && !db.themes.some(theme => theme.id === body.defaultThemeId)) return validationError(res, "Select a valid building theme.");
+    if (body.defaultThemeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === body.defaultThemeId))) return json(res, 403, { error: "This theme is outside your assigned scope." });
     if (db.rooms.some(room => room.buildingId === building.id) && body.campusId !== building.campusId) {
       return json(res, 409, { error: "A building with rooms cannot be moved to another campus." });
     }
-    Object.assign(building, { campusId: body.campusId, name, code: cleanText(body.code, 40), active: body.active !== false });
+    Object.assign(building, {
+      campusId: body.campusId,
+      name,
+      code: cleanText(body.code, 40),
+      address: cleanText(body.address, 300),
+      floors: cleanText(body.floors, 300),
+      timezone,
+      bookingUrl,
+      defaultThemeId: cleanText(body.defaultThemeId, 160),
+      upcomingEventCount: nullableInteger(body.upcomingEventCount),
+      showEventDescription: nullableBoolean(body.showEventDescription),
+      active: body.active !== false
+    });
     addAudit("building.update", { buildingId: building.id, name: building.name });
     await saveData();
     notifyChangedRooms(db.rooms.filter(room => room.buildingId === building.id).map(room => room.code));
@@ -2030,6 +4663,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "building.manage")) return;
     const building = db.buildings.find(item => item.id === buildingMatch[1]);
     if (!building) return json(res, 404, { error: "Building not found" });
+    if (!viewerCanAccessBuilding(currentViewer(req), building)) return json(res, 403, { error: "This building is outside your assigned scope." });
     if (db.rooms.some(item => item.buildingId === building.id)) {
       return json(res, 409, { error: "Remove this building's rooms before deleting it." });
     }
@@ -2045,24 +4679,38 @@ async function handleApi(req, res, url) {
     const name = cleanText(body.name);
     const code = cleanText(body.code, 80).toLowerCase();
     const bookingUrl = cleanText(body.bookingUrl, 500);
+    const themeId = cleanText(body.themeId, 160);
     const hierarchy = findHierarchy(body);
     if (!name) return validationError(res, "Room name is required.");
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(code)) return validationError(res, "Room code must use lowercase letters, numbers, and single hyphens.");
     if (db.rooms.some(room => room.code === code)) return json(res, 409, { error: "That room code is already in use." });
-    if (!validUrl(bookingUrl)) return validationError(res, "Enter a valid HTTP or HTTPS booking URL.");
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid HTTP or HTTPS booking URL.");
     if (hierarchy.error) return validationError(res, hierarchy.error);
-    if (!db.themes.some(theme => theme.id === body.themeId)) return validationError(res, "Select a valid theme.");
+    if (!viewerCanAccessBuilding(currentViewer(req), hierarchy.building)) return json(res, 403, { error: "This building is outside your assigned scope." });
+    if (themeId && !db.themes.some(theme => theme.id === themeId)) return validationError(res, "Select a valid theme.");
+    if (themeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === themeId))) return json(res, 403, { error: "This theme is outside your assigned scope." });
+    if (!["available", "maintenance", "closed"].includes(body.maintenanceStatus || "available")) return validationError(res, "Select a valid maintenance status.");
+    if (!["standard", "private-title", "hide-details"].includes(body.privacyMode || "standard")) return validationError(res, "Select a valid privacy setting.");
     const room = {
       id: entityId("room"),
+      kioskIdentifier: randomToken(18),
       code,
       name,
       centerId: body.centerId,
       campusId: body.campusId,
       buildingId: body.buildingId,
       bookingUrl,
-      themeId: body.themeId,
+      themeId,
+      roomNumber: cleanText(body.roomNumber, 80),
+      floor: cleanText(body.floor, 80),
       roomType: cleanText(body.roomType, 80) || "Classroom",
       capacity: Number.isFinite(Number(body.capacity)) && Number(body.capacity) > 0 ? Number(body.capacity) : null,
+      equipment: cleanText(body.equipment, 2000),
+      accessibilityNotes: cleanText(body.accessibilityNotes, 2000),
+      maintenanceStatus: body.maintenanceStatus || "available",
+      privacyMode: body.privacyMode || "standard",
+      upcomingEventCount: nullableInteger(body.upcomingEventCount),
+      showEventDescription: nullableBoolean(body.showEventDescription),
       active: body.active !== false,
       status: "available",
       currentEventTitle: "",
@@ -2075,6 +4723,31 @@ async function handleApi(req, res, url) {
     notifyRoom(room.code);
     return json(res, 201, publicRoom(room));
   }
+  const roomQrMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/qr\.svg$/);
+  if (req.method === "GET" && roomQrMatch) {
+    const room = db.rooms.find(item => item.code === roomQrMatch[1]);
+    if (!room) return json(res, 404, { error: "Room not found" });
+    const publicData = publicRoom(room);
+    if (!publicData.bookingUrl) return send(res, 404, "Booking URL is not configured.");
+    const tokens = publicData.themeCssTokens || {};
+    let foreground = qrColor(tokens.qrForeground, "#000000");
+    let background = qrColor(tokens.qrBackground, "#ffffff");
+    const transparent = String(tokens.qrTransparent) === "true";
+    if (transparent && colorLuminance(foreground) > 0.35) foreground = "#000000";
+    if (!transparent && contrastRatio(foreground, background) < 4.5) {
+      foreground = "#000000";
+      background = "#ffffff";
+    }
+    if (transparent) background = "#00000000";
+    const svg = await QRCode.toString(publicData.bookingUrl, {
+      type: "svg",
+      errorCorrectionLevel: "M",
+      margin: Math.max(1, Math.min(8, Number(tokens.qrMargin || 2))),
+      width: Math.max(96, Math.min(512, Number(tokens.qrSize || 132))),
+      color: { dark: foreground, light: background }
+    });
+    return send(res, 200, svg, "image/svg+xml; charset=utf-8");
+  }
   const roomMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)$/);
   if (req.method === "GET" && roomMatch) {
     const room = db.rooms.find(item => item.code === roomMatch[1]);
@@ -2082,24 +4755,31 @@ async function handleApi(req, res, url) {
     return json(res, 200, publicRoom(
       room,
       cleanText(url.searchParams.get("theme"), 120),
-      cleanText(url.searchParams.get("state"), 20)
+      cleanText(url.searchParams.get("state"), 20),
+      false
     ));
   }
   if (req.method === "PUT" && roomMatch) {
-    if (!requirePermission(req, res, "room.manage")) return;
+    if (!requireAnyPermission(req, res, ["room.manage", "room.edit"])) return;
     const room = db.rooms.find(item => item.id === roomMatch[1] || item.code === roomMatch[1]);
     if (!room) return json(res, 404, { error: "Room not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
     const body = await readBody(req);
     const name = cleanText(body.name);
     const code = cleanText(body.code, 80).toLowerCase();
     const bookingUrl = cleanText(body.bookingUrl, 500);
+    const themeId = cleanText(body.themeId, 160);
     const hierarchy = findHierarchy(body);
     if (!name) return validationError(res, "Room name is required.");
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(code)) return validationError(res, "Room code must use lowercase letters, numbers, and single hyphens.");
     if (db.rooms.some(item => item.id !== room.id && item.code === code)) return json(res, 409, { error: "That room code is already in use." });
-    if (!validUrl(bookingUrl)) return validationError(res, "Enter a valid HTTP or HTTPS booking URL.");
+    if (bookingUrl && !validUrl(bookingUrl)) return validationError(res, "Enter a valid HTTP or HTTPS booking URL.");
     if (hierarchy.error) return validationError(res, hierarchy.error);
-    if (!db.themes.some(theme => theme.id === body.themeId)) return validationError(res, "Select a valid theme.");
+    if (!viewerCanAccessBuilding(currentViewer(req), hierarchy.building)) return json(res, 403, { error: "The destination building is outside your assigned scope." });
+    if (themeId && !db.themes.some(theme => theme.id === themeId)) return validationError(res, "Select a valid theme.");
+    if (themeId && !viewerCanAccessTheme(currentViewer(req), db.themes.find(theme => theme.id === themeId))) return json(res, 403, { error: "This theme is outside your assigned scope." });
+    if (!["available", "maintenance", "closed"].includes(body.maintenanceStatus || "available")) return validationError(res, "Select a valid maintenance status.");
+    if (!["standard", "private-title", "hide-details"].includes(body.privacyMode || "standard")) return validationError(res, "Select a valid privacy setting.");
     const previousCode = room.code;
     Object.assign(room, {
       code,
@@ -2108,9 +4788,17 @@ async function handleApi(req, res, url) {
       campusId: body.campusId,
       buildingId: body.buildingId,
       bookingUrl,
-      themeId: body.themeId,
+      themeId,
+      roomNumber: cleanText(body.roomNumber, 80),
+      floor: cleanText(body.floor, 80),
       roomType: cleanText(body.roomType, 80) || "Classroom",
       capacity: Number.isFinite(Number(body.capacity)) && Number(body.capacity) > 0 ? Number(body.capacity) : null,
+      equipment: cleanText(body.equipment, 2000),
+      accessibilityNotes: cleanText(body.accessibilityNotes, 2000),
+      maintenanceStatus: body.maintenanceStatus || "available",
+      privacyMode: body.privacyMode || "standard",
+      upcomingEventCount: nullableInteger(body.upcomingEventCount),
+      showEventDescription: nullableBoolean(body.showEventDescription),
       active: body.active !== false
     });
     addAudit("room.update", { roomId: room.id, roomCode: room.code, previousCode });
@@ -2122,8 +4810,10 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "room.manage")) return;
     const room = db.rooms.find(item => item.id === roomMatch[1] || item.code === roomMatch[1]);
     if (!room) return json(res, 404, { error: "Room not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
     db.rooms = db.rooms.filter(item => item.id !== room.id);
     db.upcomingEvents = db.upcomingEvents.filter(item => item.roomId !== room.id);
+    for (const group of db.roomGroups) group.roomIds = group.roomIds.filter(id => id !== room.id);
     addAudit("room.delete", { roomId: room.id, roomCode: room.code, name: room.name });
     await saveData();
     notifyRoom(room.code);
@@ -2149,6 +4839,7 @@ async function handleApi(req, res, url) {
   const eventsMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/events$/);
   if (req.method === "GET" && eventsMatch) {
     const roomCode = eventsMatch[1];
+    const deviceId = cleanText(url.searchParams.get("deviceId"), 160);
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-store",
@@ -2156,9 +4847,284 @@ async function handleApi(req, res, url) {
     });
     res.write(`event: connected\ndata: ${JSON.stringify({ roomCode })}\n\n`);
     if (!clients.has(roomCode)) clients.set(roomCode, new Set());
-    clients.get(roomCode).add(res);
-    req.on("close", () => clients.get(roomCode)?.delete(res));
+    const client = { res, deviceId };
+    clients.get(roomCode).add(client);
+    req.on("close", () => clients.get(roomCode)?.delete(client));
     return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/kiosk-devices/register") {
+    const body = await readBody(req);
+    const room = db.rooms.find(item => item.code === body.roomCode);
+    const clientDeviceId = cleanText(body.clientDeviceId, 160);
+    if (!room || !clientDeviceId) return validationError(res, "Room code and device ID are required.");
+    if (!body.kioskIdentifier || body.kioskIdentifier !== room.kioskIdentifier) {
+      return json(res, 403, { error: "Kiosk registration identifier is invalid." });
+    }
+    let device = db.kioskDevices.find(item => item.clientDeviceId === clientDeviceId);
+    if (device?.status === "revoked") {
+      return json(res, 403, { error: "This kiosk registration has been revoked. An administrator must remove the revoked record before it can pair again.", status: "revoked" });
+    }
+    let deviceToken = "";
+    if (!device) {
+      deviceToken = crypto.randomBytes(32).toString("hex");
+      device = {
+        id: entityId("kiosk-device"),
+        clientDeviceId,
+        deviceTokenHash: hashDeviceToken(deviceToken),
+        pairingCode: String(crypto.randomInt(100000, 999999)),
+        roomId: room.id,
+        name: cleanText(body.name, 160) || `${room.name} Display`,
+        status: "pending",
+        deviceType: cleanText(body.deviceType, 80) || "unknown",
+        browser: cleanText(body.browser, 300),
+        platform: cleanText(body.platform, 160),
+        viewport: cleanText(body.viewport, 80),
+        orientation: cleanText(body.orientation, 30),
+        audioEnabled: body.audioEnabled === true,
+        lastIpAddress: requestIp(req),
+        createdAt: new Date().toISOString(),
+        approvedBy: null,
+        approvedAt: null,
+        lastSeenAt: new Date().toISOString(),
+        lastDataAt: null,
+        pendingCommand: null
+      };
+      db.kioskDevices.push(device);
+      addAudit("kiosk.device.register", { deviceId: device.id, roomId: room.id });
+    } else {
+      if (device.status === "active") {
+        return json(res, 409, { error: "This physical kiosk is already registered. Use its existing device token or revoke and remove the device before pairing again." });
+      }
+      deviceToken = crypto.randomBytes(32).toString("hex");
+      Object.assign(device, {
+        roomId: room.id,
+        deviceTokenHash: hashDeviceToken(deviceToken),
+        pairingCode: String(crypto.randomInt(100000, 999999)),
+        name: cleanText(body.name, 160) || device.name,
+        deviceType: cleanText(body.deviceType, 80) || device.deviceType || "unknown",
+        browser: cleanText(body.browser, 300),
+        platform: cleanText(body.platform, 160),
+        viewport: cleanText(body.viewport, 80),
+        orientation: cleanText(body.orientation, 30),
+        audioEnabled: body.audioEnabled === true,
+        lastIpAddress: requestIp(req),
+        lastSeenAt: new Date().toISOString()
+      });
+    }
+    await saveData();
+    return json(res, device.status === "pending" ? 202 : 200, {
+      ...publicKioskDevice(device, true),
+      deviceToken
+    });
+  }
+  if (req.method === "POST" && url.pathname === "/api/kiosk-devices/heartbeat") {
+    const body = await readBody(req);
+    const device = db.kioskDevices.find(item =>
+      item.clientDeviceId === body.clientDeviceId
+      && item.status !== "revoked"
+      && secureTokenEqual(item.deviceTokenHash || hashDeviceToken(item.deviceToken), hashDeviceToken(body.deviceToken))
+    );
+    const revokedDevice = db.kioskDevices.find(item => item.clientDeviceId === body.clientDeviceId && item.status === "revoked");
+    if (revokedDevice) return json(res, 403, { error: "Device registration has been revoked.", status: "revoked" });
+    if (!device) return json(res, 401, { error: "Device registration is not recognized." });
+    Object.assign(device, {
+      deviceType: cleanText(body.deviceType, 80) || device.deviceType || "unknown",
+      browser: cleanText(body.browser, 300),
+      platform: cleanText(body.platform, 160),
+      viewport: cleanText(body.viewport, 80),
+      orientation: cleanText(body.orientation, 30),
+      audioEnabled: body.audioEnabled === true,
+      lastIpAddress: requestIp(req),
+      lastDataAt: body.lastDataAt ? cleanText(body.lastDataAt, 80) : device.lastDataAt,
+      lastSeenAt: new Date().toISOString()
+    });
+    const pendingCommand = device.pendingCommand;
+    device.pendingCommand = null;
+    await saveData();
+    return json(res, 200, {
+      status: device.status,
+      healthStatus: "online",
+      roomCode: db.rooms.find(item => item.id === device.roomId)?.code || "",
+      pendingCommand
+    });
+  }
+  const kioskApproveMatch = url.pathname.match(/^\/api\/kiosk-devices\/([^/]+)\/approve$/);
+  if (req.method === "POST" && kioskApproveMatch) {
+    const device = db.kioskDevices.find(item => item.id === kioskApproveMatch[1]);
+    const room = db.rooms.find(item => item.id === device?.roomId);
+    const viewer = currentViewer(req);
+    if (!device || !room) return json(res, 404, { error: "Kiosk device not found" });
+    if (!viewerCanPairRoom(viewer, room)) return json(res, 403, { error: "System Admin or the room's Center Admin is required." });
+    if (device.status === "revoked") return json(res, 409, { error: "A revoked device cannot be approved." });
+    if (device.status !== "pending") return json(res, 409, { error: "Only pending devices can be approved." });
+    const body = await readBody(req);
+    if (cleanText(body.pairingCode, 20) !== device.pairingCode) return validationError(res, "Pairing code does not match.");
+    device.status = "active";
+    device.approvedBy = viewer?.id || null;
+    device.approvedAt = new Date().toISOString();
+    addAudit("kiosk.device.approve", { deviceId: device.id, roomId: room.id });
+    await saveData();
+    notifyRoom(room.code, "data-refresh", device.clientDeviceId);
+    return json(res, 200, publicKioskDevice(device));
+  }
+  const kioskRevokeMatch = url.pathname.match(/^\/api\/kiosk-devices\/([^/]+)\/revoke$/);
+  if (req.method === "POST" && kioskRevokeMatch) {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const device = db.kioskDevices.find(item => item.id === kioskRevokeMatch[1]);
+    const room = db.rooms.find(item => item.id === device?.roomId);
+    if (!device || !room) return json(res, 404, { error: "Kiosk device not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This device is outside your assigned scope." });
+    device.status = "revoked";
+    device.deviceTokenHash = hashDeviceToken(crypto.randomBytes(32).toString("hex"));
+    device.pairingCode = "";
+    device.pendingCommand = "revoked";
+    device.revokedBy = currentViewer(req)?.id || null;
+    device.revokedAt = new Date().toISOString();
+    addAudit("kiosk.device.revoke", { deviceId: device.id, roomId: room.id });
+    await saveData();
+    notifyRoom(room.code, "revoked", device.clientDeviceId);
+    return json(res, 200, publicKioskDevice(device));
+  }
+  const kioskReassignMatch = url.pathname.match(/^\/api\/kiosk-devices\/([^/]+)\/reassign$/);
+  if (req.method === "POST" && kioskReassignMatch) {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const device = db.kioskDevices.find(item => item.id === kioskReassignMatch[1]);
+    const previousRoom = db.rooms.find(item => item.id === device?.roomId);
+    const body = await readBody(req);
+    const nextRoom = db.rooms.find(item => item.id === body.roomId);
+    const viewer = currentViewer(req);
+    if (!device || !previousRoom) return json(res, 404, { error: "Kiosk device not found" });
+    if (!nextRoom) return validationError(res, "Select a valid destination room.");
+    if (!viewerCanAccessRoom(viewer, previousRoom) || !viewerCanAccessRoom(viewer, nextRoom)) {
+      return json(res, 403, { error: "Both the current and destination rooms must be inside your assigned scope." });
+    }
+    if (device.status === "revoked") return json(res, 409, { error: "A revoked device cannot be reassigned. Remove it and pair the kiosk again." });
+    device.roomId = nextRoom.id;
+    device.name = cleanText(body.name, 160) || device.name;
+    device.deviceType = cleanText(body.deviceType, 80) || device.deviceType || "unknown";
+    device.pendingCommand = `navigate:${nextRoom.code}`;
+    device.reassignedBy = viewer?.id || null;
+    device.reassignedAt = new Date().toISOString();
+    addAudit("kiosk.device.reassign", {
+      deviceId: device.id,
+      previousRoomId: previousRoom.id,
+      roomId: nextRoom.id
+    });
+    await saveData();
+    notifyRoom(previousRoom.code, device.pendingCommand, device.clientDeviceId);
+    return json(res, 200, publicKioskDevice(device));
+  }
+  const kioskCommandMatch = url.pathname.match(/^\/api\/kiosk-devices\/([^/]+)\/command$/);
+  if (req.method === "POST" && kioskCommandMatch) {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const device = db.kioskDevices.find(item => item.id === kioskCommandMatch[1]);
+    const room = db.rooms.find(item => item.id === device?.roomId);
+    if (!device || !room) return json(res, 404, { error: "Kiosk device not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This device is outside your assigned scope." });
+    const body = await readBody(req);
+    if (device.status === "revoked") return json(res, 409, { error: "Revoked devices cannot receive commands." });
+    const command = body.command === "reload" ? "reload" : "data-refresh";
+    device.pendingCommand = command;
+    notifyRoom(room.code, command, device.clientDeviceId);
+    addAudit("kiosk.device.command", { deviceId: device.id, command });
+    await saveData();
+    return json(res, 200, { sent: true, command });
+  }
+  const kioskDeviceMatch = url.pathname.match(/^\/api\/kiosk-devices\/([^/]+)$/);
+  if (req.method === "DELETE" && kioskDeviceMatch) {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const device = db.kioskDevices.find(item => item.id === kioskDeviceMatch[1]);
+    const room = db.rooms.find(item => item.id === device?.roomId);
+    if (!device || !room) return json(res, 404, { error: "Kiosk device not found" });
+    if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This device is outside your assigned scope." });
+    db.kioskDevices = db.kioskDevices.filter(item => item.id !== device.id);
+    addAudit("kiosk.device.delete", { deviceId: device.id, roomId: room.id });
+    await saveData();
+    return json(res, 200, { deleted: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/kiosks/refresh") {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const body = await readBody(req);
+    const target = {
+      centerIds: cleanIdArray(body.centerIds),
+      campusIds: cleanIdArray(body.campusIds),
+      buildingIds: cleanIdArray(body.buildingIds),
+      roomGroupIds: cleanIdArray(body.roomGroupIds),
+      roomIds: cleanIdArray(body.roomIds),
+      targetRoomCodes: []
+    };
+    const rooms = broadcastTargetRooms(target);
+    const viewer = currentViewer(req);
+    if (!rooms.length) return validationError(res, "Select at least one kiosk target.");
+    if (rooms.some(room => !viewerCanAccessRoom(viewer, room))) return json(res, 403, { error: "One or more kiosk targets are outside your scope." });
+    const command = body.command === "reload" ? "reload" : "data-refresh";
+    for (const room of rooms) notifyRoom(room.code, command);
+    addAudit("kiosk.refresh.scope", { command, roomIds: rooms.map(room => room.id) });
+    return json(res, 200, { sent: rooms.length, command });
+  }
+  if (req.method === "POST" && url.pathname === "/api/room-groups") {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const body = await readBody(req);
+    const viewer = currentViewer(req);
+    const name = cleanText(body.name);
+    const roomIds = cleanIdArray(body.roomIds);
+    const rooms = roomIds.map(id => db.rooms.find(room => room.id === id)).filter(Boolean);
+    if (!name) return validationError(res, "Room group name is required.");
+    if (!rooms.length || rooms.length !== roomIds.length) return validationError(res, "Select at least one valid room.");
+    if (rooms.some(room => !viewerCanAccessRoom(viewer, room))) return json(res, 403, { error: "One or more rooms are outside your assigned scope." });
+    const now = new Date().toISOString();
+    const group = {
+      id: entityId("room-group"),
+      name,
+      description: cleanText(body.description, 1000),
+      roomIds,
+      active: body.active !== false,
+      createdBy: viewer?.id || null,
+      createdAt: now,
+      updatedAt: null,
+      updatedBy: null
+    };
+    db.roomGroups.push(group);
+    addAudit("room-group.create", { groupId: group.id, name, roomCount: roomIds.length });
+    await saveData();
+    return json(res, 201, group);
+  }
+  const roomGroupMatch = url.pathname.match(/^\/api\/room-groups\/([^/]+)$/);
+  if (req.method === "PUT" && roomGroupMatch) {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const group = db.roomGroups.find(item => item.id === roomGroupMatch[1]);
+    if (!group) return json(res, 404, { error: "Room group not found" });
+    const body = await readBody(req);
+    const viewer = currentViewer(req);
+    const name = cleanText(body.name);
+    const roomIds = cleanIdArray(body.roomIds);
+    const rooms = roomIds.map(id => db.rooms.find(room => room.id === id)).filter(Boolean);
+    if (!name) return validationError(res, "Room group name is required.");
+    if (!rooms.length || rooms.length !== roomIds.length) return validationError(res, "Select at least one valid room.");
+    if (rooms.some(room => !viewerCanAccessRoom(viewer, room))) return json(res, 403, { error: "One or more rooms are outside your assigned scope." });
+    Object.assign(group, {
+      name,
+      description: cleanText(body.description, 1000),
+      roomIds,
+      active: body.active !== false,
+      updatedAt: new Date().toISOString(),
+      updatedBy: viewer?.id || null
+    });
+    addAudit("room-group.update", { groupId: group.id, name, roomCount: roomIds.length });
+    await saveData();
+    return json(res, 200, group);
+  }
+  if (req.method === "DELETE" && roomGroupMatch) {
+    if (!requirePermission(req, res, "room.manage")) return;
+    const group = db.roomGroups.find(item => item.id === roomGroupMatch[1]);
+    if (!group) return json(res, 404, { error: "Room group not found" });
+    const viewer = currentViewer(req);
+    const rooms = group.roomIds.map(id => db.rooms.find(room => room.id === id)).filter(Boolean);
+    if (rooms.some(room => !viewerCanAccessRoom(viewer, room))) return json(res, 403, { error: "This group includes rooms outside your assigned scope." });
+    db.roomGroups = db.roomGroups.filter(item => item.id !== group.id);
+    addAudit("room-group.delete", { groupId: group.id, name: group.name });
+    await saveData();
+    return json(res, 200, { deleted: true });
   }
   if (req.method === "POST" && url.pathname === "/api/broadcasts") {
     if (!requirePermission(req, res, "broadcast.publish")) return;
@@ -2168,59 +5134,137 @@ async function handleApi(req, res, url) {
       ? db.broadcastTemplates.find(item => item.id === body.templateId && item.active)
       : null;
     if (body.templateId && !template) return validationError(res, "Select an active broadcast template.");
-    const targetRoomCodes = Array.isArray(body.targetRoomCodes) ? [...new Set(body.targetRoomCodes)] : db.rooms.map(room => room.code);
-    const targetRooms = targetRoomCodes.map(code => db.rooms.find(room => room.code === code)).filter(Boolean);
-    if (!targetRooms.length || targetRooms.length !== targetRoomCodes.length) return validationError(res, "Select valid target rooms.");
     const viewer = currentViewer(req);
-    if (targetRooms.some(room => !viewerCanAccessRoom(viewer, room))) {
-      return json(res, 403, { error: "One or more target rooms are outside your assigned scope." });
-    }
-    const broadcast = {
+    const now = new Date();
+    const broadcast = broadcastFromBody({
+      ...body,
+      title: body.title || template?.title || "IMPORTANT SYSTEM OVERRIDE",
+      message: body.message || template?.message || "",
+      severity: body.severity || template?.severity || "emergency",
+      audibleAlert: body.audibleAlert ?? template?.audibleAlert ?? true,
+      startsAt: body.startsAt || now.toISOString()
+    }, {
       id: crypto.randomUUID(),
-      templateId: template?.id || null,
-      title: cleanText(body.title || template?.title || "IMPORTANT SYSTEM OVERRIDE", 200),
-      message: cleanText(body.message || template?.message || "", 5000),
-      severity: cleanText(body.severity || template?.severity || "urgent", 30),
-      targetRoomCodes,
       createdBy: viewer?.id || null,
       updatedBy: null,
-      startedAt: new Date().toISOString(),
+      startedAt: null,
       endedAt: null,
       endedBy: null,
-      status: "active",
-      createdAt: new Date().toISOString()
-    };
+      status: "scheduled",
+      activationNotifiedAt: null,
+      endingNotifiedAt: null,
+      createdAt: now.toISOString(),
+      updatedAt: null
+    });
+    broadcast.templateId = template?.id || broadcast.templateId;
+    const error = validateBroadcast(broadcast, viewer);
+    if (error?.includes("outside your assigned scope")) return json(res, 403, { error });
+    if (error) return validationError(res, error);
+    broadcast.startsAt = new Date(broadcast.startsAt).toISOString();
+    broadcast.endsAt = broadcast.endsAt ? new Date(broadcast.endsAt).toISOString() : null;
+    broadcast.targetRoomCodes = broadcastTargetRooms(broadcast).map(room => room.code);
+    broadcast.status = broadcastStatusAt(broadcast, now);
+    if (broadcast.status === "active") {
+      broadcast.startedAt = now.toISOString();
+      broadcast.activationNotifiedAt = now.toISOString();
+    }
     db.broadcasts.unshift(broadcast);
-    db.activeBroadcast = broadcast;
-    addAudit("broadcast.publish", { title: broadcast.title, targetRoomCodes: broadcast.targetRoomCodes });
+    addAudit(broadcast.status === "active" ? "broadcast.publish" : "broadcast.schedule", {
+      id: broadcast.id,
+      title: broadcast.title,
+      targetRoomCodes: broadcast.targetRoomCodes,
+      startsAt: broadcast.startsAt,
+      endsAt: broadcast.endsAt
+    });
     await saveData();
-    notifyAllRooms();
-    return json(res, 201, broadcast);
+    notifyChangedRooms(broadcast.targetRoomCodes);
+    if (broadcast.status === "active") {
+      await backgroundQueue.enqueue("broadcast-notification", { broadcast: structuredClone(broadcast), eventType: "activated" });
+    }
+    return json(res, 201, publicBroadcast(broadcast));
+  }
+  const broadcastMatch = url.pathname.match(/^\/api\/broadcasts\/([^/]+)$/);
+  if (req.method === "PUT" && broadcastMatch) {
+    if (!requirePermission(req, res, "broadcast.publish")) return;
+    const broadcast = db.broadcasts.find(item => item.id === broadcastMatch[1]);
+    if (!broadcast) return json(res, 404, { error: "Broadcast not found" });
+    if (["ended", "cancelled"].includes(broadcastStatusAt(broadcast))) return json(res, 409, { error: "Ended or cancelled broadcasts cannot be edited." });
+    const viewer = currentViewer(req);
+    if (broadcastTargetRooms(broadcast).some(room => !viewerCanAccessRoom(viewer, room))) return json(res, 403, { error: "This broadcast includes rooms outside your assigned scope." });
+    const previousRoomCodes = broadcastTargetRooms(broadcast).map(room => room.code);
+    const body = await readBody(req);
+    const updated = broadcastFromBody(body, broadcast);
+    const error = validateBroadcast(updated, viewer);
+    if (error?.includes("outside your assigned scope")) return json(res, 403, { error });
+    if (error) return validationError(res, error);
+    updated.startsAt = new Date(updated.startsAt).toISOString();
+    updated.endsAt = updated.endsAt ? new Date(updated.endsAt).toISOString() : null;
+    updated.updatedAt = new Date().toISOString();
+    updated.updatedBy = viewer?.id || null;
+    updated.status = broadcastStatusAt(updated);
+    updated.targetRoomCodes = broadcastTargetRooms({ ...broadcast, ...updated, targetRoomCodes: [] }).map(room => room.code);
+    Object.assign(broadcast, updated);
+    addAudit("broadcast.update", { id: broadcast.id, title: broadcast.title, targetRoomCodes: broadcast.targetRoomCodes });
+    await saveData();
+    notifyChangedRooms([...previousRoomCodes, ...broadcast.targetRoomCodes]);
+    await backgroundQueue.enqueue("broadcast-notification", { broadcast: structuredClone(broadcast), eventType: "updated" });
+    return json(res, 200, publicBroadcast(broadcast));
+  }
+  const broadcastEndMatch = url.pathname.match(/^\/api\/broadcasts\/([^/]+)\/end$/);
+  if (req.method === "POST" && broadcastEndMatch) {
+    if (!requirePermission(req, res, "broadcast.publish")) return;
+    const broadcast = db.broadcasts.find(item => item.id === broadcastEndMatch[1]);
+    if (!broadcast) return json(res, 404, { error: "Broadcast not found" });
+    const viewer = currentViewer(req);
+    const rooms = broadcastTargetRooms(broadcast);
+    if (rooms.some(room => !viewerCanAccessRoom(viewer, room))) return json(res, 403, { error: "This broadcast includes rooms outside your assigned scope." });
+    broadcast.endedAt = new Date().toISOString();
+    broadcast.endedBy = viewer?.id || null;
+    broadcast.status = "ended";
+    broadcast.endingNotifiedAt = broadcast.endedAt;
+    addAudit("broadcast.end", { id: broadcast.id });
+    await saveData();
+    notifyChangedRooms(rooms.map(room => room.code));
+    await backgroundQueue.enqueue("broadcast-notification", { broadcast: structuredClone(broadcast), eventType: "ended" });
+    return json(res, 200, publicBroadcast(broadcast));
+  }
+  const broadcastCancelMatch = url.pathname.match(/^\/api\/broadcasts\/([^/]+)\/cancel$/);
+  if (req.method === "POST" && broadcastCancelMatch) {
+    if (!requirePermission(req, res, "broadcast.publish")) return;
+    const broadcast = db.broadcasts.find(item => item.id === broadcastCancelMatch[1]);
+    if (!broadcast) return json(res, 404, { error: "Broadcast not found" });
+    if (broadcastStatusAt(broadcast) !== "scheduled") return json(res, 409, { error: "Only scheduled broadcasts can be cancelled." });
+    const viewer = currentViewer(req);
+    const rooms = broadcastTargetRooms(broadcast);
+    if (rooms.some(room => !viewerCanAccessRoom(viewer, room))) return json(res, 403, { error: "This broadcast includes rooms outside your assigned scope." });
+    broadcast.status = "cancelled";
+    broadcast.endedAt = new Date().toISOString();
+    broadcast.endedBy = viewer?.id || null;
+    addAudit("broadcast.cancel", { id: broadcast.id });
+    await backgroundQueue.enqueue("broadcast-notification", { broadcast: structuredClone(broadcast), eventType: "cancelled" });
+    return json(res, 200, publicBroadcast(broadcast));
   }
   if (req.method === "POST" && url.pathname === "/api/broadcasts/end") {
     if (!requirePermission(req, res, "broadcast.publish")) return;
-    const ended = db.activeBroadcast;
     const viewer = currentViewer(req);
-    if (ended && !viewerIsSystemAdmin(viewer)) {
-      const outsideScope = ended.targetRoomCodes
-        .map(code => db.rooms.find(room => room.code === code))
-        .filter(Boolean)
-        .some(room => !viewerCanAccessRoom(viewer, room));
-      if (outsideScope) return json(res, 403, { error: "This broadcast includes rooms outside your assigned scope." });
-    }
-    if (ended) {
-      ended.endedAt = new Date().toISOString();
-      ended.endedBy = viewer?.id || null;
-      ended.status = "ended";
-    }
-    db.activeBroadcast = null;
-    addAudit("broadcast.end", { id: ended?.id || null });
+    const broadcast = db.broadcasts
+      .filter(item => broadcastStatusAt(item) === "active")
+      .filter(item => broadcastTargetRooms(item).every(room => viewerCanAccessRoom(viewer, room)))
+      .sort((a, b) => String(b.startsAt).localeCompare(String(a.startsAt)))[0];
+    if (!broadcast) return json(res, 200, { ended: false });
+    broadcast.endedAt = new Date().toISOString();
+    broadcast.endedBy = viewer?.id || null;
+    broadcast.status = "ended";
+    broadcast.endingNotifiedAt = broadcast.endedAt;
+    addAudit("broadcast.end", { id: broadcast.id });
     await saveData();
-    notifyAllRooms();
-    return json(res, 200, { ended: Boolean(ended) });
+    notifyChangedRooms(broadcastTargetRooms(broadcast).map(room => room.code));
+    await backgroundQueue.enqueue("broadcast-notification", { broadcast: structuredClone(broadcast), eventType: "ended" });
+    return json(res, 200, { ended: true, broadcast: publicBroadcast(broadcast) });
   }
   if (req.method === "POST" && url.pathname === "/api/theme-schedules") {
     if (!requirePermission(req, res, "theme.manage")) return;
+    if (!requireFeature(req, res, "Theme Scheduler")) return;
     const body = await readBody(req);
     const viewer = currentViewer(req);
     const schedule = scheduleFromBody(body, {
@@ -2242,6 +5286,7 @@ async function handleApi(req, res, url) {
   const themeScheduleMatch = url.pathname.match(/^\/api\/theme-schedules\/([^/]+)$/);
   if (req.method === "PUT" && themeScheduleMatch) {
     if (!requirePermission(req, res, "theme.manage")) return;
+    if (!requireFeature(req, res, "Theme Scheduler")) return;
     const schedule = db.themeSchedules.find(item => item.id === themeScheduleMatch[1]);
     if (!schedule) return json(res, 404, { error: "Theme schedule not found" });
     const viewer = currentViewer(req);
@@ -2265,6 +5310,7 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "DELETE" && themeScheduleMatch) {
     if (!requirePermission(req, res, "theme.manage")) return;
+    if (!requireFeature(req, res, "Theme Scheduler")) return;
     const schedule = db.themeSchedules.find(item => item.id === themeScheduleMatch[1]);
     if (!schedule) return json(res, 404, { error: "Theme schedule not found" });
     const viewer = currentViewer(req);
@@ -2281,8 +5327,10 @@ async function handleApi(req, res, url) {
   const themeCloneMatch = url.pathname.match(/^\/api\/themes\/([^/]+)\/clone$/);
   if (req.method === "POST" && themeCloneMatch) {
     if (!requirePermission(req, res, "theme.manage")) return;
+    if (!requireFeature(req, res, "Theme Editor")) return;
     const source = db.themes.find(theme => theme.id === themeCloneMatch[1]);
     if (!source) return json(res, 404, { error: "Theme not found" });
+    if (!viewerCanAccessTheme(currentViewer(req), source)) return json(res, 403, { error: "This theme is outside your assigned scope." });
     if (!source.cloneable) return json(res, 409, { error: "This theme cannot be cloned." });
     const body = await readBody(req);
     const name = cleanText(body.name) || `${source.name} Copy`;
@@ -2297,6 +5345,7 @@ async function handleApi(req, res, url) {
       cssTokens: structuredClone(source.cssTokens || defaultThemeTokens),
       published: false,
       archived: false,
+      createdBy: currentViewer(req)?.id || null,
       updatedAt: new Date().toISOString()
     };
     db.themes.push(clone);
@@ -2307,8 +5356,10 @@ async function handleApi(req, res, url) {
   const themeBackgroundMatch = url.pathname.match(/^\/api\/themes\/([^/]+)\/background$/);
   if (req.method === "POST" && themeBackgroundMatch) {
     if (!requirePermission(req, res, "theme.manage")) return;
+    if (!requireFeature(req, res, "Theme Editor")) return;
     const theme = db.themes.find(item => item.id === themeBackgroundMatch[1]);
     if (!theme) return json(res, 404, { error: "Theme not found" });
+    if (!viewerCanManageTheme(currentViewer(req), theme)) return json(res, 403, { error: "You can only manage themes created by you." });
     if (theme.builtIn) return json(res, 409, { error: "Clone a built-in theme before uploading a background." });
     const body = await readBody(req);
     const mimeTypes = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp" };
@@ -2341,8 +5392,10 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "DELETE" && themeBackgroundMatch) {
     if (!requirePermission(req, res, "theme.manage")) return;
+    if (!requireFeature(req, res, "Theme Editor")) return;
     const theme = db.themes.find(item => item.id === themeBackgroundMatch[1]);
     if (!theme) return json(res, 404, { error: "Theme not found" });
+    if (!viewerCanManageTheme(currentViewer(req), theme)) return json(res, 403, { error: "You can only manage themes created by you." });
     if (theme.builtIn) return json(res, 409, { error: "Built-in theme backgrounds cannot be removed." });
     const assetUrl = theme.cssTokens?.backgroundImage || "";
     theme.cssTokens = { ...defaultThemeTokens, ...theme.cssTokens, backgroundImage: "" };
@@ -2358,17 +5411,24 @@ async function handleApi(req, res, url) {
   const themeMatch = url.pathname.match(/^\/api\/themes\/([^/]+)$/);
   if (req.method === "PUT" && themeMatch) {
     if (!requirePermission(req, res, "theme.manage")) return;
+    if (!requireFeature(req, res, "Theme Editor")) return;
     const theme = db.themes.find(item => item.id === themeMatch[1]);
     if (!theme) return json(res, 404, { error: "Theme not found" });
+    if (!viewerCanManageTheme(currentViewer(req), theme)) return json(res, 403, { error: "You can only manage themes created by you." });
     if (theme.builtIn) return json(res, 409, { error: "Clone a built-in theme before editing it." });
     const body = await readBody(req);
     const allowedTokens = new Set(Object.keys(defaultThemeTokens));
+    const standardizedStatusTokens = new Set(["availableBg", "availableText", "busyBg", "busyText", "warningBg", "warningText"]);
     const cssTokens = {};
     for (const [key, value] of Object.entries(body.cssTokens || {})) {
+      if (!viewerIsSystemAdmin(currentViewer(req)) && standardizedStatusTokens.has(key) && value !== theme.cssTokens?.[key]) {
+        return json(res, 403, { error: "Only a System Administrator may change standardized room-status colors." });
+      }
       if (allowedTokens.has(key) && key !== "backgroundImage") cssTokens[key] = cleanText(value, 200);
     }
     Object.assign(theme, {
       name: cleanText(body.name) || theme.name,
+      orientationMode: ["both", "landscape", "portrait"].includes(body.orientationMode) ? body.orientationMode : theme.orientationMode || "both",
       cssTokens: { ...defaultThemeTokens, ...theme.cssTokens, ...cssTokens },
       published: body.published === true,
       archived: body.archived === true,
@@ -2386,14 +5446,50 @@ async function handleApi(req, res, url) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, baseUrl);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "SAMEORIGIN");
+    res.setHeader("Referrer-Policy", "same-origin");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; connect-src 'self'");
+    if (baseUrl.startsWith("https://")) res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    if (
+      store.type === "postgresql-normalized"
+      && (
+        url.pathname === "/admin"
+        || url.pathname.startsWith("/preview/")
+        || (url.pathname.startsWith("/api/") && !url.pathname.startsWith("/api/auth/") && !publicApiPath(req, url))
+      )
+    ) {
+      db = await store.refresh();
+    }
     if (url.pathname.startsWith("/static/")) return serveFile(req, res, path.join(rootDir, "public"), "/static/");
     if (url.pathname.startsWith("/assets/uploads/themes/")) return serveFile(req, res, themeAssetsDir, "/assets/uploads/themes/");
     if (url.pathname.startsWith("/assets/")) return serveFile(req, res, path.join(rootDir, "assets"), "/assets/");
     if (url.pathname.startsWith("/samples/")) return serveFile(req, res, path.join(rootDir, "samples"), "/samples/");
-    if (url.pathname.startsWith("/api/")) return handleApi(req, res, url);
-    if (url.pathname === "/" || url.pathname === "/admin") return send(res, 200, adminPage());
+    if (url.pathname.startsWith("/api/auth/")) return handleAuthApi(req, res, url);
+    if (url.pathname.startsWith("/api/")) {
+      if (!publicApiPath(req, url) && !currentViewer(req)) return json(res, 401, { error: "Authentication required." });
+      if (!publicApiPath(req, url) && !["GET", "HEAD"].includes(req.method) && !csrfValid(req)) {
+        return json(res, 403, { error: "Invalid CSRF token." });
+      }
+      return handleApi(req, res, url);
+    }
+    if (url.pathname === "/login") {
+      if (currentViewer(req)) return redirect(res, "/admin");
+      return send(res, 200, loginPage());
+    }
+    if (url.pathname === "/forgot-password") return send(res, 200, passwordPage("forgot"));
+    if (url.pathname === "/reset-password") return send(res, 200, passwordPage("reset", cleanText(url.searchParams.get("token"), 200)));
+    if (url.pathname === "/" || url.pathname === "/admin") {
+      if (!currentViewer(req)) return redirect(res, "/login");
+      return send(res, 200, adminPage());
+    }
     const previewMatch = url.pathname.match(/^\/preview\/([^/]+)$/);
     if (previewMatch) {
+      const viewer = currentViewer(req);
+      if (!viewer) return redirect(res, "/login");
+      const room = db.rooms.find(item => item.code === previewMatch[1]);
+      if (!room || !viewerCanAccessRoom(viewer, room)) return send(res, 403, "This room is outside your assigned scope.");
       const page = kioskPage(
         previewMatch[1],
         true,
@@ -2410,6 +5506,10 @@ const server = http.createServer(async (req, res) => {
     return send(res, 404, "Not found");
   } catch (error) {
     console.error(error);
+    if (error.code === "STATE_CONFLICT") {
+      db = await store.refresh();
+      return json(res, 409, { error: error.message });
+    }
     return json(res, 500, { error: "Internal server error" });
   }
 });
@@ -2425,9 +5525,35 @@ async function runScheduledCalendarSync() {
       const lastAttempt = assignment.lastAttemptAt ? new Date(assignment.lastAttemptAt).getTime() : 0;
       if (Date.now() - lastAttempt < (account.syncIntervalMinutes || 15) * 60000) continue;
       try {
-        await syncAssignment(assignment);
+        await calendarQueue.enqueue(assignment.id, "scheduled-reconciliation");
       } catch (error) {
-        console.error(`Calendar sync failed for ${assignment.id}:`, error.message);
+        console.error(`Calendar sync enqueue failed for ${assignment.id}:`, error.message);
+      }
+    }
+    for (const account of db.calendarAccounts.filter(item => ["google", "microsoft365"].includes(item.provider) && item.active !== false)) {
+      for (const calendar of account.calendars.filter(item =>
+        item.webhookStatus === "active"
+        && item.webhookExpiration
+        && new Date(item.webhookExpiration).getTime() - Date.now() < 24 * 60 * 60 * 1000
+      )) {
+        try {
+          const providerPath = account.provider === "google" ? "google" : "microsoft";
+          const result = await registerCalendarWebhook(
+            account,
+            calendar,
+            `${baseUrl.replace(/\/+$/, "")}/api/calendar-webhooks/${providerPath}`
+          );
+          calendar.webhookExpiration = result.expiration || calendar.webhookExpiration;
+          calendar.webhookChannelId = result.channelId || calendar.webhookChannelId;
+          if (result.channelToken) calendar.encryptedWebhookToken = encryptCredential(result.channelToken);
+          calendar.webhookSubscriptionId = result.subscriptionId || calendar.webhookSubscriptionId;
+          calendar.webhookClientState = result.clientState || calendar.webhookClientState;
+          account.webhookStatus = "active";
+          account.webhookError = "";
+        } catch (error) {
+          account.webhookStatus = "polling-fallback";
+          account.webhookError = cleanText(error.message, 500);
+        }
       }
     }
     await saveData();
@@ -2440,5 +5566,31 @@ server.listen(port, host, () => {
   console.log(`Signage app running at http://${host}:${port}`);
 });
 
-const calendarSyncTimer = setInterval(runScheduledCalendarSync, 60000);
+const calendarSyncTimer = setInterval(() => {
+  const bucket = Math.floor(Date.now() / 60000);
+  backgroundQueue.enqueue("scheduled-calendar-sync", {}, { jobId: `scheduled-calendar-${bucket}` })
+    .catch(error => console.error("Scheduled calendar job failed:", error.message));
+}, 60000);
 calendarSyncTimer.unref();
+const broadcastLifecycleTimer = setInterval(() => {
+  const bucket = Math.floor(Date.now() / 5000);
+  backgroundQueue.enqueue("broadcast-lifecycle", {}, { jobId: `broadcast-lifecycle-${bucket}` })
+    .catch(error => console.error("Broadcast lifecycle job failed:", error.message));
+}, 5000);
+broadcastLifecycleTimer.unref();
+const scheduleReconciliationTimer = setInterval(() => {
+  const bucket = Math.floor(Date.now() / 60000);
+  backgroundQueue.enqueue("schedule-reconciliation", {}, { jobId: `schedule-reconciliation-${bucket}` }).catch(() => {});
+}, 60000);
+scheduleReconciliationTimer.unref();
+
+async function shutdown() {
+  clearInterval(calendarSyncTimer);
+  clearInterval(broadcastLifecycleTimer);
+  clearInterval(scheduleReconciliationTimer);
+  await Promise.allSettled([calendarQueue.close(), backgroundQueue.close(), store.close()]);
+  server.close(() => process.exit(0));
+}
+
+process.once("SIGTERM", shutdown);
+process.once("SIGINT", shutdown);
