@@ -48,9 +48,13 @@ let backgroundQueue = null;
 const permissionCatalog = [
   "dashboard.view",
   "center.manage",
+  "center.edit",
   "campus.manage",
+  "campus.edit",
   "building.manage",
+  "building.edit",
   "room.manage",
+  "room.edit",
   "room.status.change",
   "user.manage",
   "role.manage",
@@ -242,7 +246,11 @@ const seedData = {
     { id: "center-admin", name: "Center Admin", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "center.manage", "campus.manage", "building.manage", "room.manage", "room.status.change", "user.manage", "calendar.manage", "calendar.sync", "theme.manage", "notification.manage", "broadcast.publish", "broadcast.history.view"] },
     { id: "campus-manager", name: "Campus Manager", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "campus.manage", "building.manage", "room.manage", "room.status.change", "calendar.sync", "broadcast.publish"] },
     { id: "building-manager", name: "Building Manager", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "building.manage", "room.manage", "room.status.change", "calendar.sync", "broadcast.publish"] },
-    { id: "room-manager", name: "Room Manager", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "room.manage", "room.status.change"] }
+    { id: "room-manager", name: "Room Manager", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "room.manage", "room.status.change"] },
+    { id: "center-edit", name: "Center Edit", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "center.edit"] },
+    { id: "campus-edit", name: "Campus Edit", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "campus.edit"] },
+    { id: "building-edit", name: "Building Edit", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "building.edit"] },
+    { id: "room-edit", name: "Room Edit", builtIn: true, cloneable: true, active: true, permissions: ["dashboard.view", "room.edit"] }
   ],
   users: [
     {
@@ -1074,6 +1082,10 @@ function viewerCanAccessTheme(user, theme) {
   return db.rooms.some(room => effectiveRoomSettings(room).themeId === theme.id && viewerCanAccessRoom(user, room));
 }
 
+function viewerCanManageTheme(user, theme) {
+  return viewerIsSystemAdmin(user) || (!theme?.builtIn && theme?.createdBy === user?.id);
+}
+
 function viewerCanPairRoom(user, room) {
   return viewerIsSystemAdmin(user)
     || (viewerPermissions(user).has("center.manage") && user?.centerIds?.includes(room.centerId));
@@ -1086,6 +1098,16 @@ function requirePermission(req, res, permission) {
   }
   if (viewerHasPermission(req, permission)) return true;
   json(res, 403, { error: `Permission required: ${permission}` });
+  return false;
+}
+
+function requireAnyPermission(req, res, permissions) {
+  if (!currentViewer(req)) {
+    json(res, 401, { error: "Authentication required." });
+    return false;
+  }
+  if (permissions.some(permission => viewerHasPermission(req, permission))) return true;
+  json(res, 403, { error: `Permission required: ${permissions.join(" or ")}` });
   return false;
 }
 
@@ -3204,11 +3226,12 @@ async function handleApi(req, res, url) {
       .map(publicBroadcast));
   }
   if (req.method === "POST" && url.pathname === "/api/roles") {
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required to create roles." });
+    if (!requirePermission(req, res, "role.manage")) return;
     const body = await readBody(req);
     const name = cleanText(body.name);
     const permissions = Array.isArray(body.permissions) ? [...new Set(body.permissions)].filter(item => permissionCatalog.includes(item)) : [];
     if (!name) return validationError(res, "Role name is required.");
+    if (!rolePermissionsAllowed(currentViewer(req), permissions)) return json(res, 403, { error: "One or more permissions exceed your access." });
     const role = { id: entityId("role"), name, builtIn: false, cloneable: true, active: body.active !== false, permissions };
     db.roles.push(role);
     addAudit("role.create", { roleId: role.id, name });
@@ -3217,20 +3240,21 @@ async function handleApi(req, res, url) {
   }
   const roleMatch = url.pathname.match(/^\/api\/roles\/([^/]+)$/);
   if (req.method === "PUT" && roleMatch) {
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required to change roles." });
+    if (!requirePermission(req, res, "role.manage")) return;
     const role = db.roles.find(item => item.id === roleMatch[1]);
     if (!role) return json(res, 404, { error: "Role not found" });
     const body = await readBody(req);
     const name = cleanText(body.name);
     const permissions = Array.isArray(body.permissions) ? [...new Set(body.permissions)].filter(item => permissionCatalog.includes(item)) : [];
     if (!name) return validationError(res, "Role name is required.");
+    if (!rolePermissionsAllowed(currentViewer(req), permissions)) return json(res, 403, { error: "One or more permissions exceed your access." });
     Object.assign(role, { name, permissions, active: body.active !== false });
     addAudit("role.update", { roleId: role.id, name });
     await saveData();
     return json(res, 200, role);
   }
   if (req.method === "DELETE" && roleMatch) {
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required to delete roles." });
+    if (!requirePermission(req, res, "role.manage")) return;
     const role = db.roles.find(item => item.id === roleMatch[1]);
     if (!role) return json(res, 404, { error: "Role not found" });
     if (role.builtIn) return json(res, 409, { error: "Built-in roles cannot be deleted." });
@@ -3244,9 +3268,10 @@ async function handleApi(req, res, url) {
   }
   const roleCloneMatch = url.pathname.match(/^\/api\/roles\/([^/]+)\/clone$/);
   if (req.method === "POST" && roleCloneMatch) {
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required to clone roles." });
+    if (!requirePermission(req, res, "role.manage")) return;
     const source = db.roles.find(item => item.id === roleCloneMatch[1]);
     if (!source) return json(res, 404, { error: "Role not found" });
+    if (!rolePermissionsAllowed(currentViewer(req), source.permissions || [])) return json(res, 403, { error: "This role exceeds your access." });
     const body = await readBody(req);
     const role = {
       ...structuredClone(source),
@@ -3262,8 +3287,7 @@ async function handleApi(req, res, url) {
     return json(res, 201, role);
   }
   if (req.method === "POST" && url.pathname === "/api/calendar-accounts") {
-    if (!requirePermission(req, res, "calendar.manage")) return;
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may manage calendar credentials." });
+    if (!requirePermission(req, res, "calendar.sync")) return;
     const body = await readBody(req);
     const provider = cleanText(body.provider, 30);
     const authMode = cleanText(body.authMode, 40)
@@ -3348,8 +3372,7 @@ async function handleApi(req, res, url) {
   }
   const calendarAccountMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)$/);
   if (req.method === "PUT" && calendarAccountMatch) {
-    if (!requirePermission(req, res, "calendar.manage")) return;
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may manage calendar credentials." });
+    if (!requirePermission(req, res, "calendar.sync")) return;
     const account = db.calendarAccounts.find(item => item.id === calendarAccountMatch[1]);
     if (!account) return json(res, 404, { error: "Calendar account not found" });
     const body = await readBody(req);
@@ -3433,8 +3456,7 @@ async function handleApi(req, res, url) {
   }
   const calendarOauthStartMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)\/oauth\/start$/);
   if (req.method === "GET" && calendarOauthStartMatch) {
-    if (!requirePermission(req, res, "calendar.manage")) return;
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may connect calendar credentials." });
+    if (!requirePermission(req, res, "calendar.sync")) return;
     const account = db.calendarAccounts.find(item => item.id === calendarOauthStartMatch[1]);
     if (!account) return json(res, 404, { error: "Calendar account not found" });
     if (account.authMode !== "oauth" || !["google", "microsoft365"].includes(account.provider)) {
@@ -3494,8 +3516,7 @@ async function handleApi(req, res, url) {
   }
   const calendarDiscoverMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)\/discover$/);
   if (req.method === "POST" && calendarDiscoverMatch) {
-    if (!requirePermission(req, res, "calendar.manage")) return;
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may verify calendar credentials." });
+    if (!requirePermission(req, res, "calendar.sync")) return;
     const account = db.calendarAccounts.find(item => item.id === calendarDiscoverMatch[1]);
     if (!account) return json(res, 404, { error: "Calendar account not found" });
     try {
@@ -3539,8 +3560,7 @@ async function handleApi(req, res, url) {
   }
   const calendarWebhookRegisterMatch = url.pathname.match(/^\/api\/calendar-accounts\/([^/]+)\/calendars\/([^/]+)\/webhook$/);
   if (req.method === "POST" && calendarWebhookRegisterMatch) {
-    if (!requirePermission(req, res, "calendar.manage")) return;
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may register calendar webhooks." });
+    if (!requirePermission(req, res, "calendar.sync")) return;
     const account = db.calendarAccounts.find(item => item.id === calendarWebhookRegisterMatch[1]);
     const calendar = account?.calendars?.find(item => item.id === calendarWebhookRegisterMatch[2]);
     if (!account || !calendar) return json(res, 404, { error: "Calendar connection not found" });
@@ -3620,8 +3640,7 @@ async function handleApi(req, res, url) {
     return send(res, 202, "");
   }
   if (req.method === "DELETE" && calendarAccountMatch) {
-    if (!requirePermission(req, res, "calendar.manage")) return;
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may manage calendar credentials." });
+    if (!requirePermission(req, res, "calendar.sync")) return;
     const account = db.calendarAccounts.find(item => item.id === calendarAccountMatch[1]);
     if (!account) return json(res, 404, { error: "Calendar account not found" });
     if (db.calendarAssignments.some(item => item.accountId === account.id)) return json(res, 409, { error: "Remove room assignments before deleting this account." });
@@ -3670,7 +3689,7 @@ async function handleApi(req, res, url) {
   }
   const calendarSyncMatch = url.pathname.match(/^\/api\/calendar-assignments\/([^/]+)\/sync$/);
   if (req.method === "POST" && calendarSyncMatch) {
-    if (!requirePermission(req, res, "calendar.sync")) return;
+    if (!requireAnyPermission(req, res, ["calendar.manage", "calendar.sync"])) return;
     const assignment = db.calendarAssignments.find(item => item.id === calendarSyncMatch[1]);
     if (!assignment) return json(res, 404, { error: "Calendar assignment not found" });
     const room = db.rooms.find(item => item.id === assignment.roomId);
@@ -4320,7 +4339,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, publicUser(user));
   }
   if (req.method === "POST" && url.pathname === "/api/broadcast-templates") {
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required." });
+    if (!requirePermission(req, res, "broadcast.template.manage")) return;
     const body = await readBody(req);
     const name = cleanText(body.name);
     const title = cleanText(body.title, 200);
@@ -4353,7 +4372,7 @@ async function handleApi(req, res, url) {
   }
   const broadcastTemplateMatch = url.pathname.match(/^\/api\/broadcast-templates\/([^/]+)$/);
   if (req.method === "PUT" && broadcastTemplateMatch) {
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required." });
+    if (!requirePermission(req, res, "broadcast.template.manage")) return;
     const template = db.broadcastTemplates.find(item => item.id === broadcastTemplateMatch[1]);
     if (!template) return json(res, 404, { error: "Broadcast template not found" });
     const body = await readBody(req);
@@ -4383,7 +4402,7 @@ async function handleApi(req, res, url) {
     return json(res, 200, template);
   }
   if (req.method === "DELETE" && broadcastTemplateMatch) {
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "System Administrator access is required." });
+    if (!requirePermission(req, res, "broadcast.template.manage")) return;
     const template = db.broadcastTemplates.find(item => item.id === broadcastTemplateMatch[1]);
     if (!template) return json(res, 404, { error: "Broadcast template not found" });
     db.broadcastTemplates = db.broadcastTemplates.filter(item => item.id !== template.id);
@@ -4393,7 +4412,6 @@ async function handleApi(req, res, url) {
   }
   if (req.method === "POST" && url.pathname === "/api/centers") {
     if (!requirePermission(req, res, "center.manage")) return;
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may create centers." });
     const body = await readBody(req);
     const name = cleanText(body.name);
     const timezone = cleanText(body.timezone, 80);
@@ -4433,7 +4451,7 @@ async function handleApi(req, res, url) {
   }
   const centerMatch = url.pathname.match(/^\/api\/centers\/([^/]+)$/);
   if (req.method === "PUT" && centerMatch) {
-    if (!requirePermission(req, res, "center.manage")) return;
+    if (!requireAnyPermission(req, res, ["center.manage", "center.edit"])) return;
     const center = db.centers.find(item => item.id === centerMatch[1]);
     if (!center) return json(res, 404, { error: "Center not found" });
     if (!viewerCanAccessCenter(currentViewer(req), center)) return json(res, 403, { error: "This center is outside your assigned scope." });
@@ -4477,7 +4495,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "center.manage")) return;
     const center = db.centers.find(item => item.id === centerMatch[1]);
     if (!center) return json(res, 404, { error: "Center not found" });
-    if (!viewerIsSystemAdmin(currentViewer(req))) return json(res, 403, { error: "Only a System Administrator may delete centers." });
+    if (!viewerCanAccessCenter(currentViewer(req), center)) return json(res, 403, { error: "This center is outside your assigned scope." });
     if (db.campuses.some(item => item.centerId === center.id) || db.rooms.some(item => item.centerId === center.id)) {
       return json(res, 409, { error: "Remove this center's campuses and rooms before deleting it." });
     }
@@ -4521,7 +4539,7 @@ async function handleApi(req, res, url) {
   }
   const campusMatch = url.pathname.match(/^\/api\/campuses\/([^/]+)$/);
   if (req.method === "PUT" && campusMatch) {
-    if (!requirePermission(req, res, "campus.manage")) return;
+    if (!requireAnyPermission(req, res, ["campus.manage", "campus.edit"])) return;
     const campus = db.campuses.find(item => item.id === campusMatch[1]);
     if (!campus) return json(res, 404, { error: "Campus not found" });
     if (!viewerCanAccessCampus(currentViewer(req), campus)) return json(res, 403, { error: "This campus is outside your assigned scope." });
@@ -4605,7 +4623,7 @@ async function handleApi(req, res, url) {
   }
   const buildingMatch = url.pathname.match(/^\/api\/buildings\/([^/]+)$/);
   if (req.method === "PUT" && buildingMatch) {
-    if (!requirePermission(req, res, "building.manage")) return;
+    if (!requireAnyPermission(req, res, ["building.manage", "building.edit"])) return;
     const building = db.buildings.find(item => item.id === buildingMatch[1]);
     if (!building) return json(res, 404, { error: "Building not found" });
     if (!viewerCanAccessBuilding(currentViewer(req), building)) return json(res, 403, { error: "This building is outside your assigned scope." });
@@ -4742,7 +4760,7 @@ async function handleApi(req, res, url) {
     ));
   }
   if (req.method === "PUT" && roomMatch) {
-    if (!requirePermission(req, res, "room.manage")) return;
+    if (!requireAnyPermission(req, res, ["room.manage", "room.edit"])) return;
     const room = db.rooms.find(item => item.id === roomMatch[1] || item.code === roomMatch[1]);
     if (!room) return json(res, 404, { error: "Room not found" });
     if (!viewerCanAccessRoom(currentViewer(req), room)) return json(res, 403, { error: "This room is outside your assigned scope." });
@@ -5341,7 +5359,7 @@ async function handleApi(req, res, url) {
     if (!requireFeature(req, res, "Theme Editor")) return;
     const theme = db.themes.find(item => item.id === themeBackgroundMatch[1]);
     if (!theme) return json(res, 404, { error: "Theme not found" });
-    if (!viewerCanAccessTheme(currentViewer(req), theme)) return json(res, 403, { error: "This theme is outside your assigned scope." });
+    if (!viewerCanManageTheme(currentViewer(req), theme)) return json(res, 403, { error: "You can only manage themes created by you." });
     if (theme.builtIn) return json(res, 409, { error: "Clone a built-in theme before uploading a background." });
     const body = await readBody(req);
     const mimeTypes = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp" };
@@ -5377,7 +5395,7 @@ async function handleApi(req, res, url) {
     if (!requireFeature(req, res, "Theme Editor")) return;
     const theme = db.themes.find(item => item.id === themeBackgroundMatch[1]);
     if (!theme) return json(res, 404, { error: "Theme not found" });
-    if (!viewerCanAccessTheme(currentViewer(req), theme)) return json(res, 403, { error: "This theme is outside your assigned scope." });
+    if (!viewerCanManageTheme(currentViewer(req), theme)) return json(res, 403, { error: "You can only manage themes created by you." });
     if (theme.builtIn) return json(res, 409, { error: "Built-in theme backgrounds cannot be removed." });
     const assetUrl = theme.cssTokens?.backgroundImage || "";
     theme.cssTokens = { ...defaultThemeTokens, ...theme.cssTokens, backgroundImage: "" };
@@ -5396,7 +5414,7 @@ async function handleApi(req, res, url) {
     if (!requireFeature(req, res, "Theme Editor")) return;
     const theme = db.themes.find(item => item.id === themeMatch[1]);
     if (!theme) return json(res, 404, { error: "Theme not found" });
-    if (!viewerCanAccessTheme(currentViewer(req), theme)) return json(res, 403, { error: "This theme is outside your assigned scope." });
+    if (!viewerCanManageTheme(currentViewer(req), theme)) return json(res, 403, { error: "You can only manage themes created by you." });
     if (theme.builtIn) return json(res, 409, { error: "Clone a built-in theme before editing it." });
     const body = await readBody(req);
     const allowedTokens = new Set(Object.keys(defaultThemeTokens));

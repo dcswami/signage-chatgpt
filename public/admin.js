@@ -54,6 +54,10 @@ function hasAnyFeature(features) {
   return features.some(feature => hasFeature(feature));
 }
 
+function hasPermission(permission) {
+  return Boolean(state?.viewer?.isSystemAdmin || state?.viewer?.permissions?.includes(permission));
+}
+
 function elementAllowed(element) {
   if (element.dataset.feature && !hasFeature(element.dataset.feature)) return false;
   if (element.dataset.anyFeature && !hasAnyFeature(element.dataset.anyFeature.split("|"))) return false;
@@ -266,6 +270,9 @@ function renderKioskDevices() {
 }
 
 function renderBroadcastTemplates() {
+  const canManageTemplates = hasPermission("broadcast.template.manage");
+  const newTemplateButton = document.querySelector('[data-new="broadcastTemplate"]');
+  if (newTemplateButton) newTemplateButton.hidden = !canManageTemplates;
   const activeTemplates = state.broadcastTemplates.filter(template => template.active);
   const templateSelect = document.querySelector("#broadcastTemplateSelect");
   const selectedId = templateSelect.value;
@@ -274,46 +281,68 @@ function renderBroadcastTemplates() {
   ).join("")}`;
   if (activeTemplates.some(template => template.id === selectedId)) templateSelect.value = selectedId;
 
-  document.querySelector("#broadcastTemplateList").innerHTML = state.broadcastTemplates.map(template =>
-    entityItem(
-      template,
-      `${template.severity} / ${template.active ? "Active" : "Inactive"} / Confirmation required`,
-      "broadcastTemplate"
-    )
+  document.querySelector("#broadcastTemplateList").innerHTML = state.broadcastTemplates.map(template => canManageTemplates
+    ? entityItem(
+        template,
+        `${template.severity} / ${template.active ? "Active" : "Inactive"} / Confirmation required`,
+        "broadcastTemplate"
+      )
+    : `<article class="entity-item"><div><strong>${escapeHtml(template.name)}</strong><span>${escapeHtml(template.severity)} / ${template.active ? "Active" : "Inactive"} / Confirmation required</span></div></article>`
   ).join("") || `<p class="empty-state">No broadcast templates configured.</p>`;
 }
 
-function entityItem(entity, meta, type) {
+function entityItem(entity, meta, type, { canEdit = true, canDelete = true } = {}) {
+  const actions = [
+    canEdit ? `<button type="button" class="secondary" data-edit="${type}" data-id="${escapeHtml(entity.id)}">Edit</button>` : "",
+    canDelete ? `<button type="button" class="danger-text" data-delete="${type}" data-id="${escapeHtml(entity.id)}">Delete</button>` : ""
+  ].join("");
   return `
     <article class="entity-item">
       <div><strong>${escapeHtml(entity.name)}</strong><span>${escapeHtml(meta)}</span></div>
-      <div class="entity-actions">
-        <button type="button" class="secondary" data-edit="${type}" data-id="${escapeHtml(entity.id)}">Edit</button>
-        <button type="button" class="danger-text" data-delete="${type}" data-id="${escapeHtml(entity.id)}">Delete</button>
-      </div>
+      ${actions ? `<div class="entity-actions">${actions}</div>` : ""}
     </article>
   `;
 }
 
 function renderEntityLists() {
+  document.querySelector('[data-new="center"]').hidden = !hasPermission("center.manage");
+  document.querySelector('[data-new="campus"]').hidden = !hasPermission("campus.manage");
+  document.querySelector('[data-new="building"]').hidden = !hasPermission("building.manage");
+  document.querySelector('[data-new="room"]').hidden = !hasPermission("room.manage");
+  document.querySelector('[data-new="roomGroup"]').hidden = !hasPermission("room.manage");
   document.querySelector("#centerList").innerHTML = state.centers.map(center =>
-    entityItem(center, `${center.timezone} / ${state.themes.find(theme => theme.id === center.defaultThemeId)?.name || "No default theme"}`, "center")
+    entityItem(center, `${center.timezone} / ${state.themes.find(theme => theme.id === center.defaultThemeId)?.name || "No default theme"}`, "center", {
+      canEdit: hasPermission("center.manage") || hasPermission("center.edit"),
+      canDelete: hasPermission("center.manage")
+    })
   ).join("") || `<p class="empty-state">No centers configured.</p>`;
 
   document.querySelector("#campusList").innerHTML = state.campuses.map(campus =>
-    entityItem(campus, centerName(campus.centerId), "campus")
+    entityItem(campus, centerName(campus.centerId), "campus", {
+      canEdit: hasPermission("campus.manage") || hasPermission("campus.edit"),
+      canDelete: hasPermission("campus.manage")
+    })
   ).join("") || `<p class="empty-state">No campuses configured.</p>`;
 
   document.querySelector("#buildingList").innerHTML = state.buildings.map(building =>
-    entityItem(building, `${campusName(building.campusId)}${building.code ? ` / ${building.code}` : ""}`, "building")
+    entityItem(building, `${campusName(building.campusId)}${building.code ? ` / ${building.code}` : ""}`, "building", {
+      canEdit: hasPermission("building.manage") || hasPermission("building.edit"),
+      canDelete: hasPermission("building.manage")
+    })
   ).join("") || `<p class="empty-state">No buildings configured.</p>`;
 
   document.querySelector("#roomList").innerHTML = state.rooms.map(room =>
-    entityItem(room, `${room.code} / ${room.buildingName} / ${room.themeName}${room.maintenanceStatus !== "available" ? ` / ${room.maintenanceStatus}` : ""}`, "room")
+    entityItem(room, `${room.code} / ${room.buildingName} / ${room.themeName}${room.maintenanceStatus !== "available" ? ` / ${room.maintenanceStatus}` : ""}`, "room", {
+      canEdit: hasPermission("room.manage") || hasPermission("room.edit"),
+      canDelete: hasPermission("room.manage")
+    })
   ).join("") || `<p class="empty-state">No rooms configured.</p>`;
 
   document.querySelector("#roomGroupList").innerHTML = (state.roomGroups || []).map(group =>
-    entityItem(group, `${group.roomIds.length} room${group.roomIds.length === 1 ? "" : "s"} / ${group.active ? "Active" : "Inactive"}`, "roomGroup")
+    entityItem(group, `${group.roomIds.length} room${group.roomIds.length === 1 ? "" : "s"} / ${group.active ? "Active" : "Inactive"}`, "roomGroup", {
+      canEdit: hasPermission("room.manage"),
+      canDelete: hasPermission("room.manage")
+    })
   ).join("") || `<p class="empty-state">No room groups configured.</p>`;
 }
 
@@ -443,7 +472,7 @@ function renderThemeSchedules() {
 
 function renderUsersRoles() {
   const panel = document.querySelector("#roleEditorPanel");
-  panel.hidden = !state.viewer.isSystemAdmin;
+  panel.hidden = !hasPermission("role.manage");
   if (panel.hidden) return;
   document.querySelector("#roleManagerList").innerHTML = state.roles.map(role => `
     <article class="entity-item">

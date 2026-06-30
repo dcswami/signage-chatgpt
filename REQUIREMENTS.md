@@ -33,12 +33,13 @@ The Signage Management System provides room-facing digital signage for classroom
 - Roles must control access to management portal modules and actions.
 - Permissions should include view, create, edit, delete, approve, broadcast, and manage settings.
 - Administrators must be able to assign users to one or more roles.
-- Only System Administrators may create, clone, edit, deactivate, or delete role definitions.
+- Users with `role.manage` may create, clone, edit, deactivate, or delete role definitions, limited to permissions at or below their own permission level unless they are System Administrators.
 - System Administrators may create users and assign any role to any user.
 - Center Administrators may create users within their assigned center scope.
 - Center Administrators may assign only roles and feature access at or below their own permission and feature level.
 - Administrators must be able to scope user access by center, campus, building, or room.
 - A user may belong to and receive access for multiple centers.
+- The system must include edit-only built-in roles: Center Edit, Campus Edit, Building Edit, and Room Edit.
 
 ### 3.3 User Feature Access Grant
 
@@ -234,15 +235,39 @@ The management portal must provide secure administrative access to configure the
 
 ### 5.6 Role Management
 
-- System Administrators may create, edit, deactivate, delete, clone, and view roles.
-- Non-System Administrators may view role names for assignment and user review, but may not change role definitions.
+- Users with `role.manage` may create, edit, deactivate, delete, clone, and view roles.
+- Non-System Administrators with `role.manage` may only include permissions at or below their own assigned permission level when creating or modifying roles.
 - Configure permissions by module and action.
 - Support default system roles.
-- Allow System Administrators to clone roles.
-- Allow System Administrators to modify cloned or custom role permissions.
+- Allow authorized users to clone roles.
+- Allow authorized users to modify cloned or custom role permissions according to their own permission ceiling.
 - Support flexible role definitions instead of hard-coded role permissions.
 - Prevent deletion of roles currently required by active users unless reassigned.
 - Record role changes in audit logs.
+
+### 5.6.1 Permission Definitions
+
+- `dashboard.view`: can view the dashboard.
+- `center.manage`: full add, edit, and delete rights for centers within permitted scope.
+- `center.edit`: edit-only rights for assigned center information.
+- `campus.manage`: full add, edit, and delete rights for campuses within permitted scope.
+- `campus.edit`: edit-only rights for assigned campus information.
+- `building.manage`: full add, edit, and delete rights for buildings within permitted scope.
+- `building.edit`: edit-only rights for assigned building information.
+- `room.manage`: full add, edit, and delete rights for rooms within permitted scope.
+- `room.edit`: edit-only rights for assigned room information.
+- `room.status.change`: can change room status only.
+- `user.manage`: full add, edit, and delete rights for users within permitted scope.
+- `role.manage`: full add, edit, and delete rights for roles, limited by the user's own permission ceiling unless System Administrator.
+- `calendar.manage`: full add, edit, and delete rights for room calendar assignments within permitted scope.
+- `calendar.sync`: full add, edit, and delete rights for calendar service connections and synchronization accounts.
+- `theme.manage`: full add, edit, and delete rights for themes created by that user, with System Administrator override.
+- `notification.manage`: access to the Notifications feature.
+- `broadcast.publish`: can publish emergency or safety broadcasts.
+- `broadcast.template.manage`: can create, edit, and delete broadcast templates.
+- `broadcast.history.view`: can view broadcast history.
+- `audit.view`: can view audit data when exposed in the portal.
+- `settings.manage`: can manage system settings.
 
 ### 5.7 Feature Management
 
