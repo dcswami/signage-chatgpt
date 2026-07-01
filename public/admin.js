@@ -9,8 +9,29 @@ async function api(path, options = {}) {
     ...options
   });
   const body = await response.json().catch(() => ({ error: response.statusText }));
-  if (!response.ok) throw new Error(body.error || "Request failed");
+  if (!response.ok) {
+    const error = new Error(body.error || "Request failed");
+    error.status = response.status;
+    throw error;
+  }
   return body;
+}
+
+function showApp() {
+  const shell = document.querySelector("#adminShell");
+  const wasHidden = shell.hidden;
+  document.querySelector("#loginScreen").hidden = true;
+  shell.hidden = false;
+  if (wasHidden) {
+    for (const frame of document.querySelectorAll("#previewFrame, #themePreviewFrame")) {
+      frame.src = `${frame.src.split("?")[0]}?loggedIn=${Date.now()}`;
+    }
+  }
+}
+
+function showLogin() {
+  document.querySelector("#adminShell").hidden = true;
+  document.querySelector("#loginScreen").hidden = false;
 }
 
 function escapeHtml(value) {
@@ -1295,8 +1316,19 @@ async function deleteThemeSchedule(scheduleId) {
   }
 }
 
+function renderAccountSecurity() {
+  document.querySelector("#viewerName").textContent = state.viewer?.name || "";
+  const status = document.querySelector("#twoFactorStatus");
+  const enabled = Boolean(state.viewer?.twoFactorEnabled);
+  status.textContent = enabled ? "Two-factor authentication is enabled." : "Two-factor authentication is not enabled.";
+  document.querySelector("#startTwoFactorEnroll").hidden = enabled;
+  document.querySelector("#twoFactorDisableForm").hidden = !enabled;
+  if (enabled) document.querySelector("#twoFactorEnrollment").hidden = true;
+}
+
 function render() {
   document.querySelector("#storageBadge").textContent = state.storageType === "postgresql" ? "PostgreSQL" : "Local JSON";
+  renderAccountSecurity();
   renderSummary();
   renderDashboardFilters();
   renderDashboardRows();
@@ -1318,9 +1350,101 @@ function render() {
 
 async function load() {
   const firstLoad = !state;
-  state = await api("/api/state");
+  try {
+    state = await api("/api/state");
+  } catch (error) {
+    if (error.status === 401) {
+      showLogin();
+      return;
+    }
+    throw error;
+  }
+  showApp();
   render();
   if (firstLoad) resetBroadcastForm();
+}
+
+let pendingMfaToken = "";
+
+async function submitLogin(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const status = document.querySelector("#loginStatus");
+  status.textContent = "Signing in...";
+  try {
+    const payload = pendingMfaToken
+      ? await api("/api/auth/login/verify", { method: "POST", body: JSON.stringify({ mfaToken: pendingMfaToken, code: form.code.value }) })
+      : await api("/api/auth/login", { method: "POST", body: JSON.stringify({ email: form.email.value, password: form.password.value }) });
+    if (payload.requiresTwoFactor) {
+      pendingMfaToken = payload.mfaToken;
+      document.querySelector("#loginTwoFactorField").hidden = false;
+      document.querySelector("#loginTwoFactorField input").required = true;
+      status.textContent = "Enter the code from your authenticator app.";
+      return;
+    }
+    pendingMfaToken = "";
+    status.textContent = "";
+    form.reset();
+    document.querySelector("#loginTwoFactorField").hidden = true;
+    await load();
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function logout() {
+  await api("/api/auth/logout", { method: "POST" }).catch(() => {});
+  state = null;
+  showLogin();
+}
+
+async function submitChangePassword(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const status = document.querySelector("#changePasswordStatus");
+  try {
+    await api("/api/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ currentPassword: form.currentPassword.value, newPassword: form.newPassword.value })
+    });
+    status.textContent = "Password updated.";
+    form.reset();
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+async function startTwoFactorEnroll() {
+  try {
+    const payload = await api("/api/auth/2fa/enroll", { method: "POST" });
+    document.querySelector("#twoFactorSecret").textContent = payload.secret;
+    document.querySelector("#twoFactorEnrollment").hidden = false;
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function confirmTwoFactorEnroll(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  try {
+    await api("/api/auth/2fa/confirm", { method: "POST", body: JSON.stringify({ code: form.code.value }) });
+    await load();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function disableTwoFactor(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  try {
+    await api("/api/auth/2fa/disable", { method: "POST", body: JSON.stringify({ password: form.password.value }) });
+    form.reset();
+    await load();
+  } catch (error) {
+    alert(error.message);
+  }
 }
 
 document.querySelectorAll("[data-tab]").forEach(button => {
@@ -1430,6 +1554,13 @@ document.addEventListener("change", event => {
     setRoomStatus(event.target.dataset.statusRoom, event.target.value).catch(error => alert(error.message));
   }
 });
+
+document.querySelector("#loginForm").addEventListener("submit", submitLogin);
+document.querySelector("#logoutButton").addEventListener("click", logout);
+document.querySelector("#changePasswordForm").addEventListener("submit", submitChangePassword);
+document.querySelector("#startTwoFactorEnroll").addEventListener("click", startTwoFactorEnroll);
+document.querySelector("#twoFactorConfirmForm").addEventListener("submit", confirmTwoFactorEnroll);
+document.querySelector("#twoFactorDisableForm").addEventListener("submit", disableTwoFactor);
 
 load().catch(error => {
   document.body.insertAdjacentHTML("afterbegin", `<pre>${escapeHtml(error.message)}</pre>`);

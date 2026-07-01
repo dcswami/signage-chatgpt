@@ -732,3 +732,35 @@ dialog form {
     padding: 14px;
   }
 }
+
+.auth-body {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.auth-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(23, 56, 72, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 380px;
+  padding: 32px;
+  width: 100%;
+}
+
+.auth-card form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.viewer-name {
+  color: var(--muted);
+  font-weight: 600;
+}

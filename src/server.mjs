@@ -5,8 +5,28 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import { createStore } from "./storage.mjs";
-import { encryptCredential, publicEmailSettings, sendEmail, verifySmtp } from "./email.mjs";
+import { encryptCredential, decryptCredential, publicEmailSettings, sendEmail, verifySmtp } from "./email.mjs";
 import { inspectCalendarAccount, syncCalendar } from "./calendar.mjs";
+import {
+  hashPassword,
+  verifyPassword,
+  generateSetupToken,
+  isSetupTokenValid,
+  createSession,
+  readSession,
+  destroySession,
+  destroyAllSessionsForUser,
+  createMfaChallenge,
+  readMfaChallenge,
+  registerMfaFailure,
+  consumeMfaChallenge,
+  isLoginLocked,
+  recordFailedLogin,
+  resetLoginAttempts,
+  parseCookies,
+  sessionCookieHeader
+} from "./auth.mjs";
+import { generateSecret as generateTotpSecret, verifyTotp, otpauthUrl } from "./totp.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -212,7 +232,12 @@ const seedData = {
         "Emergency & Safety Broadcast"
       ],
       status: "active",
+      passwordHash: "",
+      passwordSetupToken: null,
+      sessionVersion: 0,
       twoFactorEnabled: false,
+      twoFactorSecretEncrypted: "",
+      twoFactorPendingSecretEncrypted: "",
       invitedAt: null,
       lastEmailAt: null
     }
@@ -366,7 +391,12 @@ function normalizeData(data) {
     campusIds: [],
     buildingIds: [],
     features: [],
+    passwordHash: "",
+    passwordSetupToken: null,
+    sessionVersion: 0,
     twoFactorEnabled: false,
+    twoFactorSecretEncrypted: "",
+    twoFactorPendingSecretEncrypted: "",
     invitedAt: null,
     lastEmailAt: null,
     ...user,
@@ -480,6 +510,22 @@ let db = store.state;
 async function saveData(nextDb = db) {
   await store.save(nextDb);
 }
+
+async function ensurePasswordSetupTokens() {
+  let changed = false;
+  for (const user of db.users) {
+    if (user.passwordHash) continue;
+    if (!isSetupTokenValid(user.passwordSetupToken)) {
+      user.passwordSetupToken = generateSetupToken();
+      changed = true;
+    }
+    const setupUrl = `${baseUrl.replace(/\/+$/, "")}/set-password?token=${encodeURIComponent(user.passwordSetupToken.token)}`;
+    console.log(`[signage] Set an initial password for ${user.email}: ${setupUrl} (expires ${user.passwordSetupToken.expiresAt})`);
+  }
+  if (changed) await saveData();
+}
+
+await ensurePasswordSetupTokens();
 
 function send(res, status, body, type = "text/html; charset=utf-8") {
   res.writeHead(status, {
@@ -699,9 +745,28 @@ function publicBroadcast(broadcast) {
 }
 
 function currentViewer(req) {
-  const requestedId = String(req.headers["x-user-id"] || "");
-  if (requestedId) return db.users.find(user => user.id === requestedId) || null;
-  return db.users.find(user => user.roleIds.includes("system-admin")) || db.users[0] || null;
+  const cookies = parseCookies(req);
+  const session = readSession(cookies.sid);
+  if (!session) return null;
+  const user = db.users.find(item => item.id === session.userId);
+  if (!user || user.status !== "active" || (user.sessionVersion || 0) !== session.sessionVersion) return null;
+  return user;
+}
+
+function setSessionCookie(res, token) {
+  res.setHeader("Set-Cookie", sessionCookieHeader("sid", token, {
+    maxAgeSeconds: 12 * 60 * 60,
+    secure: baseUrl.startsWith("https://")
+  }));
+}
+
+function clearSessionCookie(res) {
+  res.setHeader("Set-Cookie", sessionCookieHeader("sid", "", { maxAgeSeconds: 0 }));
+}
+
+function logInUser(res, user) {
+  const token = createSession(user.id, user.sessionVersion || 0);
+  setSessionCookie(res, token);
 }
 
 function viewerPermissions(user) {
@@ -731,6 +796,46 @@ function viewerCanAccessRoom(user, room) {
   );
 }
 
+function viewerCanAccessCenter(user, centerId) {
+  return viewerIsSystemAdmin(user) || Boolean(user?.centerIds?.includes(centerId));
+}
+
+function viewerCanAccessCampus(user, campus) {
+  if (viewerIsSystemAdmin(user)) return true;
+  return Boolean(user?.campusIds?.includes(campus?.id) || user?.centerIds?.includes(campus?.centerId));
+}
+
+function viewerCanAccessBuilding(user, building) {
+  if (viewerIsSystemAdmin(user)) return true;
+  if (user?.buildingIds?.includes(building?.id) || user?.campusIds?.includes(building?.campusId)) return true;
+  const campus = db.campuses.find(item => item.id === building?.campusId);
+  return Boolean(campus && user?.centerIds?.includes(campus.centerId));
+}
+
+function assignableRoles(viewer) {
+  if (viewerIsSystemAdmin(viewer)) return db.roles;
+  const ownPermissions = viewerPermissions(viewer);
+  return db.roles.filter(role => (role.permissions || []).every(permission => ownPermissions.has(permission)));
+}
+
+function validateAssignableUserScope(viewer, { roleIds, centerIds, campusIds, buildingIds }) {
+  if (viewerIsSystemAdmin(viewer)) return "";
+  const allowedRoleIds = new Set(assignableRoles(viewer).map(role => role.id));
+  if (roleIds.some(id => !allowedRoleIds.has(id))) {
+    return "You cannot assign a role with permissions beyond your own.";
+  }
+  if (centerIds.some(id => !viewerCanAccessCenter(viewer, id))) {
+    return "You cannot assign a center outside your own assigned scope.";
+  }
+  if (campusIds.some(id => !viewerCanAccessCampus(viewer, db.campuses.find(item => item.id === id)))) {
+    return "You cannot assign a campus outside your own assigned scope.";
+  }
+  if (buildingIds.some(id => !viewerCanAccessBuilding(viewer, db.buildings.find(item => item.id === id)))) {
+    return "You cannot assign a building outside your own assigned scope.";
+  }
+  return "";
+}
+
 function requirePermission(req, res, permission) {
   if (viewerHasPermission(req, permission)) return true;
   json(res, 403, { error: `Permission required: ${permission}` });
@@ -741,7 +846,9 @@ function publicViewer(user) {
   return {
     id: user?.id || "",
     name: user?.name || "",
+    email: user?.email || "",
     isSystemAdmin: viewerIsSystemAdmin(user),
+    twoFactorEnabled: Boolean(user?.twoFactorEnabled),
     permissions: [...viewerPermissions(user)],
     accessibleRoomIds: db.rooms.filter(room => viewerCanAccessRoom(user, room)).map(room => room.id)
   };
@@ -977,12 +1084,20 @@ async function runBroadcastLifecycle() {
   }
 }
 
+function issuePasswordSetupToken(user) {
+  user.passwordSetupToken = generateSetupToken();
+  return user.passwordSetupToken;
+}
+
 function invitationMessage(user) {
   const portalUrl = `${baseUrl.replace(/\/+$/, "")}/admin`;
+  const setupToken = isSetupTokenValid(user.passwordSetupToken) ? user.passwordSetupToken : issuePasswordSetupToken(user);
+  const setupUrl = `${baseUrl.replace(/\/+$/, "")}/set-password?token=${encodeURIComponent(setupToken.token)}`;
+  const expiresLabel = new Date(setupToken.expiresAt).toLocaleString();
   return {
     subject: "Your Signage Management System account",
-    text: `Hello ${user.name},\n\nAn account has been provisioned for ${user.email} in the Signage Management System.\n\nManagement portal: ${portalUrl}\n\nYour administrator will provide login activation instructions when authentication enrollment is enabled.\n`,
-    html: `<p>Hello ${escapeHtml(user.name)},</p><p>An account has been provisioned for <strong>${escapeHtml(user.email)}</strong> in the Signage Management System.</p><p><a href="${escapeHtml(portalUrl)}">Open management portal</a></p><p>Your administrator will provide login activation instructions when authentication enrollment is enabled.</p>`
+    text: `Hello ${user.name},\n\nAn account has been provisioned for ${user.email} in the Signage Management System.\n\nSet your password to activate your account: ${setupUrl}\nThis link expires ${expiresLabel}.\n\nManagement portal: ${portalUrl}\n`,
+    html: `<p>Hello ${escapeHtml(user.name)},</p><p>An account has been provisioned for <strong>${escapeHtml(user.email)}</strong> in the Signage Management System.</p><p><a href="${escapeHtml(setupUrl)}">Set your password to activate your account</a></p><p>This link expires ${escapeHtml(expiresLabel)}.</p><p>Management portal: <a href="${escapeHtml(portalUrl)}">${escapeHtml(portalUrl)}</a></p>`
   };
 }
 
@@ -1035,7 +1150,7 @@ function broadcastFromBody(body, existing = {}) {
     templateId: cleanText(body.templateId, 160) || null,
     title: cleanText(body.title, 200),
     message: cleanText(body.message, 5000),
-    severity: cleanText(body.severity, 30) || "emergency",
+    severity: cleanText(body.severity, 30) || "urgent",
     audibleAlert: body.audibleAlert !== false,
     startsAt: cleanText(body.startsAt, 80),
     endsAt: cleanText(body.endsAt, 80) || null,
@@ -1156,7 +1271,22 @@ function adminPage() {
     <link rel="stylesheet" href="/static/admin.css?v=${assetVersion}" />
   </head>
   <body>
-    <main class="admin-shell">
+    <section id="loginScreen" class="auth-body" hidden>
+      <main class="auth-card">
+        <h1>Signage Management System</h1>
+        <p>Sign in to continue to the management portal.</p>
+        <form id="loginForm">
+          <label>Email <input name="email" type="email" required autocomplete="username" /></label>
+          <label>Password <input name="password" type="password" required autocomplete="current-password" /></label>
+          <div id="loginTwoFactorField" hidden>
+            <label>Authentication Code <input name="code" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" /></label>
+          </div>
+          <p id="loginStatus" class="form-status" role="alert"></p>
+          <button type="submit">Sign In</button>
+        </form>
+      </main>
+    </section>
+    <main class="admin-shell" id="adminShell" hidden>
       <header class="admin-header">
         <div>
           <p>Signage Management System</p>
@@ -1164,7 +1294,9 @@ function adminPage() {
         </div>
         <div class="header-actions">
           <span id="storageBadge" class="storage-badge"></span>
+          <span id="viewerName" class="viewer-name"></span>
           <a href="/room-108-shishu" target="_blank">Open Kiosk</a>
+          <button type="button" id="logoutButton" class="secondary">Sign Out</button>
         </div>
       </header>
       <nav class="admin-tabs" aria-label="Management sections">
@@ -1496,6 +1628,31 @@ function adminPage() {
             <div id="roleManagerList" class="entity-list"></div>
           </section>
           <section class="panel"><h2>Recent Audit Activity</h2><div id="auditList"></div></section>
+          <section class="panel">
+            <div class="panel-heading"><div><h2>My Account Security</h2><p>Manage your own password and two-factor authentication.</p></div></div>
+            <form id="changePasswordForm">
+              <label>Current Password <input name="currentPassword" type="password" required autocomplete="current-password" /></label>
+              <label>New Password <input name="newPassword" type="password" minlength="12" required autocomplete="new-password" /></label>
+              <p id="changePasswordStatus" class="form-status" role="status"></p>
+              <button type="submit">Change Password</button>
+            </form>
+            <div id="twoFactorPanel" class="subform">
+              <p id="twoFactorStatus"></p>
+              <div id="twoFactorEnrollment" hidden>
+                <p>Scan or manually enter this key in your authenticator app, then confirm a code:</p>
+                <p><code id="twoFactorSecret"></code></p>
+                <form id="twoFactorConfirmForm">
+                  <label>Authentication Code <input name="code" inputmode="numeric" pattern="[0-9]*" required /></label>
+                  <button type="submit">Confirm & Enable</button>
+                </form>
+              </div>
+              <button type="button" id="startTwoFactorEnroll">Enable Two-Factor Authentication</button>
+              <form id="twoFactorDisableForm" hidden>
+                <label>Current Password <input name="password" type="password" required autocomplete="current-password" /></label>
+                <button type="submit" class="danger-text">Disable Two-Factor Authentication</button>
+              </form>
+            </div>
+          </section>
         </section>
       </section>
     </main>
@@ -1546,6 +1703,58 @@ function kioskPage(roomCode, preview = false, themeOverrideId = "", stateOverrid
 </html>`;
 }
 
+function setPasswordPage(token) {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Set Your Password - Signage Management System</title>
+    <link rel="stylesheet" href="/static/admin.css?v=${assetVersion}" />
+  </head>
+  <body class="auth-body">
+    <main class="auth-card">
+      <h1>Set Your Password</h1>
+      <p>Choose a password to activate your Signage Management System account.</p>
+      <form id="setPasswordForm">
+        <label>New Password <input name="password" type="password" minlength="12" required autocomplete="new-password" /></label>
+        <label>Confirm Password <input name="confirmPassword" type="password" minlength="12" required autocomplete="new-password" /></label>
+        <p id="setPasswordStatus" class="form-status" role="status"></p>
+        <button type="submit">Set Password &amp; Sign In</button>
+      </form>
+    </main>
+    <script>
+      const token = ${JSON.stringify(token)};
+      document.querySelector("#setPasswordForm").addEventListener("submit", async event => {
+        event.preventDefault();
+        const status = document.querySelector("#setPasswordStatus");
+        const form = event.currentTarget;
+        if (form.password.value !== form.confirmPassword.value) {
+          status.textContent = "Passwords do not match.";
+          return;
+        }
+        status.textContent = "Saving...";
+        try {
+          const response = await fetch("/api/auth/set-password", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token, password: form.password.value })
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            status.textContent = body.error || "Unable to set password.";
+            return;
+          }
+          window.location.href = "/admin";
+        } catch {
+          status.textContent = "Unable to reach the server. Try again.";
+        }
+      });
+    </script>
+  </body>
+</html>`;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -1588,6 +1797,136 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/health") {
     return json(res, 200, { status: "healthy", app: "signage", storage: store.type, time: new Date().toISOString() });
   }
+  if (req.method === "POST" && url.pathname === "/api/auth/login") {
+    const body = await readBody(req);
+    const email = cleanText(body.email, 255).toLowerCase();
+    const password = String(body.password || "");
+    if (!email || !password) return validationError(res, "Email and password are required.");
+    if (isLoginLocked(email)) return json(res, 429, { error: "Too many failed login attempts. Try again later." });
+    const user = db.users.find(item => item.email === email);
+    const passwordOk = Boolean(user?.passwordHash) && verifyPassword(password, user.passwordHash);
+    if (!user || !passwordOk || user.status !== "active") {
+      recordFailedLogin(email);
+      addAudit("auth.login.failed", { email });
+      await saveData();
+      return json(res, 401, { error: "Invalid email or password." });
+    }
+    resetLoginAttempts(email);
+    if (user.twoFactorEnabled) {
+      const mfaToken = createMfaChallenge(user.id);
+      return json(res, 200, { requiresTwoFactor: true, mfaToken });
+    }
+    logInUser(res, user);
+    addAudit("auth.login", { userId: user.id, email: user.email });
+    await saveData();
+    return json(res, 200, { viewer: publicViewer(user) });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/login/verify") {
+    const body = await readBody(req);
+    const mfaToken = cleanText(body.mfaToken, 200);
+    const code = cleanText(body.code, 20);
+    const challenge = readMfaChallenge(mfaToken);
+    const user = challenge ? db.users.find(item => item.id === challenge.userId) : null;
+    if (!challenge || !user || user.status !== "active" || !user.twoFactorEnabled || !user.twoFactorSecretEncrypted) {
+      consumeMfaChallenge(mfaToken);
+      return json(res, 401, { error: "This verification session is no longer valid. Sign in again." });
+    }
+    const secret = decryptCredential(user.twoFactorSecretEncrypted);
+    if (!verifyTotp(secret, code)) {
+      registerMfaFailure(mfaToken);
+      addAudit("auth.2fa.failed", { userId: user.id });
+      await saveData();
+      return json(res, 401, { error: "Invalid authentication code." });
+    }
+    consumeMfaChallenge(mfaToken);
+    logInUser(res, user);
+    addAudit("auth.login", { userId: user.id, email: user.email, twoFactor: true });
+    await saveData();
+    return json(res, 200, { viewer: publicViewer(user) });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+    const cookies = parseCookies(req);
+    if (cookies.sid) destroySession(cookies.sid);
+    clearSessionCookie(res);
+    return json(res, 200, { loggedOut: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/set-password") {
+    const body = await readBody(req);
+    const token = cleanText(body.token, 400);
+    const password = String(body.password || "");
+    const user = token ? db.users.find(item => item.passwordSetupToken?.token === token) : null;
+    if (!user || !isSetupTokenValid(user.passwordSetupToken)) {
+      return json(res, 400, { error: "This setup link is invalid or has expired. Ask an administrator to resend it." });
+    }
+    if (password.length < 12) return validationError(res, "Password must be at least 12 characters.");
+    user.passwordHash = hashPassword(password);
+    user.passwordSetupToken = null;
+    user.sessionVersion = (user.sessionVersion || 0) + 1;
+    if (user.status === "invited") user.status = "active";
+    user.updatedAt = new Date().toISOString();
+    addAudit("auth.password.set", { userId: user.id });
+    await saveData();
+    logInUser(res, user);
+    return json(res, 200, { viewer: publicViewer(user) });
+  }
+
+  const publicRoomFetch = req.method === "GET" && /^\/api\/rooms\/[^/]+$/.test(url.pathname);
+  const publicRoomEvents = req.method === "GET" && /^\/api\/rooms\/[^/]+\/events$/.test(url.pathname);
+  if (!publicRoomFetch && !publicRoomEvents) {
+    if (!currentViewer(req)) return json(res, 401, { error: "Authentication required." });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/change-password") {
+    const viewer = currentViewer(req);
+    const body = await readBody(req);
+    const currentPassword = String(body.currentPassword || "");
+    const newPassword = String(body.newPassword || "");
+    if (!verifyPassword(currentPassword, viewer.passwordHash)) return json(res, 401, { error: "Current password is incorrect." });
+    if (newPassword.length < 12) return validationError(res, "New password must be at least 12 characters.");
+    viewer.passwordHash = hashPassword(newPassword);
+    viewer.sessionVersion = (viewer.sessionVersion || 0) + 1;
+    viewer.updatedAt = new Date().toISOString();
+    destroyAllSessionsForUser(viewer.id);
+    logInUser(res, viewer);
+    addAudit("auth.password.change", { userId: viewer.id });
+    await saveData();
+    return json(res, 200, { changed: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/2fa/enroll") {
+    const viewer = currentViewer(req);
+    const secret = generateTotpSecret();
+    viewer.twoFactorPendingSecretEncrypted = encryptCredential(secret);
+    await saveData();
+    return json(res, 200, {
+      secret,
+      otpauthUrl: otpauthUrl({ secret, label: viewer.email, issuer: db.settings.appName || "Signage Management System" })
+    });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/2fa/confirm") {
+    const viewer = currentViewer(req);
+    const body = await readBody(req);
+    if (!viewer.twoFactorPendingSecretEncrypted) return validationError(res, "Start enrollment before confirming a code.");
+    const secret = decryptCredential(viewer.twoFactorPendingSecretEncrypted);
+    if (!verifyTotp(secret, cleanText(body.code, 20))) return validationError(res, "That code did not match. Try again.");
+    viewer.twoFactorSecretEncrypted = viewer.twoFactorPendingSecretEncrypted;
+    viewer.twoFactorPendingSecretEncrypted = "";
+    viewer.twoFactorEnabled = true;
+    addAudit("auth.2fa.enabled", { userId: viewer.id });
+    await saveData();
+    return json(res, 200, { enabled: true });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/2fa/disable") {
+    const viewer = currentViewer(req);
+    const body = await readBody(req);
+    if (!verifyPassword(String(body.password || ""), viewer.passwordHash)) return json(res, 401, { error: "Your current password is required." });
+    viewer.twoFactorEnabled = false;
+    viewer.twoFactorSecretEncrypted = "";
+    viewer.twoFactorPendingSecretEncrypted = "";
+    addAudit("auth.2fa.disabled", { userId: viewer.id });
+    await saveData();
+    return json(res, 200, { enabled: false });
+  }
+
   if (req.method === "GET" && url.pathname === "/api/state") {
     await runBroadcastLifecycle();
     const viewer = currentViewer(req);
@@ -2097,6 +2436,12 @@ async function handleApi(req, res, url) {
     if (!validIds(body.centerIds || [], db.centers)) return validationError(res, "One or more centers are invalid.");
     if (!validIds(body.campusIds || [], db.campuses)) return validationError(res, "One or more campuses are invalid.");
     if (!validIds(body.buildingIds || [], db.buildings)) return validationError(res, "One or more buildings are invalid.");
+    const roleIds = Array.isArray(body.roleIds) ? body.roleIds : [];
+    const centerIds = Array.isArray(body.centerIds) ? body.centerIds : [];
+    const campusIds = Array.isArray(body.campusIds) ? body.campusIds : [];
+    const buildingIds = Array.isArray(body.buildingIds) ? body.buildingIds : [];
+    const scopeError = validateAssignableUserScope(currentViewer(req), { roleIds, centerIds, campusIds, buildingIds });
+    if (scopeError) return json(res, 403, { error: scopeError });
     const features = Array.isArray(body.features) ? body.features.filter(feature => db.features.includes(feature)) : [];
     const now = new Date().toISOString();
     const user = {
@@ -2104,17 +2449,23 @@ async function handleApi(req, res, url) {
       name,
       email,
       status,
-      roleIds: body.roleIds || [],
-      centerIds: body.centerIds || [],
-      campusIds: body.campusIds || [],
-      buildingIds: body.buildingIds || [],
+      roleIds,
+      centerIds,
+      campusIds,
+      buildingIds,
       features,
+      passwordHash: "",
+      passwordSetupToken: null,
+      sessionVersion: 0,
       twoFactorEnabled: false,
+      twoFactorSecretEncrypted: "",
+      twoFactorPendingSecretEncrypted: "",
       invitedAt: null,
       lastEmailAt: null,
       createdAt: now,
       updatedAt: now
     };
+    issuePasswordSetupToken(user);
     db.users.push(user);
     addAudit("user.create", { userId: user.id, email: user.email, status: user.status });
     let invitationError = "";
@@ -2156,18 +2507,29 @@ async function handleApi(req, res, url) {
     if (!validIds(body.centerIds || [], db.centers)) return validationError(res, "One or more centers are invalid.");
     if (!validIds(body.campusIds || [], db.campuses)) return validationError(res, "One or more campuses are invalid.");
     if (!validIds(body.buildingIds || [], db.buildings)) return validationError(res, "One or more buildings are invalid.");
+    const roleIds = Array.isArray(body.roleIds) ? body.roleIds : [];
+    const centerIds = Array.isArray(body.centerIds) ? body.centerIds : [];
+    const campusIds = Array.isArray(body.campusIds) ? body.campusIds : [];
+    const buildingIds = Array.isArray(body.buildingIds) ? body.buildingIds : [];
+    const scopeError = validateAssignableUserScope(currentViewer(req), { roleIds, centerIds, campusIds, buildingIds });
+    if (scopeError) return json(res, 403, { error: scopeError });
     const features = Array.isArray(body.features) ? body.features.filter(feature => db.features.includes(feature)) : [];
+    const statusChangedToInactive = ["suspended", "deactivated"].includes(status) && user.status !== status;
     Object.assign(user, {
       name,
       email,
       status,
-      roleIds: body.roleIds || [],
-      centerIds: body.centerIds || [],
-      campusIds: body.campusIds || [],
-      buildingIds: body.buildingIds || [],
+      roleIds,
+      centerIds,
+      campusIds,
+      buildingIds,
       features,
       updatedAt: new Date().toISOString()
     });
+    if (statusChangedToInactive) {
+      user.sessionVersion = (user.sessionVersion || 0) + 1;
+      destroyAllSessionsForUser(user.id);
+    }
     addAudit("user.update", { userId: user.id, email: user.email, status: user.status });
     await saveData();
     return json(res, 200, publicUser(user));
@@ -2177,6 +2539,7 @@ async function handleApi(req, res, url) {
     if (!requirePermission(req, res, "user.manage")) return;
     const user = db.users.find(item => item.id === userInviteMatch[1]);
     if (!user) return json(res, 404, { error: "User not found" });
+    issuePasswordSetupToken(user);
     const message = invitationMessage(user);
     try {
       await deliverTrackedEmail({
@@ -3018,8 +3381,10 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname.startsWith("/samples/")) return serveFile(req, res, path.join(rootDir, "samples"), "/samples/");
     if (url.pathname.startsWith("/api/")) return handleApi(req, res, url);
     if (url.pathname === "/" || url.pathname === "/admin") return send(res, 200, adminPage());
+    if (url.pathname === "/set-password") return send(res, 200, setPasswordPage(cleanText(url.searchParams.get("token"), 400)));
     const previewMatch = url.pathname.match(/^\/preview\/([^/]+)$/);
     if (previewMatch) {
+      if (!currentViewer(req)) return send(res, 401, "Authentication required. Sign in to the management portal first.");
       const page = kioskPage(
         previewMatch[1],
         true,

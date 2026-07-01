@@ -5,6 +5,7 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { syncCalendar } from "../src/calendar.mjs";
 
 const rootDir = path.resolve(import.meta.dirname, "..");
 const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "signage-test-"));
@@ -70,19 +71,47 @@ const child = spawn(process.execPath, ["src/server.mjs"], {
     HOST: "127.0.0.1",
     PORT: String(port),
     THEME_ASSETS_DIR: path.join(dataDir, "theme-assets"),
-    CREDENTIAL_ENCRYPTION_KEY: "integration-test-credential-key-123456789"
+    CREDENTIAL_ENCRYPTION_KEY: "integration-test-credential-key-123456789",
+    ALLOW_PRIVATE_CALENDAR_HOSTS: "true"
   },
   stdio: ["ignore", "pipe", "pipe"]
 });
 
+let activeCookie = "";
+
+function captureCookie(response) {
+  const setCookie = response.headers.get("set-cookie");
+  if (setCookie) activeCookie = setCookie.split(";")[0];
+}
+
 async function request(route, options = {}, expectedStatus = 200) {
   const response = await fetch(`${baseUrl}${route}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(activeCookie ? { Cookie: activeCookie } : {}),
+      ...(options.headers || {})
+    }
   });
+  captureCookie(response);
   const body = await response.json().catch(() => ({}));
   assert.equal(response.status, expectedStatus, `${route}: ${JSON.stringify(body)}`);
   return body;
+}
+
+async function readState() {
+  return JSON.parse(await fs.readFile(path.join(dataDir, "app-data.json"), "utf8"));
+}
+
+async function loginWithSetupToken(email, password) {
+  const raw = await readState();
+  const user = raw.users.find(item => item.email === email);
+  assert.ok(user?.passwordSetupToken?.token, `${email} has no pending password setup token`);
+  await request("/api/auth/set-password", {
+    method: "POST",
+    body: JSON.stringify({ token: user.passwordSetupToken.token, password })
+  });
+  return activeCookie;
 }
 
 async function waitForServer() {
@@ -99,6 +128,10 @@ async function waitForServer() {
 try {
   const health = await waitForServer();
   assert.equal(health.storage, "json");
+
+  await request("/api/state", {}, 401);
+  await loginWithSetupToken("admin@example.org", "integration-test-password-1");
+  const adminCookie = activeCookie;
 
   const initialState = await request("/api/state");
   assert.equal(initialState.rooms.length, 3);
@@ -225,6 +258,23 @@ try {
     body: "{}"
   });
   assert.equal(calendarInspection.configured[0].status, "available");
+
+  // Public calendar URLs pointing at private/internal network addresses must be rejected (SSRF guard).
+  // This exercises src/calendar.mjs directly, without the ALLOW_PRIVATE_CALENDAR_HOSTS test override
+  // set for the spawned server above.
+  await assert.rejects(
+    () => syncCalendar(
+      { provider: "public-url" },
+      { externalId: "http://169.254.169.254/latest/meta-data/" },
+      new Date(),
+      new Date()
+    ),
+    /disallowed private or internal network address/
+  );
+  await assert.rejects(
+    () => syncCalendar({ provider: "public-url" }, { externalId: "http://127.0.0.1:1/x" }, new Date(), new Date()),
+    /disallowed private or internal network address/
+  );
   const calendarAssignment = await request("/api/calendar-assignments", {
     method: "POST",
     body: JSON.stringify({ roomId: room.id, accountId: calendarAccount.id, calendarId: calendarAccount.calendars[0].id })
@@ -255,9 +305,66 @@ try {
   assert.deepEqual(user.buildingIds, [building.id]);
   assert.deepEqual(user.features, ["Notifications"]);
   assert.equal(user.invitedAt !== null, true);
-  await request("/api/broadcasts/history", {
-    headers: { "Content-Type": "application/json", "X-User-Id": user.id }
+
+  const scopedUserCookie = await loginWithSetupToken("integration.user@example.org", "integration-scoped-password-1");
+  await request("/api/broadcasts/history", {}, 403);
+  await request("/api/centers", {
+    method: "POST",
+    body: JSON.stringify({ name: "Unauthorized Center", timezone: "America/Chicago" })
   }, 403);
+  await request("/api/broadcasts", {
+    method: "POST",
+    body: JSON.stringify({
+      title: "OUTSIDE SCOPE",
+      message: "This must be rejected.",
+      targetRoomCodes: ["room-108-shishu"],
+      confirm: true
+    })
+  }, 403);
+
+  // A user with user.manage but not role.manage (Center Admin) cannot grant itself
+  // a more powerful role or a scope outside its own assignment.
+  activeCookie = adminCookie;
+  const centerAdminUser = await request("/api/users", {
+    method: "POST",
+    body: JSON.stringify({
+      name: "Escalation Test Center Admin",
+      email: "escalation.centeradmin@example.org",
+      status: "active",
+      roleIds: ["center-admin"],
+      centerIds: [center.id],
+      campusIds: [],
+      buildingIds: []
+    })
+  }, 201);
+  await loginWithSetupToken("escalation.centeradmin@example.org", "integration-escalation-password-1");
+  const roleEscalation = await request(`/api/users/${centerAdminUser.id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      name: centerAdminUser.name,
+      email: centerAdminUser.email,
+      status: "active",
+      roleIds: ["system-admin"],
+      centerIds: [center.id],
+      campusIds: [],
+      buildingIds: []
+    })
+  }, 403);
+  assert.match(roleEscalation.error, /permissions beyond your own/);
+  const scopeEscalation = await request(`/api/users/${centerAdminUser.id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      name: centerAdminUser.name,
+      email: centerAdminUser.email,
+      status: "active",
+      roleIds: ["center-admin"],
+      centerIds: ["center-la"],
+      campusIds: [],
+      buildingIds: []
+    })
+  }, 403);
+  assert.match(scopeEscalation.error, /outside your own assigned scope/);
+  activeCookie = adminCookie;
 
   const updatedUser = await request(`/api/users/${user.id}`, {
     method: "PUT",
@@ -275,21 +382,11 @@ try {
   assert.equal(updatedUser.status, "suspended");
   assert.deepEqual(updatedUser.roleIds, ["building-manager"]);
   assert.deepEqual(updatedUser.buildingIds, [building.id]);
-  await request("/api/centers", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-User-Id": user.id },
-    body: JSON.stringify({ name: "Unauthorized Center", timezone: "America/Chicago" })
-  }, 403);
-  await request("/api/broadcasts", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-User-Id": user.id },
-    body: JSON.stringify({
-      title: "OUTSIDE SCOPE",
-      message: "This must be rejected.",
-      targetRoomCodes: ["room-108-shishu"],
-      confirm: true
-    })
-  }, 403);
+
+  // Suspending a user immediately invalidates any session it already holds.
+  activeCookie = scopedUserCookie;
+  await request("/api/state", {}, 401);
+  activeCookie = adminCookie;
 
   const manualEmail = await request("/api/email/send", {
     method: "POST",
