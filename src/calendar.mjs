@@ -1,6 +1,55 @@
+import dns from "node:dns/promises";
+import net from "node:net";
 import { GoogleAuth } from "google-auth-library";
 import ical from "node-ical";
 import { decryptCredential } from "./email.mjs";
+
+function isDisallowedAddress(address) {
+  const type = net.isIP(address);
+  if (!type) return true;
+  if (type === 4) {
+    const octets = address.split(".").map(Number);
+    if (octets[0] === 0) return true;
+    if (octets[0] === 10) return true;
+    if (octets[0] === 127) return true;
+    if (octets[0] === 169 && octets[1] === 254) return true;
+    if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return true;
+    if (octets[0] === 192 && octets[1] === 168) return true;
+    if (octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127) return true;
+    if (octets[0] >= 224) return true;
+    return false;
+  }
+  const normalized = address.toLowerCase();
+  if (normalized === "::1") return true;
+  if (normalized.startsWith("::ffff:")) return isDisallowedAddress(normalized.slice(7));
+  if (normalized.startsWith("fe80:") || normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
+  return false;
+}
+
+async function assertPublicCalendarUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("Enter a valid HTTP or HTTPS calendar URL.");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("Public calendars require a valid HTTP or HTTPS URL.");
+  }
+  // Test/dev only escape hatch for exercising the sync flow against a local fixture server.
+  // Never set this in production; it disables the private-network SSRF guard below.
+  if (process.env.ALLOW_PRIVATE_CALENDAR_HOSTS === "true") return parsed;
+  let records;
+  try {
+    records = await dns.lookup(parsed.hostname, { all: true, verbatim: true });
+  } catch {
+    throw new Error(`Could not resolve calendar host "${parsed.hostname}".`);
+  }
+  if (!records.length || records.some(record => isDisallowedAddress(record.address))) {
+    throw new Error("This calendar URL resolves to a disallowed private or internal network address.");
+  }
+  return parsed;
+}
 
 function privateTitle(event) {
   const description = String(event.description || "");
@@ -222,7 +271,12 @@ function icsOccurrences(item, start, end) {
 }
 
 async function fetchPublicUrl(calendar, start, end) {
-  const parsed = await ical.async.fromURL(calendar.externalId);
+  const validatedUrl = await assertPublicCalendarUrl(calendar.externalId);
+  const response = await fetch(validatedUrl, { redirect: "error" });
+  if (!response.ok) throw new Error(`Public calendar returned ${response.status}.`);
+  const text = await response.text();
+  if (text.length > 10 * 1024 * 1024) throw new Error("Public calendar feed is too large to process.");
+  const parsed = ical.parseICS(text);
   const events = [];
   for (const item of Object.values(parsed)) {
     if (item.type !== "VEVENT" || !item.start || !item.end) continue;

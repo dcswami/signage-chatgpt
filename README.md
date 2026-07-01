@@ -18,6 +18,7 @@ The scaffold includes:
 - Center, campus, building, and room create/edit/delete workflows.
 - Room-code validation, booking URL management, timezone inheritance, and theme assignment.
 - Built-in theme cloning and hierarchy deletion safeguards.
+- Session-cookie authentication with hashed passwords, one-time password-setup links for new/invited users, and optional TOTP-based two-factor authentication.
 - User provisioning with status, role, center, and feature assignments.
 - Campus Manager and Building Manager roles with campus/building access scopes.
 - Permission and role editor with cloneable roles and server-side permission checks.
@@ -74,7 +75,22 @@ docker compose -f docker-compose.test.yml -p signage-test up -d --build
 
 Full steps are in `TEST_ENVIRONMENT_DEPLOYMENT.md`.
 
+## Authentication
+
+The management portal requires sign-in. On first run (or after upgrading a
+deployment that has no password set yet), the server logs a one-time
+`/set-password?token=...` link for each user without a password, for example:
+
+```text
+[signage] Set an initial password for admin@example.org: http://localhost:3000/set-password?token=... (expires ...)
+```
+
+Open that link to set the System Administrator password, then sign in at
+`/admin`. New users created afterward receive the same kind of setup link via
+the invitation email. Users can enable TOTP-based two-factor authentication
+from the Configuration tab.
+
 ## Important Note
 
-This is a working MVP for review and test deployment. Full production hardening still needs authenticated sessions, Google/Microsoft tenant authorization testing, normalized PostgreSQL runtime storage for calendar workloads, conflict-resolution workflows, and automated backups.
+This is a working MVP for review and test deployment. Full production hardening still needs Google/Microsoft tenant authorization testing, normalized PostgreSQL runtime storage for calendar workloads, conflict-resolution workflows, and automated backups.
 # signage-chatgpt
